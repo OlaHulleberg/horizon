@@ -246,3 +246,52 @@ fn relit_columns_keep_every_mesh_current() {
         }
     }
 }
+
+/// `native_chunk_load` (hook points API 41) hears each column that joins the world exactly once:
+/// streaming queues every loaded column in `World::loaded_chunks`, which the game takes each pass.
+#[test]
+fn every_loaded_column_is_queued_once_for_the_chunk_load_hook() {
+    let Some(root) = resources() else {
+        return;
+    };
+    let assets = Arc::new(Assets::load(&root).unwrap());
+    let render = Arc::new(assets.reload(&root).unwrap());
+    let facts = BlockFacts::load(&root, assets.registry).unwrap();
+    let visibility = models::load_visibility(&root, assets.registry).unwrap();
+    let context = Arc::new(WorkerContext {
+        tables: Arc::new(MeshTables::new(&assets, &render, &facts, visibility).unwrap()),
+        light: Arc::new(LightTables::load(&root, assets.registry, &facts).unwrap()),
+        biomes: Arc::new(Biomes::load(&root).unwrap()),
+        assets,
+        render,
+    });
+    let mut streaming = Streaming::new(Arc::new(Saved), context, 3);
+    streaming.radius = 2;
+    let mut world = World::new(BlockStateId(0), 0);
+    let mut heard = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut quiet = 0;
+    while quiet < 40 {
+        assert!(Instant::now() < deadline, "streaming never settled");
+        let before = world.chunks.len();
+        let (uploads, unloaded) = streaming.update(&mut world);
+        streaming.free(uploads);
+        assert!(unloaded.is_empty());
+        // As Game::native_chunk_events takes them.
+        heard.extend(std::mem::take(&mut world.loaded_chunks));
+        thread::sleep(Duration::from_millis(5));
+        quiet = if streaming.pending() == 0 && before == world.chunks.len() {
+            quiet + 1
+        } else {
+            0
+        };
+    }
+    let unique: HashSet<_> = heard.iter().copied().collect();
+    assert_eq!(unique.len(), heard.len(), "a column was heard twice");
+    let resident: HashSet<_> = world.chunks.keys().copied().collect();
+    assert_eq!(
+        unique, resident,
+        "every resident column, and only those, was heard"
+    );
+    assert!(!resident.is_empty());
+}

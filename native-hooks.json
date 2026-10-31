@@ -21,6 +21,22 @@
       "target": "horizon_client::game::native_hooks::Game<'_>::native_server_tick"
     },
     {
+      "name": "chunk_load",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_chunk_load",
+      "neoforge": "ChunkEvent.Load",
+      "side": "server",
+      "cancellable": false
+    },
+    {
+      "name": "chunk_unload",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_chunk_unload",
+      "neoforge": "ChunkEvent.Unload",
+      "side": "server",
+      "cancellable": false
+    },
+    {
       "name": "level_tick_pre",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_level_tick_pre"

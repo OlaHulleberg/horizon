@@ -223,6 +223,12 @@ server for every player: `native_player_died`, `native_mob_spawned`, `native_mob
 `native_item_dropped` (a throw; not the items scattered when a player dies) and `native_item_picked_up` (`canceled` leaves the stack on the ground). They name a player by UUID. Bundles that use them
 need `"hooks": 40`.
 
+API 41 adds chunks joining and leaving a server level, NeoForge's `ChunkEvent.Load` and `.Unload`:
+`native_chunk_load(dimension, chunk)` hears each column once as it joins the level (loaded from the save or
+generated), in the level's next tick pass, and `native_chunk_unload(dimension, chunk)` as it leaves. A mod that
+keeps its own state for its blocks (a network of machines) builds it from the columns it hears, so its passive blocks
+need no block entity tick. Server-side only. Bundles that use them need `"hooks": 41`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

@@ -14332,6 +14332,7 @@ impl Game<'_> {
             .collect();
         let modified = horizon_client::spans::time("with_entities", || self.with_entities(&dirty));
         horizon_client::spans::time("unload_entities", || self.unload_entities(&unloaded));
+        self.native_chunk_events(&unloaded);
         if !unloaded.is_empty() {
             let gone: horizon_client::fast_hash::FxHashSet<(i32, i32)> =
                 unloaded.iter().map(|c| (c.x, c.z)).collect();

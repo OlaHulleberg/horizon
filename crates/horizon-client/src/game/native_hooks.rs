@@ -6,6 +6,9 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 41 adds chunks joining and leaving a server level (`native_chunk_load`,
+//! `native_chunk_unload`: NeoForge's `ChunkEvent.Load` and `.Unload`).
+//!
 //! API 40 adds mod messages between a mod's server and client halves
 //! (`native_net_from_client`, `native_net_from_server`, and
 //! `native_net_send_to_player`, `native_net_send_to_server` in
@@ -150,6 +153,7 @@ use horizon_client::{
     atlas_sources::qualified,
     block_entities::Pos,
     chat::ChatSource,
+    chunk::Chunk,
     containers::{BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer},
     crafting::{CustomRecipe, Ingredient, recipe_result},
     extras::Corner,
@@ -191,7 +195,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 40;
+pub(crate) const NATIVE_HOOKS_API: u32 = 41;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -670,6 +674,21 @@ impl Game<'_> {
         phase: ServerTickPhase,
     ) {
         let _ = (context, phase);
+    }
+    /// A column joined the authoritative server level `dimension` (loaded from
+    /// the save or generated), with its blocks: NeoForge's `ChunkEvent.Load`.
+    /// Fired in the level's next tick pass, before its blocks tick, once per
+    /// column, in the order they joined. Read the column, don't keep it: a mod
+    /// that tracks blocks (a machine network) finds its own here, so it needs
+    /// no block entity tick to learn about them. Server-side. API 41.
+    pub(super) fn native_chunk_load(&mut self, dimension: &str, chunk: &Chunk) {
+        let _ = (dimension, chunk);
+    }
+    /// A column left the authoritative server level `dimension`, after its
+    /// entities were saved: NeoForge's `ChunkEvent.Unload`. Forget what the
+    /// column held. Server-side. API 41.
+    pub(super) fn native_chunk_unload(&mut self, dimension: &str, chunk: &Chunk) {
+        let _ = (dimension, chunk);
     }
     /// Before an authoritative server level's tick pass. `dimension` is its ID.
     pub(super) fn native_level_tick_pre(&mut self, dimension: &str) {
@@ -1473,6 +1492,24 @@ impl Game<'_> {
         Some(out)
     }
     /// Playing, with nothing over the world: keys and zoom apply.
+    /// The columns this level's streaming loaded and unloaded since the last
+    /// pass, to `native_chunk_load` and `native_chunk_unload`: only where this
+    /// `Game` is the authoritative server. The queue is emptied either way.
+    pub(super) fn native_chunk_events(&mut self, unloaded: &[Arc<Chunk>]) {
+        let loaded = std::mem::take(&mut self.world.loaded_chunks);
+        if self.serving.is_none() && self.options.dedicated.is_none() {
+            return;
+        }
+        let dimension = self.dim.id();
+        for key in loaded {
+            if let Some(chunk) = self.world.chunks.get(&key).cloned() {
+                self.native_chunk_load(dimension, &chunk);
+            }
+        }
+        for chunk in unloaded {
+            self.native_chunk_unload(dimension, chunk);
+        }
+    }
     pub(super) fn native_playing(&self) -> bool {
         self.screen == Screen::Playing
             && self.title.is_none()
@@ -2441,6 +2478,29 @@ mod tests {
         assert!(s.set_data(4, 1, 7));
         assert!(!s.set_data(3, 1, 99));
         assert_eq!(s.data, [0, 7]);
+    }
+
+    #[test]
+    fn chunk_hooks_hear_the_server_level_each_pass() {
+        // update_world hands each pass's loaded and unloaded columns to the hooks
+        // (`streaming_meshes.rs` checks every column is queued once); only the
+        // authoritative server fires them, and the queue never grows elsewhere.
+        let game = include_str!("../game.rs");
+        let update = &game[game.find("fn update_world(&mut self)").unwrap()..];
+        let update = &update[..update.find("\n    fn ").unwrap()];
+        assert!(update.contains("self.native_chunk_events(&unloaded);"));
+        let hooks = include_str!("native_hooks.rs");
+        let events = &hooks[hooks.find("fn native_chunk_events").unwrap()..];
+        let events = &events[..events.find("\n    pub(super) fn ").unwrap()];
+        let take = events
+            .find("std::mem::take(&mut self.world.loaded_chunks)")
+            .unwrap();
+        let gate = events
+            .find("self.serving.is_none() && self.options.dedicated.is_none()")
+            .unwrap();
+        assert!(take < gate, "the queue is emptied before the server check");
+        assert!(events.contains("self.native_chunk_load(dimension, &chunk)"));
+        assert!(events.contains("self.native_chunk_unload(dimension, chunk)"));
     }
 
     #[test]

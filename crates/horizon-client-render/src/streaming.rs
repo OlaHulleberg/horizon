@@ -961,6 +961,7 @@ impl Streaming {
         // neighbours still light themselves from it.
         let loaded = chunk.light_loaded;
         world.chunks.insert(key, Arc::new(chunk));
+        world.loaded_chunks.push(key);
         if loaded {
             self.lit.insert(key);
             for sy in 0..world.layout().sections() as i32 {
