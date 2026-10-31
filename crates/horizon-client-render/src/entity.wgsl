@@ -143,6 +143,36 @@ fn entity_vertex(position: vec3<f32>, uv: vec2<f32>,
     @location(7) offset: vec3<f32>) -> Out {
     return entity_vertex(offset + position, uv, overlay, color, light, normal);
 }
+// Native mods' animated parts (gfx/parts.rs): the camera's block, the fraction past it, and in
+// fraction.w the animation clock in seconds.
+struct PartFrame {
+    block: vec4<i32>,
+    fraction: vec4<f32>,
+}
+@group(1) @binding(2) var<uniform> part_frame: PartFrame;
+// `v` turned by `angle` radians about axis 0 (x), 1 (y) or 2 (z), counterclockwise looking
+// down the positive axis (Minecraft's `Axis.rotation`).
+fn part_turn(v: vec3<f32>, axis: u32, angle: f32) -> vec3<f32> {
+    let c = cos(angle);
+    let s = sin(angle);
+    if axis == 0u { return vec3(v.x, v.y * c - v.z * s, v.y * s + v.z * c); }
+    if axis == 1u { return vec3(v.x * c + v.z * s, v.y, -v.x * s + v.z * c); }
+    return vec3(v.x * c - v.y * s, v.x * s + v.y * c, v.z);
+}
+// A part's vertex (block units, 0..1 in its block) turned about the block's centre at
+// `phase + rpm * 6 * seconds` degrees, at the instance's block, lit by the instance's light.
+@vertex fn vs_part(@location(0) position: vec3<f32>, @location(1) uv: vec2<f32>,
+    @location(2) overlay: u32, @location(3) color: vec4<f32>, @location(4) light: vec4<u32>,
+    @location(5) normal: vec4<f32>, @location(6) glint_uv: vec2<f32>,
+    @location(7) block: vec3<i32>, @location(8) spin: vec4<f32>,
+    @location(9) part_light: vec4<u32>) -> Out {
+    let axis = u32(spin.x);
+    let angle = radians(spin.z + spin.y * 6.0 * part_frame.fraction.w);
+    let turned = part_turn(position - vec3(0.5), axis, angle) + vec3(0.5);
+    let n = vec4(part_turn(normal.xyz, axis, angle), normal.w);
+    let at = vec3<f32>(block - part_frame.block.xyz) - part_frame.fraction.xyz + turned;
+    return entity_vertex(at, uv, overlay, color, part_light, n);
+}
 struct CloudInfo {
     offset: vec4<f32>,
     colors: array<vec4<f32>, 4>,

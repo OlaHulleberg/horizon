@@ -98,6 +98,7 @@ pub mod pack_uniforms;
 mod pack_weather;
 mod page_runs;
 pub mod panorama;
+pub mod parts;
 mod readback;
 mod resident;
 mod stars;
@@ -350,6 +351,8 @@ pub struct Frame<'a> {
     pub clouds: Option<crate::clouds::Input<'a>>,
     /// Retained lightning bolts, drawn before the other additive entities.
     pub lightning: lightning::Input<'a>,
+    /// Native mods' animated parts (`parts.rs`), drawn with the solid entities.
+    pub parts: Option<&'a parts::PartScene>,
     /// Additive translucent geometry after lightning (dragon rays).
     pub additive: &'a [Vertex],
     /// Name tags over everything, without depth (`TEXT_SEE_THROUGH`).
@@ -505,6 +508,8 @@ pub struct Renderer {
     energy_swirl_pipeline: wgpu::RenderPipeline,
     lightning_pipeline: wgpu::RenderPipeline,
     lightning: lightning::Renderer,
+    part_pipeline: wgpu::RenderPipeline,
+    parts: parts::Renderer,
     see_through_pipeline: wgpu::RenderPipeline,
     text_polygon_offset_pipeline: wgpu::RenderPipeline,
     celestial_pipeline: wgpu::RenderPipeline,
@@ -2372,6 +2377,69 @@ impl Renderer {
             },
             ..additive_descriptor
         });
+        // Native mods' parts (parts.rs): the entity vertex, then the instance at 7..=9, and the
+        // part frame at group 1 (entity.wgsl `vs_part`).
+        let part_bindings = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Part bindings"),
+            entries: &[entry(
+                2,
+                wgpu::ShaderStages::VERTEX,
+                wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+            )],
+        });
+        let part_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Part layout"),
+            bind_group_layouts: &[Some(&entity_bindings), Some(&part_bindings)],
+            ..Default::default()
+        });
+        let part_attributes = wgpu::vertex_attr_array![7=>Sint32x3, 8=>Float32x4, 9=>Uint8x4];
+        let part_vertex = [
+            entity_vertex[0].clone(),
+            Some(wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<parts::PartInstance>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &part_attributes,
+            }),
+        ];
+        let part_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Parts"),
+            layout: Some(&part_layout),
+            vertex: wgpu::VertexState {
+                module: &entity_shader,
+                entry_point: Some("vs_part"),
+                compilation_options: Default::default(),
+                buffers: &part_vertex,
+            },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &entity_shader,
+                entry_point: Some("fs_entity"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format.remove_srgb_suffix(),
+                    blend: Some(alpha_blend),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        let parts = parts::Renderer::new(&device, &part_bindings);
         let celestial_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Celestial bodies"),
             layout: Some(&entity_layout),
@@ -2844,6 +2912,8 @@ impl Renderer {
             energy_swirl_pipeline,
             lightning_pipeline,
             lightning: lightning::Renderer::new(),
+            part_pipeline,
+            parts,
             see_through_pipeline,
             text_polygon_offset_pipeline,
             celestial_pipeline,
@@ -4846,6 +4916,10 @@ impl Renderer {
             &frame.lightning,
             camera,
         );
+        if let Some(scene) = frame.parts {
+            self.parts
+                .prepare(&self.device, &mut self.uploads, &mut encoder, scene, camera);
+        }
         let all_entities = &self.entity_batch.combined;
         let hand_quads = (frame.hand.len() / 4) as u32;
         let additive_quads = (frame.additive.len() / 4) as u32 - self.entity_batch.moved_additive;
@@ -4903,7 +4977,8 @@ impl Renderer {
                 lightning::QUADS
             })
             .max(weather_quads)
-            .max(frame.glowing.len() as u32 / 4);
+            .max(frame.glowing.len() as u32 / 4)
+            .max(frame.parts.map_or(0, parts::PartScene::max_quads));
         if max_quads > self.index_quads {
             self.index_quads = max_quads.next_power_of_two();
             self.indices = Self::quad_indices(&self.device, self.index_quads);
@@ -5385,6 +5460,12 @@ impl Renderer {
                     pass.set_pipeline(&self.hdr_mark_pipeline);
                     pass.draw_indexed(0..entity_quads * 6, 0, 0..1);
                 }
+                pass.set_bind_group(0, &self.group, &[]);
+            }
+            if frame.parts.is_some() && self.parts.any() {
+                pass.set_pipeline(&self.part_pipeline);
+                pass.set_bind_group(0, &self.entity_group, &[]);
+                self.parts.draw(&mut pass);
                 pass.set_bind_group(0, &self.group, &[]);
             }
             if text_quads > 0 && !oit_on {

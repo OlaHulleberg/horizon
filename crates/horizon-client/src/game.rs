@@ -13756,6 +13756,7 @@ impl Game<'_> {
                 bolts: &bolts,
                 uv: horizon_client::gfx::lightning::white_uv(&self.gui.atlas.font.white()),
             },
+            parts: None,
             additive: &additive,
             see_through: &see_through,
             celestial: if self.settings.horizon.sky || title {
@@ -17216,6 +17217,7 @@ fn loading_frame(hud: &HudBatch) -> Frame<'_> {
         dynamic_lights: &[],
         clouds: None,
         lightning: Default::default(),
+        parts: None,
         additive: &[],
         see_through: &[],
         celestial: &[],
