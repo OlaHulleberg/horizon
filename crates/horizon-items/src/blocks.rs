@@ -283,8 +283,16 @@ impl BlockFacts {
         callback: impl FnOnce(&[decode::Entry<'_>]) -> Result<T>,
     ) -> Result<(Self, T)> {
         let bytes = fs::read(root.join("gameplay-facts.json"))?;
-        serde_json::from_slice::<decode::Validate>(&bytes)?;
-        let raw: decode::Gameplay<'_> = serde_json::from_slice(&bytes)?;
+        // The validation pass beside the decode: the file is read twice at once, not one
+        // after the other (startup waits for these facts). Its error still comes first.
+        let (valid, raw) = std::thread::scope(|scope| {
+            let valid =
+                scope.spawn(|| serde_json::from_slice::<decode::Validate>(&bytes).map(|_| ()));
+            let raw = serde_json::from_slice::<decode::Gameplay<'_>>(&bytes);
+            (valid.join(), raw)
+        });
+        valid.map_err(|_| "gameplay facts validation panicked")??;
+        let raw: decode::Gameplay<'_> = raw?;
         let entries = raw
             .states
             .0

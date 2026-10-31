@@ -16717,10 +16717,11 @@ fn gameplay_tables(
     parallel: bool,
     progress: &Progress,
 ) -> std::result::Result<GameplayTables, String> {
-    let behaviour_json: serde_json::Value = serde_json::from_reader(std::io::BufReader::new(
-        std::fs::File::open(root.join("block-behaviours.json")).map_err(|e| e.to_string())?,
-    ))
-    .map_err(|e| e.to_string())?;
+    // Read whole, then parsed from memory: several times faster than from a reader.
+    let behaviour_bytes =
+        std::fs::read(root.join("block-behaviours.json")).map_err(|e| e.to_string())?;
+    let behaviour_json: serde_json::Value =
+        serde_json::from_slice(&behaviour_bytes).map_err(|e| e.to_string())?;
     let (facts, gameplay_projection) =
         BlockFacts::load_with_projection(root, assets.registry, &behaviour_json)
             .map_err(|e| e.to_string())?;

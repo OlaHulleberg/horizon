@@ -110,8 +110,7 @@ impl Assets {
         }
         let (registry, flags) =
             BlockRegistry::from_facts_json_with_flags(File::open(root.join("facts.json"))?)?;
-        let bundle: Value =
-            serde_json::from_reader(BufReader::new(File::open(root.join("block-tags.json"))?))?;
+        let bundle: Value = serde_json::from_slice(&std::fs::read(root.join("block-tags.json"))?)?;
         let mut definitions = TagDefinitions::default();
         for (name, text) in bundle
             .as_object()

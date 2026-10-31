@@ -75,8 +75,12 @@ impl BlockRegistry {
     pub fn from_facts_json_with_flags(
         reader: impl io::Read,
     ) -> io::Result<(Self, Vec<(bool, bool)>)> {
-        let facts: facts::Facts = serde_json::from_reader(io::BufReader::new(reader))
-            .map_err(|e| invalid(e.to_string()))?;
+        // Read whole, then parsed from memory: serde_json reads a slice several times faster
+        // than a reader, and this table is on the way to the title screen.
+        let mut bytes = Vec::new();
+        io::Read::read_to_end(&mut io::BufReader::new(reader), &mut bytes)?;
+        let facts: facts::Facts =
+            serde_json::from_slice(&bytes).map_err(|e| invalid(e.to_string()))?;
         let flags = facts.states.iter().map(|r| (r.air, r.fluid)).collect();
         let states = facts.states.into_iter().map(|r| r.state).collect();
         Ok((Self::from_states(states, facts.defaults)?, flags))
