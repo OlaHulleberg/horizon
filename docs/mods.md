@@ -79,6 +79,21 @@ template ([modpacks.md](modpacks.md#registries-02-data-driven-blocks-items-and-m
   "item": true }
 ```
 
+A block whose state properties no vanilla block has declares its own with `state_properties`: each property's
+values, the first being the default. Its states are every combination, ordered as vanilla's `StateDefinition` orders
+them (properties by name, the last varying fastest, values as listed), and each copies the template state that
+agrees with it on the properties both have, so a `waterlogged` state keeps the template's water. The template still
+gives the behaviour, sounds and shapes (`shapes` may select by an own property); its own code ignores properties it
+doesn't have, which a native mod drives. `default_state` then names own properties. At most 4,096 states, names and
+values in lowercase letters, digits and `_`:
+
+```json
+{ "template": "minecraft:iron_chain",
+  "state_properties": { "facing": ["north", "east", "south", "west", "up", "down"],
+                        "powered": ["false", "true"], "waterlogged": ["false", "true"] },
+  "default_state": { "facing": "up" } }
+```
+
 An item copies its template's data components, with `max_stack_size` and
 `rarity` changed, and any other 26.3 component set or removed in
 `components`, written as a data component patch is: `minecraft:<type>` sets

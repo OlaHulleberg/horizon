@@ -92,6 +92,8 @@ struct BlockFile {
     shapes: Option<BlockShapes>,
     #[serde(default)]
     default_state: BTreeMap<String, String>,
+    #[serde(default)]
+    state_properties: BTreeMap<String, Vec<String>>,
     #[serde(default = "yes")]
     item: bool,
     #[serde(default)]
@@ -113,6 +115,12 @@ pub struct Block {
     pub shapes: Option<BlockShapes>,
     /// State properties overlaid on the template default.
     pub default_state: BTreeMap<String, String>,
+    /// The block's own state properties and their values (the first is the
+    /// default), in place of the template's: its states are every
+    /// combination, ordered as vanilla's `StateDefinition` (properties by
+    /// name, values as listed). Each state copies the template state that
+    /// agrees on the properties both have. Empty keeps the template's states.
+    pub state_properties: BTreeMap<String, Vec<String>>,
     /// Also add a block item with the same id.
     pub item: bool,
     /// Its item's component patch, as an [`Item`]'s.
@@ -383,6 +391,7 @@ impl Content {
                 properties: file.properties,
                 shapes: file.shapes,
                 default_state: file.default_state,
+                state_properties: file.state_properties,
                 item: file.item,
                 components: file.components,
             });
@@ -491,6 +500,32 @@ fn check_block(file: &BlockFile) -> Result<(), String> {
                 return Err("shape needs at most 16 finite boxes with ordered bounds".into());
             }
         }
+    }
+    let mut states = 1usize;
+    for (name, values) in &file.state_properties {
+        let resource = |s: &str| {
+            !s.is_empty()
+                && s.len() <= 64
+                && s.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+        };
+        let unique: BTreeSet<&String> = values.iter().collect();
+        if !resource(name) || values.is_empty() || unique.len() != values.len() {
+            return Err(format!(
+                "state property {name:?} needs a lowercase name and distinct values"
+            ));
+        }
+        if let Some(v) = values.iter().find(|v| !resource(v)) {
+            return Err(format!(
+                "state property {name}: value {v:?} is not lowercase"
+            ));
+        }
+        states = states.saturating_mul(values.len());
+    }
+    if states > 4096 {
+        return Err(format!(
+            "state_properties make {states} states, more than 4096"
+        ));
     }
     let p = &file.properties;
     let finite = |v: Option<f32>| v.is_none_or(f32::is_finite);
@@ -615,6 +650,7 @@ capabilities = ["registries"]
                 template: "minecraft:iron_block".into(),
                 shapes: None,
                 default_state: BTreeMap::new(),
+                state_properties: BTreeMap::new(),
                 properties: BlockProperties {
                     hardness: Some(4.0),
                     light: Some(3),

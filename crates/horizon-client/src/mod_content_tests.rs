@@ -1463,3 +1463,165 @@ fn shapes_reject_unknown_or_missing_template_values() {
     }
     fs::remove_dir_all(scratch).unwrap();
 }
+
+#[test]
+fn own_state_properties_make_every_combination_from_the_template() {
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-own-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    fs::create_dir_all(&base).unwrap();
+    let facts = r#"{"states":[
+      ["minecraft:lantern",false,true,"Block{minecraft:lantern}[waterlogged=true]",{"id":"minecraft:lantern","properties":{"waterlogged":"true"}}],
+      ["minecraft:lantern",false,false,"Block{minecraft:lantern}[waterlogged=false]",{"id":"minecraft:lantern","properties":{"waterlogged":"false"}}]],
+      "defaults":{"minecraft:lantern":1}}"#;
+    fs::write(base.join("facts.json"), facts).unwrap();
+    fs::write(
+        base.join("gameplay-facts.json"),
+        r#"{"states":[{"item":"minecraft:lantern"},{"item":"minecraft:lantern"}]}"#,
+    )
+    .unwrap();
+    fs::write(base.join("items.json"), r#"{"minecraft:lantern":{}}"#).unwrap();
+    let own = r#""state_properties":{"waterlogged":["false","true"],"facing":["north","east"]}"#;
+    for (declaration, expected) in [
+        (
+            format!(r#"{{"template":"minecraft:lantern",{own}}}"#),
+            Ok(2),
+        ),
+        (
+            format!(
+                r#"{{"template":"minecraft:lantern",{own},"default_state":{{"facing":"east"}}}}"#
+            ),
+            Ok(4),
+        ),
+        (
+            format!(r#"{{"template":"minecraft:lantern",{own},"default_state":{{"axis":"x"}}}}"#),
+            Err("not one of its state_properties"),
+        ),
+        (
+            r#"{"template":"minecraft:lantern","state_properties":{"Facing":["north"]}}"#.into(),
+            Err("lowercase"),
+        ),
+        (
+            r#"{"template":"minecraft:lantern","state_properties":{"facing":["up","up"]}}"#.into(),
+            Err("distinct"),
+        ),
+    ] {
+        let dir = scratch.join("mod");
+        let _ = fs::remove_dir_all(&dir);
+        for (name, text) in [
+            ("horizon-mod.toml", manifest("testmod", "")),
+            ("data/testmod/horizon/block/test.json", declaration.clone()),
+        ] {
+            fs::create_dir_all(dir.join(name).parent().unwrap()).unwrap();
+            fs::write(dir.join(name), text).unwrap();
+        }
+        let package = horizon_mods::Package::read(&dir).unwrap();
+        let mods = match Content::read(&dir, &package.manifest) {
+            Ok(content) => [ContentMod {
+                id: package.manifest.id.clone(),
+                content,
+            }],
+            Err(e) => {
+                let why = expected.expect_err("refused a valid declaration");
+                assert!(e.contains(why), "{e}");
+                continue;
+            }
+        };
+        match (Plan::new(&base, &mods), expected) {
+            (Ok(plan), Ok(default)) => {
+                let mut doc: J = serde_json::from_str(facts).unwrap();
+                plan.json("facts.json", &mut doc).unwrap();
+                assert_eq!(
+                    doc.get("defaults").unwrap().get("testmod:test"),
+                    Some(&J::Num(default.into()))
+                );
+                let Some(J::Arr(rows)) = doc.get("states") else {
+                    panic!("no states")
+                };
+                // facing (north, east) x waterlogged (false, true), the last fastest; each
+                // copies the lantern state with its waterlogged value (the fluid column).
+                assert_eq!(rows.len(), 6);
+                let expect = [
+                    ("north", "false", false),
+                    ("north", "true", true),
+                    ("east", "false", false),
+                    ("east", "true", true),
+                ];
+                for (row, (facing, water, fluid)) in rows[2..].iter().zip(expect) {
+                    let J::Arr(r) = row else { panic!() };
+                    assert_eq!(r[0], J::Str("testmod:test".into()));
+                    assert_eq!(r[2], J::Bool(fluid));
+                    assert_eq!(
+                        r[3],
+                        J::Str(format!(
+                            "Block{{testmod:test}}[facing={facing},waterlogged={water}]"
+                        ))
+                    );
+                    let p = r[4].get("properties").unwrap();
+                    assert_eq!(p.get("facing"), Some(&J::Str(facing.into())));
+                    assert_eq!(p.get("waterlogged"), Some(&J::Str(water.into())));
+                }
+            }
+            (Err(e), Err(why)) => {
+                let e = e.to_string();
+                assert!(e.contains("testmod:test") && e.contains(why), "{e}");
+            }
+            (r, _) => panic!(
+                "unexpected result for {declaration}: {:?}",
+                r.err().map(|e| e.to_string())
+            ),
+        }
+    }
+    fs::remove_dir_all(scratch).unwrap();
+}
+
+#[test]
+#[ignore = "full content root: needs prepared vanilla data"]
+fn own_state_properties_load_through_every_table() {
+    use horizon_world::chunk::BlockState;
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-content-own-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let m = folder_mod(
+        &scratch.join("mod"),
+        &[
+            ("horizon-mod.toml", &manifest("owntest", "")),
+            (
+                "data/owntest/horizon/block/motor.json",
+                r#"{"template":"minecraft:iron_chain",
+                    "state_properties":{"facing":["north","east","south","west","up","down"],
+                                        "powered":["false","true"],"waterlogged":["false","true"]},
+                    "shapes":{"property":"facing","values":{"north":[[0,0,0,1,1,0.5]],"east":[[0.5,0,0,1,1,1]],
+                        "south":[[0,0,0.5,1,1,1]],"west":[[0,0,0,0.5,1,1]],"up":[[0,0.5,0,1,1,1]],"down":[[0,0,0,1,0.5,1]]}}}"#,
+            ),
+        ],
+    );
+    let root = resource_root(&base, &[m], &scratch.join("cache")).unwrap();
+    // Every per-state table checks its state identities against the registry as it loads.
+    let assets = Assets::load(&root).unwrap();
+    let registry = assets.registry;
+    let facts = BlockFacts::load(&root, registry).unwrap();
+    let default = registry.default_state("owntest:motor").unwrap();
+    let props = &registry.state(default).unwrap().properties;
+    assert_eq!(props.get("facing").map(String::as_str), Some("north"));
+    assert_eq!(props.get("powered").map(String::as_str), Some("false"));
+    assert_eq!(props.get("waterlogged").map(String::as_str), Some("false"));
+    assert_eq!(registry.property_values("owntest:motor", "facing").len(), 6);
+    let up = registry
+        .id(&BlockState {
+            name: "owntest:motor".into(),
+            properties: [
+                ("facing", "up"),
+                ("powered", "true"),
+                ("waterlogged", "true"),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect(),
+        })
+        .unwrap();
+    assert_eq!(facts.get(up).outline[0], [0., 0.5, 0., 1., 1., 1.]);
+    fs::remove_dir_all(scratch).unwrap();
+}
