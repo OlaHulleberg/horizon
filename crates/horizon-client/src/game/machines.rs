@@ -259,7 +259,7 @@ impl Containers<'_> {
     /// `Container.canPlaceItem` (+ `canPlaceItemThroughFace` for furnaces).
     fn can_place(&self, view: &View, slot: usize, stack: &ItemStack) -> bool {
         if let Some(c) = &view.container {
-            return c.inputs.contains(&slot);
+            return c.accepts(slot, c.only_when_empty && self.is_empty(view));
         }
         if view.kind == Kind::Crafter {
             return match self.world.block_entities.get(&view.parts[0].0) {
@@ -510,6 +510,12 @@ impl Game<'_> {
     pub(super) fn container_changed(&mut self, pos: Pos) {
         if pos.1 == super::minecarts::CART_KEY_Y {
             return;
+        }
+        if matches!(
+            self.world.block_entities.get(&pos),
+            Some(BlockEntity::Mod(_))
+        ) {
+            self.native_contents_changed([pos.0, pos.1, pos.2]);
         }
         self.chiseled_bookshelf_synced(pos);
         if matches!(
@@ -1376,6 +1382,7 @@ mod mod_container_tests {
                 inputs: vec![0, 1],
                 outputs: vec![2],
                 menu: None,
+                only_when_empty: false,
             })),
         };
         assert_eq!(view.slots_for_face(Some(Direction::Up)), [0]);
@@ -1383,5 +1390,32 @@ mod mod_container_tests {
         assert_eq!(view.slots_for_face(Some(Direction::North)), [1]);
         assert!(view.slots_for_face(Some(Direction::East)).is_empty());
         assert_eq!(view.slots_for_face(None), [0, 1, 2]);
+    }
+
+    /// A container that takes items only while empty refuses a hopper once
+    /// it holds anything, in any slot; the others take them into inputs.
+    #[test]
+    fn only_when_empty_refuses_a_container_holding_anything() {
+        let mut c = ModContainer {
+            slots: 9,
+            inputs: vec![0],
+            ..Default::default()
+        };
+        assert!(c.accepts(0, false) && c.accepts(0, true) && !c.accepts(1, true));
+        c.only_when_empty = true;
+        assert!(c.accepts(0, true));
+        assert!(!c.accepts(0, false));
+    }
+
+    /// Every change a hopper or dropper makes to a container goes through
+    /// `container_changed`, which tells the mods when the block entity is theirs.
+    #[test]
+    fn a_mod_container_changed_from_outside_tells_the_mods() {
+        let src = include_str!("machines.rs");
+        let changed = &src[src.find("pub(super) fn container_changed").unwrap()..];
+        let changed = &changed[..changed.find("\n    }\n").unwrap()];
+        assert!(changed.contains("self.native_contents_changed([pos.0, pos.1, pos.2]);"));
+        let hooks = include_str!("native_hooks.rs");
+        assert!(hooks.contains("pub(super) fn native_contents_changed(&mut self, pos: [i32; 3])"));
     }
 }

@@ -111,7 +111,9 @@ pub struct ModBlockEntity {
 /// (`getSlotsForFace`, by `Direction`: down, up, north, south, west, east),
 /// and the slots hoppers may put into (`canPlaceItemThroughFace`) and take
 /// from (`canTakeItemThroughFace`); and the vanilla menu that shows its
-/// slots when the block is used, if any (`MOD_MENUS`).
+/// slots when the block is used, if any (`MOD_MENUS`). With `only_when_empty`,
+/// hoppers put items in only while every slot is empty (an `IItemHandler`
+/// whose `insertItem` refuses while it holds anything, as Create's depot).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ModContainer {
     pub slots: usize,
@@ -119,6 +121,14 @@ pub struct ModContainer {
     pub inputs: Vec<usize>,
     pub outputs: Vec<usize>,
     pub menu: Option<String>,
+    pub only_when_empty: bool,
+}
+impl ModContainer {
+    /// Whether a hopper may put an item into `slot`, the container being
+    /// `empty` or not (`canPlaceItemThroughFace`).
+    pub fn accepts(&self, slot: usize, empty: bool) -> bool {
+        self.inputs.contains(&slot) && (empty || !self.only_when_empty)
+    }
 }
 /// The vanilla menus a mod container can open, with the slot count each
 /// shows: slot grids, and the furnaces' (input, fuel, result), whose four

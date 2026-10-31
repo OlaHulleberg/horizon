@@ -150,6 +150,14 @@
       "target": "horizon_client::game::native_hooks::Game<'_>::native_block_entity_tick"
     },
     {
+      "name": "contents_changed",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_contents_changed",
+      "neoforge": "ItemStackHandler.onContentsChanged",
+      "side": "server",
+      "cancellable": false
+    },
+    {
       "name": "block_entity_container",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_block_entity_container"

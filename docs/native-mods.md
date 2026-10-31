@@ -256,6 +256,11 @@ blocks from its block at clock time `offset[3]` (`native_parts_seconds()`) and m
 then on, on the GPU, so an item gliding along a belt is uploaded once per change of motion, not per frame. The clock
 wraps every hour of game time. Client-side. Bundles that use them need `"hooks": 45`.
 
+API 46 adds `native_contents_changed(pos)` (NeoForge's `ItemStackHandler.onContentsChanged`): a hopper or dropper
+changed the items of a mod's container, so a block entity that does not tick can react only when it must; and
+`ModContainer::only_when_empty`, for a container hoppers fill only while it holds nothing (Create's depot).
+Server-side. Bundles that use them need `"hooks": 46`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

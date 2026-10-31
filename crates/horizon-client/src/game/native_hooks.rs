@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 46 adds `native_contents_changed` (NeoForge's
+//! `ItemStackHandler.onContentsChanged`): a mod container's items changed
+//! from outside the mod (a hopper, a dropper), and `ModContainer::only_when_empty`.
+//!
 //! API 45 adds parts that glide and item part models (`native_part_glide`,
 //! `native_part_item_model`, `native_parts_seconds` in `native_parts.rs`).
 //!
@@ -214,7 +218,7 @@ pub(super) const MOD_DATA: &str = "horizon:mod_data";
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 45;
+pub(crate) const NATIVE_HOOKS_API: u32 = 46;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -876,6 +880,14 @@ impl Game<'_> {
         container: &mut Option<ModContainer>,
     ) {
         let _ = (block, container);
+    }
+    /// The items of the mod container at `pos` changed from outside the mod
+    /// (a hopper or dropper put or took them): NeoForge's
+    /// `ItemStackHandler.onContentsChanged`, for a mod whose block entity does
+    /// not tick to react only when it must. Not called for the mod's own
+    /// changes. Server-side. API 46.
+    pub(super) fn native_contents_changed(&mut self, pos: [i32; 3]) {
+        let _ = pos;
     }
     /// A server tick of the block entity at `pos`, in vanilla's order among
     /// the others (`Level.tickBlockEntities`), when its `id` is yours: read
