@@ -6,6 +6,9 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 50 adds `native_part_model_tinted` (a posed part model with its tinted faces
+//! coloured).
+//!
 //! API 49 adds `native_update_entity_after_fall_on` (`Block.updateEntityAfterFallOn` for
 //! item entities: a mod's block takes an item that lands on it).
 //!
@@ -225,7 +228,7 @@ pub(super) const MOD_DATA: &str = "horizon:mod_data";
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 49;
+pub(crate) const NATIVE_HOOKS_API: u32 = 50;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.

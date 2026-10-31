@@ -17,7 +17,7 @@ pub(super) struct NativeParts {
     keys: FxHashMap<u64, (u32, u32)>,
     owners: Vec<Vec<u64>>,
     by_state: FxHashMap<u32, u32>,
-    by_posed_state: FxHashMap<(u32, [u32; 16]), u32>,
+    by_posed_state: FxHashMap<(u32, [u32; 16], u32), u32>,
     by_item: FxHashMap<(String, [u32; 16]), u32>,
     sections: FxHashMap<(i32, i32, i32), Vec<u64>>,
 }
@@ -147,13 +147,37 @@ impl Game<'_> {
         state: BlockStateId,
         pose: glam::Mat4,
     ) -> Option<u32> {
+        self.native_part_model_tinted(state, pose, None)
+    }
+
+    /// [`Self::native_part_model_posed`] with the model's tinted faces (those with a tint
+    /// index) multiplied by `tint` (`0xRRGGBB`), as a block colour tints them: a fluid's
+    /// still texture in its colour (water's `0x3F76E4`). None draws them untinted. API 50.
+    pub(super) fn native_part_model_tinted(
+        &mut self,
+        state: BlockStateId,
+        pose: glam::Mat4,
+        tint: Option<u32>,
+    ) -> Option<u32> {
         self.renderer.as_ref()?;
-        let cache = (state.0, pose.to_cols_array().map(f32::to_bits));
+        let cache = (
+            state.0,
+            pose.to_cols_array().map(f32::to_bits),
+            tint.map_or(u32::MAX, |t| t & 0xFF_FFFF),
+        );
         if let Some(&model) = self.native_parts.by_posed_state.get(&cache) {
             return Some(model);
         }
         let mut vertices = Vec::new();
-        self.tinted_block_model_vertices(state, 0, pose, |_| 0, true, |_| None, &mut vertices);
+        self.tinted_block_model_vertices(
+            state,
+            0,
+            pose,
+            |_| 0,
+            true,
+            |index| (index >= 0).then_some(tint).flatten(),
+            &mut vertices,
+        );
         if vertices.is_empty() {
             return None;
         }

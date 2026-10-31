@@ -273,6 +273,10 @@ API 49 adds `native_update_entity_after_fall_on(pos, stack, at)`: an item entity
 (`Block.updateEntityAfterFallOn`); a mod's block takes some or all of it by lowering the stack's count (Create's belts
 and depots). Called each tick the item is on the ground. Server-side. Bundles that use it need `"hooks": 49`.
 
+API 50 adds `native_part_model_tinted(state, pose, tint)`: `native_part_model_posed` with the model's tinted faces
+(those with a tint index) coloured `0xRRGGBB`, as a block colour tints them: a fluid's still texture in its colour (Create's
+tanks). Client-side. Bundles that use it need `"hooks": 50`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
