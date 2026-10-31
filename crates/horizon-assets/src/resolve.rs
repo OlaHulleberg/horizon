@@ -31,6 +31,10 @@ impl ResolvedCuboidModel {
     pub fn uses_item_generator(&self) -> bool {
         self.generated
     }
+    /// The `neoforge:obj` mesh of the model's geometry, if it is one.
+    pub fn mesh(&self) -> Option<&crate::obj::Mesh> {
+        self.geometry.as_ref().and_then(|m| m.mesh.as_deref())
+    }
     pub fn elements(&self) -> &[Option<Element>] {
         self.geometry
             .as_ref()
@@ -74,6 +78,8 @@ impl ModelLibrary {
             )]),
             elements: None,
             display: None,
+            obj: None,
+            mesh: None,
         }
     }
     pub fn new(models: BTreeMap<String, CuboidModel>) -> Result<Self> {
@@ -132,7 +138,7 @@ impl ModelLibrary {
             .unwrap_or(GuiLight::Side);
         let geometry = chain
             .iter()
-            .find(|m| m.elements.is_some())
+            .find(|m| m.elements.is_some() || m.mesh.is_some())
             .map(|m| Arc::clone(m));
         let generated = chain
             .iter()
@@ -224,6 +230,8 @@ pub fn missing_model() -> CuboidModel {
         parent: None,
         ambient_occlusion: None,
         gui_light: None,
+        obj: None,
+        mesh: None,
         elements: Some(vec![Some(Element {
             from: [0.0; 3],
             to: [16.0; 3],

@@ -64,6 +64,9 @@ pub struct CuboidModel {
     pub textures: BTreeMap<String, TextureSlot>,
     pub elements: Option<Vec<Option<Element>>>,
     pub display: Option<ItemTransforms>,
+    /// A `neoforge:obj` model's mesh file (`obj.rs`), read by the model library into `mesh`.
+    pub obj: Option<crate::obj::ObjReference>,
+    pub mesh: Option<std::sync::Arc<crate::obj::Mesh>>,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct Element {
@@ -185,6 +188,23 @@ impl CuboidModel {
             .get("display")
             .map(|r| ItemTransforms::decode(r))
             .transpose()?;
+        // NeoForge's OBJ loader (mods' block models): the mesh file and its texture flip.
+        let loader = obj.get("loader").map(|r| primitive_string(r)).transpose()?;
+        let obj_model = match loader.as_deref() {
+            Some("neoforge:obj" | "forge:obj") => Some(crate::obj::ObjReference {
+                model: obj
+                    .get("model")
+                    .map(|r| primitive_string(r))
+                    .transpose()?
+                    .ok_or_else(|| error("OBJ model without a model file"))?,
+                flip_v: obj
+                    .get("flip_v")
+                    .map(|r| boolean(r))
+                    .transpose()?
+                    .unwrap_or(false),
+            }),
+            _ => None,
+        };
         Ok(Self {
             parent,
             ambient_occlusion,
@@ -192,6 +212,8 @@ impl CuboidModel {
             textures,
             elements,
             display,
+            obj: obj_model,
+            mesh: None,
         })
     }
 }

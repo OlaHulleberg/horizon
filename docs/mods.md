@@ -79,6 +79,12 @@ template ([modpacks.md](modpacks.md#registries-02-data-driven-blocks-items-and-m
   "item": true }
 ```
 
+A block or item model may be a Wavefront OBJ mesh, as NeoForge's OBJ loader reads it: `"loader": "neoforge:obj"`,
+`"model": "<namespace>:models/<path>.obj"` and `"flip_v": true` when its texture coordinates count from the bottom.
+The mesh is in block units (0 to 1 across the block); each material of the `.mtl` files it names (`mtllib`) maps to
+a texture slot of the model with `map_Kd #slot`. Triangles and quads are drawn as they are, larger faces as fans; a
+blockstate variant turns the mesh as it turns any model. Nothing culls an OBJ face.
+
 `properties.render_shape` says how the block draws (vanilla's `RenderShape`): `model`, its block model in the chunk
 mesh (the template's default for most blocks); `entityblock_animated`, not in the chunk mesh, for a block a native mod
 draws as animated parts; `invisible`, not drawn at all.

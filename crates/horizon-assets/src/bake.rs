@@ -211,7 +211,48 @@ fn bake_elements(
             )?);
         }
     }
+    if let Some(mesh) = model.mesh() {
+        output.extend(bake_mesh(model, mesh, transform)?);
+    }
     Ok(output)
+}
+/// A `neoforge:obj` mesh's faces as quads (a triangle repeats its last corner), turned as the
+/// blockstate variant turns the model. Nothing culls them; they face the way their corners do.
+fn bake_mesh(
+    model: &ResolvedCuboidModel,
+    mesh: &crate::obj::Mesh,
+    transform: BlockModelTransform,
+) -> Result<Vec<ModelQuad>> {
+    let mut out = Vec::with_capacity(mesh.faces.len());
+    for face in &mesh.faces {
+        let n = face.positions.len();
+        if !(3..=4).contains(&n) {
+            continue;
+        }
+        let corner = |i: usize| i.min(n - 1);
+        let positions: [[f32; 3]; 4] =
+            std::array::from_fn(|i| transform.position(face.positions[corner(i)]));
+        let uv: [[f32; 2]; 4] = std::array::from_fn(|i| face.uvs[corner(i)]);
+        let material = model.material(&face.slot)?.cloned().unwrap_or(Material {
+            sprite: if face.slot.contains(':') {
+                face.slot.clone()
+            } else {
+                "minecraft:missingno".to_owned()
+            },
+            force_translucent: false,
+        });
+        out.push(ModelQuad {
+            facing: facing(&positions).unwrap_or(Direction::Up),
+            positions,
+            uv,
+            cull: None,
+            material,
+            tint_index: -1,
+            shade_direction_override: None,
+            light_emission: 0,
+        });
+    }
+    Ok(out)
 }
 /// `FaceBakery.bakeQuad` for a quad with explicit corners and unit-atlas UVs
 /// (`uv` in 0..16 texels), as `ItemModelGenerator` builds its layers.
@@ -313,4 +354,52 @@ fn bake_face(
         shade_direction_override: element.shade_direction_override,
         light_emission: element.light_emission,
     })
+}
+
+#[cfg(test)]
+mod obj_tests {
+    use super::*;
+    use crate::{
+        obj::{Mesh, MeshFace},
+        resolve::ModelLibrary,
+    };
+    use std::{collections::BTreeMap, sync::Arc};
+
+    #[test]
+    fn an_obj_mesh_bakes_to_quads_turned_as_its_variant() {
+        let mut model = CuboidModel::from_json(
+            r##"{"loader":"neoforge:obj","model":"testmod:models/block/x.obj","flip_v":true,
+                "textures":{"planks":"block/oak_planks"}}"##,
+        )
+        .unwrap();
+        assert_eq!(model.obj.as_ref().map(|o| o.flip_v), Some(true));
+        // A triangle on the north half of the floor, pointing up.
+        model.mesh = Some(Arc::new(Mesh {
+            faces: vec![MeshFace {
+                positions: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.5], [1.0, 0.0, 0.0]],
+                uvs: vec![[0.0, 0.0], [0.0, 1.0], [1.0, 0.0]],
+                slot: "planks".into(),
+            }],
+        }));
+        let library =
+            ModelLibrary::new(BTreeMap::from([("testmod:block/x".to_owned(), model)])).unwrap();
+        let resolved = library.resolve("testmod:block/x").unwrap();
+        let quads =
+            bake_block_model(&resolved, BlockModelTransform::new([0, 0, 0], false)).unwrap();
+        assert_eq!(quads.len(), 1);
+        assert_eq!(quads[0].facing, Direction::Up);
+        assert_eq!(
+            quads[0].positions[3], quads[0].positions[2],
+            "a triangle repeats its corner"
+        );
+        assert_eq!(quads[0].material.sprite, "minecraft:block/oak_planks");
+        // y 180: the triangle moves to the south half.
+        let turned =
+            bake_block_model(&resolved, BlockModelTransform::new([0, 2, 0], false)).unwrap();
+        assert!(
+            turned[0].positions.iter().all(|p| p[2] >= 0.5 - 1e-6),
+            "{:?}",
+            turned[0].positions
+        );
+    }
 }

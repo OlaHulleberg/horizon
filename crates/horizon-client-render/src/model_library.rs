@@ -3,6 +3,39 @@ use crate::Result;
 use horizon_assets::{model::CuboidModel, resolve::ModelLibrary};
 use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
 
+/// A `neoforge:obj` model with its mesh read (`horizon_assets::obj`): the OBJ file named in
+/// the model, and the materials of the MTL files it names beside it. A file that doesn't read
+/// leaves the model without geometry, logged.
+fn with_mesh(root: &Path, mut model: CuboidModel) -> CuboidModel {
+    use horizon_assets::obj::{parse_mtl, parse_obj};
+    let Some(reference) = model.obj.clone() else {
+        return model;
+    };
+    let read = || -> std::result::Result<horizon_assets::obj::Mesh, String> {
+        let (namespace, path) = reference
+            .model
+            .split_once(':')
+            .unwrap_or(("minecraft", reference.model.as_str()));
+        let file = root.join("assets").join(namespace).join(path);
+        let text = fs::read_to_string(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        let mut materials = Vec::new();
+        for line in text.lines() {
+            if let Some(name) = line.strip_prefix("mtllib ") {
+                let mtl = file.with_file_name(name.trim());
+                if let Ok(t) = fs::read_to_string(&mtl) {
+                    materials.extend(parse_mtl(&t));
+                }
+            }
+        }
+        parse_obj(&text, &materials, reference.flip_v).map_err(|e| format!("{e:?}"))
+    };
+    match read() {
+        Ok(mesh) => model.mesh = Some(Arc::new(mesh)),
+        Err(e) => log::warn!("Horizon: OBJ model {} not read: {e}", reference.model),
+    }
+    model
+}
+
 #[derive(Default)]
 pub struct ParsedModels {
     models: BTreeMap<String, Arc<CuboidModel>>,
@@ -45,7 +78,8 @@ impl ParsedModels {
         }
         let parsed = crate::par::par_map(&files, |(_, path)| {
             let text = fs::read_to_string(path).ok()?;
-            CuboidModel::from_json(&text).ok().map(Arc::new)
+            let model = CuboidModel::from_json(&text).ok()?;
+            Some(Arc::new(with_mesh(root, model)))
         });
         let models = files
             .into_iter()
@@ -92,7 +126,7 @@ impl ParsedModels {
                         let text = fs::read_to_string(
                             root.join(format!("assets/{namespace}/models/{path}.json")),
                         )?;
-                        Ok(CuboidModel::from_json(&text)?)
+                        Ok(with_mesh(root, CuboidModel::from_json(&text)?))
                     };
                     match read() {
                         Ok(model) => Arc::new(model),
