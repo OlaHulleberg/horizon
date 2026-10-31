@@ -238,6 +238,13 @@ uploaded again only when it is set to something else or its block's light change
 `properties.render_shape` to `entityblock_animated`, so its model leaves the chunk mesh. Client-side (the window's
 `Game`); nothing on a server. Bundles that use them need `"hooks": 42`.
 
+API 43 adds a mod's own data saved with a chunk, NeoForge's `ChunkDataEvent.Save`: `native_chunk_data_save(dimension,
+chunk, data)` is asked each time a server chunk is saved, and a mod puts its compound in `data` under its id (vanilla
+never reads the `horizon:mod_data` root key it is kept in, and a world opened without the mod keeps it as it was).
+Inside `native_chunk_load`, `Game::native_chunk_data(chunk, mod_id)` reads it back. A mod that keeps typed state in
+memory (settings of its machines) writes NBT only then; after changing it, `native_mark_chunk_unsaved(dimension,
+chunk)` makes the chunk save. Server-side. Bundles that use them need `"hooks": 43`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

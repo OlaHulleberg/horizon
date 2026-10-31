@@ -37,6 +37,14 @@
       "cancellable": false
     },
     {
+      "name": "chunk_data_save",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_chunk_data_save",
+      "neoforge": "ChunkDataEvent.Save",
+      "side": "server",
+      "cancellable": false
+    },
+    {
       "name": "level_tick_pre",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_level_tick_pre"

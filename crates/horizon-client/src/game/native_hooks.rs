@@ -6,6 +6,11 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 43 adds native mods' own data saved with a chunk
+//! (`native_chunk_data_save`, NeoForge's `ChunkDataEvent.Save`; read back
+//! with `native_chunk_data` inside `native_chunk_load`), and
+//! `native_mark_chunk_unsaved`.
+//!
 //! API 42 adds animated parts drawn by the renderer (`native_part_model`,
 //! `native_part_set`, `native_part_clear`, `native_parts_clear_all` in
 //! `native_parts.rs`), and `properties.render_shape` for content blocks.
@@ -196,10 +201,14 @@ use winit::{event::MouseButton, keyboard::KeyCode};
 /// yet.
 pub(super) use horizon_world::level::flags;
 
+/// The chunk root key holding native mods' own data (`native_chunk_data_save`):
+/// a compound with one entry per mod, by mod id.
+pub(super) const MOD_DATA: &str = "horizon:mod_data";
+
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 42;
+pub(crate) const NATIVE_HOOKS_API: u32 = 43;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -693,6 +702,22 @@ impl Game<'_> {
     /// column held. Server-side. API 41.
     pub(super) fn native_chunk_unload(&mut self, dimension: &str, chunk: &Chunk) {
         let _ = (dimension, chunk);
+    }
+    /// The chunk `chunk` (its x and z) of the authoritative server level
+    /// `dimension` is being saved: NeoForge's `ChunkDataEvent.Save`. Put your
+    /// mod's data for it in `data` under your mod id (an entry you leave out is
+    /// removed; others' entries are theirs), as a compound of your own: a mod
+    /// that keeps typed state in memory writes NBT only here. Read it back with
+    /// `native_chunk_data` when the chunk loads (`native_chunk_load`). A chunk
+    /// is saved when it changed: call `native_mark_chunk_unsaved` after changing
+    /// your data. Server-side. API 43.
+    pub(super) fn native_chunk_data_save(
+        &self,
+        dimension: &str,
+        chunk: [i32; 2],
+        data: &mut Compound,
+    ) {
+        let _ = (dimension, chunk, data);
     }
     /// Before an authoritative server level's tick pass. `dimension` is its ID.
     pub(super) fn native_level_tick_pre(&mut self, dimension: &str) {
@@ -1513,6 +1538,33 @@ impl Game<'_> {
         for chunk in unloaded {
             self.native_chunk_unload(dimension, chunk);
         }
+    }
+    /// Mod `mod_id`'s data saved with `chunk` (`native_chunk_data_save`), for
+    /// `native_chunk_load` to read: None when it saved none. API 43.
+    pub(super) fn native_chunk_data<'c>(chunk: &'c Chunk, mod_id: &str) -> Option<&'c Compound> {
+        let root = &chunk.saved.as_deref()?.root;
+        let Some(horizon_world::nbt::Tag::Compound(mods)) = root.get(&MOD_DATA.into()) else {
+            return None;
+        };
+        match mods.get(&mod_id.into()) {
+            Some(horizon_world::nbt::Tag::Compound(c)) => Some(c),
+            _ => None,
+        }
+    }
+    /// Marks chunk `chunk` (its x and z) of server level `dimension` as changed,
+    /// so it is saved (and `native_chunk_data_save` asked) with the next save.
+    /// False off an authoritative server, for another level than the one in
+    /// place (call it from that level's tick hooks), or a chunk not loaded.
+    /// API 43.
+    pub(super) fn native_mark_chunk_unsaved(&mut self, dimension: &str, chunk: [i32; 2]) -> bool {
+        if (self.serving.is_none() && self.options.dedicated.is_none())
+            || dimension != self.dim.id()
+            || !self.world.chunks.contains_key(&(chunk[0], chunk[1]))
+        {
+            return false;
+        }
+        self.world.modified.insert((chunk[0], chunk[1]));
+        true
     }
     pub(super) fn native_playing(&self) -> bool {
         self.screen == Screen::Playing
@@ -2505,6 +2557,60 @@ mod tests {
         assert!(take < gate, "the queue is emptied before the server check");
         assert!(events.contains("self.native_chunk_load(dimension, &chunk)"));
         assert!(events.contains("self.native_chunk_unload(dimension, chunk)"));
+    }
+
+    #[test]
+    fn mods_chunk_data_survives_a_save_and_a_load() {
+        use horizon_world::nbt::{Compound, Tag};
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.local/horizon-client")
+            .join(horizon_core::VANILLA_VERSION);
+        if !root.join("facts.json").exists() {
+            return;
+        }
+        let assets = horizon_client::assets::Assets::load(&root).unwrap();
+        let biomes = horizon_client::biome::Biomes::load(&root).unwrap();
+        let mut chunk = horizon_client::chunk::Chunk::empty(3, -4);
+        let mut extras = horizon_client::save::ChunkExtras::default();
+        let mine: Compound = [("speeds".into(), Tag::IntArray(vec![1, 64, 2, 16]))]
+            .into_iter()
+            .collect();
+        let mods: Compound = [("testmod".into(), Tag::Compound(mine.clone()))]
+            .into_iter()
+            .collect();
+        extras
+            .root
+            .insert(super::MOD_DATA.into(), Tag::Compound(mods));
+        chunk.saved = Some(std::sync::Arc::new(extras));
+        let saved = horizon_client::save::encode(&chunk, assets.registry, &biomes);
+        let loaded = horizon_client::save::decode(&saved, assets.registry, &biomes).unwrap();
+        assert_eq!(
+            super::Game::native_chunk_data(&loaded, "testmod"),
+            Some(&mine)
+        );
+        assert_eq!(super::Game::native_chunk_data(&loaded, "othermod"), None);
+    }
+
+    #[test]
+    fn every_chunk_save_asks_the_mods_for_their_data() {
+        // The four save paths (switching levels, saving the level, the closing save, unloading)
+        // all copy chunks through `with_entities`, which attaches the save data.
+        let game = include_str!("../game.rs");
+        let with = &game[game.find("fn with_entities<'a>(").unwrap()..];
+        assert!(with[..with.find("\n    fn ").unwrap()].contains("self.attach_save_data(&mut c);"));
+        let persist = include_str!("persist.rs");
+        let attach = &persist[persist.find("fn attach_save_data").unwrap()..];
+        let attach = &attach[..attach.find("\n    }\n").unwrap()];
+        assert!(attach.contains(
+            "self.native_chunk_data_save(self.dim.id(), [chunk.x, chunk.z], &mut data);"
+        ));
+        for site in [
+            "self.save\n            .save(&chunks",
+            ".save_later(&chunks",
+            ".save_later(&modified",
+        ] {
+            assert!(game.contains(site), "{site}");
+        }
     }
 
     #[test]

@@ -127,6 +127,21 @@ impl Game<'_> {
                 .root
                 .insert("InhabitedTime".into(), horizon_world::nbt::Tag::Long(*t));
         }
+        // Native mods' own data for the chunk (`native_chunk_data_save`), under one root key
+        // that vanilla never reads; a chunk loaded without the mods keeps it as it was.
+        if self.serving.is_some() || self.options.dedicated.is_some() {
+            let key = horizon_world::nbt::JavaString::from(super::native_hooks::MOD_DATA);
+            let mut data = match extras.root.get(&key) {
+                Some(Tag::Compound(c)) => c.clone(),
+                _ => horizon_world::nbt::Compound::new(),
+            };
+            self.native_chunk_data_save(self.dim.id(), [chunk.x, chunk.z], &mut data);
+            if data.is_empty() {
+                extras.root.remove(&key);
+            } else {
+                extras.root.insert(key, Tag::Compound(data));
+            }
+        }
         chunk.saved = Some(Arc::new(extras));
     }
     /// Register a newly resident chunk with the tick scheduler, with the
