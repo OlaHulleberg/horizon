@@ -1569,6 +1569,12 @@ impl Game<'_> {
         self.world.modified.insert((chunk[0], chunk[1]));
         true
     }
+    /// In a world, for the recipe helpers: a window with its player, or a server's own
+    /// `Game` (single player's server thread, a dedicated server), which holds no player
+    /// outside a player's hook (`native_level_tick_post`, `native_server_tick`).
+    fn native_in_world(&self) -> bool {
+        self.player.is_some() || self.serving.is_some() || self.options.dedicated.is_some()
+    }
     pub(super) fn native_playing(&self) -> bool {
         self.screen == Screen::Playing
             && self.title.is_none()
@@ -1817,7 +1823,7 @@ impl Game<'_> {
     /// single-player window included, sees only the content mods' recipes, not
     /// the world's data packs'. API 36.
     pub(super) fn native_recipes_of_type(&self, kind: &str) -> &[CustomRecipe] {
-        if self.player.is_none() {
+        if !self.native_in_world() {
             return &[];
         }
         self.recipes().custom.get(kind).map_or(&[], Vec::as_slice)
@@ -1828,7 +1834,7 @@ impl Game<'_> {
     /// when nothing is left (an unknown or empty tag, for one) and outside a
     /// world. API 36.
     pub(super) fn native_recipe_ingredient(&self, json: &serde_json::Value) -> Option<Ingredient> {
-        self.player.as_ref()?;
+        self.native_in_world().then_some(())?;
         let qualify = |s: &str| match s.strip_prefix('#') {
             Some(tag) => String::from("#") + &qualified(tag),
             None => qualified(s),
@@ -1856,7 +1862,7 @@ impl Game<'_> {
     /// without an `id`, for an item the game doesn't know or a count outside
     /// that, and outside a world. API 36.
     pub(super) fn native_recipe_result(&self, json: &serde_json::Value) -> Option<ItemStack> {
-        self.player.as_ref()?;
+        self.native_in_world().then_some(())?;
         let mut json = json.clone();
         if let Some(id) = json["id"].as_str() {
             json["id"] = qualified(id).into();
@@ -2614,6 +2620,25 @@ mod tests {
         ] {
             assert!(game.contains(site), "{site}");
         }
+    }
+
+    #[test]
+    fn recipe_helpers_work_in_a_server_tick() {
+        // A server's Game holds no player outside a player's hook; the recipe helpers ask
+        // `native_in_world`, which counts the server's own Game as in its world.
+        let hooks = include_str!("native_hooks.rs");
+        for helper in [
+            "fn native_recipes_of_type",
+            "fn native_recipe_ingredient",
+            "fn native_recipe_result",
+        ] {
+            let body = &hooks[hooks.find(helper).unwrap()..];
+            let body = &body[..body.find("\n    }").unwrap()];
+            assert!(body.contains("native_in_world()"), "{helper}");
+            assert!(!body.contains("self.player"), "{helper}");
+        }
+        let in_world = &hooks[hooks.find("fn native_in_world").unwrap()..];
+        assert!(in_world.contains("self.serving.is_some() || self.options.dedicated.is_some()"));
     }
 
     #[test]
