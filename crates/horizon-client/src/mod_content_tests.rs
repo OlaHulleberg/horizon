@@ -1310,6 +1310,12 @@ fn content_shapes_drive_outline_and_collision() {
     )
     .unwrap();
     let collision = CachedCollisionRegistry::from_nbt(&named.tag, registry).unwrap();
+    let (named, _) = nbt::read_named(
+        &fs::read(root.join("occlusion.nbt")).unwrap(),
+        Limits::tables(),
+    )
+    .unwrap();
+    let occlusion = CachedCollisionRegistry::from_nbt(&named.tag, registry).unwrap();
     for axis in ["x", "y", "z"] {
         let state = (0..registry.len())
             .map(|i| BlockStateId(i as u32))
@@ -1320,6 +1326,11 @@ fn content_shapes_drive_outline_and_collision() {
             .unwrap();
         let shape = collision.cached_shape(state).unwrap().unwrap();
         let f = facts.get(state);
+        assert_eq!(
+            occlusion.cached_shape(state).unwrap().unwrap().boxes(),
+            shape.boxes(),
+            "a rod hides only what it covers"
+        );
         assert_eq!(shape.boxes().len(), 1);
         assert_eq!(f.outline.len(), 1);
         assert_eq!(f.outline_edges.len(), 12);
@@ -1353,6 +1364,10 @@ fn content_shapes_drive_outline_and_collision() {
     assert_eq!(
         collision.cached_shape(plain).unwrap().unwrap().boxes(),
         collision.cached_shape(oak).unwrap().unwrap().boxes()
+    );
+    assert_eq!(
+        occlusion.cached_shape(plain).unwrap().unwrap().boxes(),
+        occlusion.cached_shape(oak).unwrap().unwrap().boxes()
     );
     fs::remove_dir_all(scratch).unwrap();
 }

@@ -1611,7 +1611,13 @@ fn tables(base: &Path, plan: &Plan, overlay: &Overlay<'_>) -> Result<()> {
             let (mut named, _) = nbt::read_named(&fs::read(&path)?, Limits::tables())
                 .map_err(|e| format!("{name}: {e}"))?;
             plan.nbt(&mut named.tag);
-            if name == "cached-collision.nbt" || name == "worldgen/blocks/cached-collision.nbt" {
+            // Declared shapes are also the occlusion shapes (`Block.getOcclusionShape` is
+            // the block's shape unless a block says otherwise), so faces next to a block
+            // smaller than its template are drawn.
+            if name == "cached-collision.nbt"
+                || name == "worldgen/blocks/cached-collision.nbt"
+                || name == "occlusion.nbt"
+            {
                 plan.collision_shapes(&mut named.tag)?;
             }
             nbt::write_named(&named, Limits::tables()).map_err(|e| format!("{name}: {e}"))?
