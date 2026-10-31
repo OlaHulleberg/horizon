@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 42 adds animated parts drawn by the renderer (`native_part_model`,
+//! `native_part_set`, `native_part_clear`, `native_parts_clear_all` in
+//! `native_parts.rs`), and `properties.render_shape` for content blocks.
+//!
 //! API 41 adds chunks joining and leaving a server level (`native_chunk_load`,
 //! `native_chunk_unload`: NeoForge's `ChunkEvent.Load` and `.Unload`).
 //!
@@ -195,7 +199,7 @@ pub(super) use horizon_world::level::flags;
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 41;
+pub(crate) const NATIVE_HOOKS_API: u32 = 42;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.

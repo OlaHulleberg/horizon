@@ -174,6 +174,7 @@ mod native_mobs;
 mod native_net;
 mod native_panel;
 mod native_panel_recipes;
+mod native_parts;
 mod native_recipes;
 mod native_server;
 mod native_shaders;
@@ -2333,6 +2334,8 @@ struct Game<'a> {
     native_shaders: native_shaders::NativeShaders,
     /// The native lifecycle bookkeeping.
     native_lifecycle: native_lifecycle::NativeLifecycle,
+    /// Native mods' animated parts (`native_parts.rs`), drawn by the renderer.
+    native_parts: native_parts::NativeParts,
     /// Native mods' messages waiting (`game/native_net.rs`).
     native_net: native_net::NativeNet,
     /// Meshed sections waiting for an upload budget (Horizon settings).
@@ -10947,6 +10950,7 @@ impl Game<'_> {
         self.begin_closing_save(false)
     }
     fn finish_close_world(&mut self) -> Result<()> {
+        self.native_parts_clear_all();
         self.ambience.clear(&mut self.audio);
         // updateLevelInEngines(null): every sound stops; the music manager
         // lets go of its track.
@@ -13388,6 +13392,7 @@ impl Game<'_> {
             return Ok(false);
         };
         let alpha = self.clock.fraction();
+        self.native_parts_frame(alpha as f32);
         // Camera.getCameraEntityPartialTicks: the view, the hand and the
         // player's own model stay smooth while the level is frozen.
         let camera_alpha = self.clock.camera_fraction();
@@ -13756,7 +13761,7 @@ impl Game<'_> {
                 bolts: &bolts,
                 uv: horizon_client::gfx::lightning::white_uv(&self.gui.atlas.font.white()),
             },
-            parts: None,
+            parts: Some(&self.native_parts.scene),
             additive: &additive,
             see_through: &see_through,
             celestial: if self.settings.horizon.sky || title {
@@ -14302,6 +14307,9 @@ impl Game<'_> {
         let (uploads, unloaded) =
             horizon_client::spans::time("streaming", || self.streaming.update(&mut self.world));
         self.streaming.extra.truncate(areas);
+        // Mesh keys count sections from the level's bottom; parts go by `y >> 4`.
+        let bottom = self.world.layout().min_y() >> 4;
+        self.native_parts_relight(uploads.iter().map(|((x, sy, z), _)| (*x, sy + bottom, *z)));
         self.spawn_fresh_chunks();
         if let Some(lod) = &mut self.lod {
             self.lod_observe
@@ -16068,6 +16076,7 @@ impl<'a> Game<'a> {
             panel: Default::default(),
             native_shaders: Default::default(),
             native_lifecycle: Default::default(),
+            native_parts: Default::default(),
             native_net: Default::default(),
             sky_darken_memo: Default::default(),
             persist: Default::default(),

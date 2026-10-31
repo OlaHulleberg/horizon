@@ -229,6 +229,15 @@ generated), in the level's next tick pass, and `native_chunk_unload(dimension, c
 keeps its own state for its blocks (a network of machines) builds it from the columns it hears, so its passive blocks
 need no block entity tick. Server-side only. Bundles that use them need `"hooks": 41`.
 
+API 42 adds animated parts, for machines whose parts turn (shafts, gears): `native_part_model(state)` bakes a block
+state's model once into a part model and returns its handle; `native_part_set(key, model, block, axis, rpm, phase)` shows
+it at a block under the mod's own key, turning about an axis at a speed in RPM from a starting angle, and
+`native_part_clear(key)` hides it. The renderer keeps each model on the GPU and draws all its instances in one call; the
+GPU turns them from the game's clock (stopped while paused), so a turning part costs nothing per frame and an instance is
+uploaded again only when it is set to something else or its block's light changes. A content block drawn this way sets
+`properties.render_shape` to `entityblock_animated`, so its model leaves the chunk mesh. Client-side (the window's
+`Game`); nothing on a server. Bundles that use them need `"hooks": 42`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
