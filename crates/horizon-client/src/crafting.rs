@@ -1207,31 +1207,37 @@ impl Recipes {
         let mut cooking = Vec::new();
         let mut custom: HashMap<String, Vec<CustomRecipe>> = HashMap::new();
         let mut meta = HashMap::new();
-        let json_files = |dir: &Path| -> Result<Vec<PathBuf>> {
-            let mut files: Vec<_> = fs::read_dir(dir)?
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|e| e == "json"))
-                .collect();
+        // `SimpleJsonResourceReloadListener`: every `.json` under the folder, its subfolders
+        // included, named by its path in it without the extension (`milling/wheat`).
+        fn json_files(dir: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>) -> Result<()> {
+            for e in fs::read_dir(dir)?.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    json_files(&p, base, out)?;
+                } else if p.extension().is_some_and(|e| e == "json")
+                    && let Ok(rel) = p.with_extension("").strip_prefix(base)
+                {
+                    out.push((rel.to_string_lossy().replace('\\', "/"), p));
+                }
+            }
+            Ok(())
+        }
+        let listed = |dir: &Path| -> Result<Vec<(String, PathBuf)>> {
+            let mut files = Vec::new();
+            json_files(dir, dir, &mut files)?;
             files.sort();
             Ok(files)
         };
-        let stem = |p: &Path| {
-            p.file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_owned()
-        };
         // Vanilla's recipes by bare name, then content mods' as `<ns>:<name>`.
         let mut sources: Vec<(String, Vec<u8>)> = Vec::new();
-        for p in json_files(&root.join("data/minecraft/recipe"))? {
-            sources.push((stem(&p), fs::read(&p)?));
+        for (name, p) in listed(&root.join("data/minecraft/recipe"))? {
+            sources.push((name, fs::read(&p)?));
         }
         for namespace in crate::mod_content::namespaces(root) {
             let dir = root.join(format!("data/{namespace}/recipe"));
             if dir.is_dir() {
-                for p in json_files(&dir)? {
-                    sources.push((format!("{namespace}:{}", stem(&p)), fs::read(&p)?));
+                for (name, p) in listed(&dir)? {
+                    sources.push((format!("{namespace}:{name}"), fs::read(&p)?));
                 }
             }
         }
@@ -1787,6 +1793,48 @@ mod tests {
         assert_eq!(kind(r#"{"type":"no_namespace"}"#), None);
         assert_eq!(kind(r#"{"type":7}"#), None);
         assert_eq!(kind("{}"), None);
+    }
+    /// Recipes in subfolders load as vanilla's `RecipeManager` loads them, named by their path
+    /// (`mymod:milling/wheat`).
+    #[test]
+    fn recipes_in_subfolders_load_with_their_path() {
+        let root =
+            std::env::temp_dir().join(format!("horizon-nested-recipes-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("data/minecraft/recipe")).unwrap();
+        fs::create_dir_all(root.join("data/mymod/recipe/milling/deep")).unwrap();
+        fs::write(
+            root.join(horizon_items::content_namespaces::MARKER),
+            br#"["mymod"]"#,
+        )
+        .unwrap();
+        let file = |kind: &str| format!(r#"{{"type":"{kind}"}}"#).into_bytes();
+        fs::write(
+            root.join("data/mymod/recipe/milling/wheat.json"),
+            file("mymod:milling"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("data/mymod/recipe/milling/deep/rye.json"),
+            file("mymod:milling"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("data/mymod/recipe/top.json"),
+            file("mymod:milling"),
+        )
+        .unwrap();
+        let items = Items::for_tests(HashMap::new());
+        let recipes = Recipes::load(&root, &items, &PackOverlay::NONE).unwrap();
+        let ids: Vec<&str> = recipes.custom["mymod:milling"]
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            ["mymod:milling/deep/rye", "mymod:milling/wheat", "mymod:top"]
+        );
+        fs::remove_dir_all(root).unwrap();
     }
     /// Recipes of a mod's own types land in `custom` by type, in file order,
     /// with the id the file has; a data pack overrides by id and adds more; a
