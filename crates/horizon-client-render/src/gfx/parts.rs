@@ -21,6 +21,11 @@ pub struct PartInstance {
     /// The rotation axis (0 x, 1 y, 2 z), revolutions per minute (signed: positive turns
     /// counterclockwise looking down the axis), the angle at time 0 in degrees, and 0.
     pub spin: [f32; 4],
+    /// Moved from the block by `offset` (blocks), and from `offset[3]` seconds of the animation
+    /// clock on by `velocity` (blocks a second): an item travelling along a belt moves on the
+    /// GPU, and is set again only when it turns or stops.
+    pub offset: [f32; 4],
+    pub velocity: [f32; 4],
     /// The light at the block, as the entity vertex packs it: sky * 16 in the low byte,
     /// block * 16 in the next.
     pub light: u32,
@@ -203,6 +208,15 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_instance_layout_matches_the_shader() {
+        // entity.wgsl `vs_part`: 7 block, 8 spin, 9 light (at 60), 10 offset (28), 11 velocity (44).
+        assert_eq!(std::mem::size_of::<PartInstance>(), 64);
+        assert_eq!(std::mem::offset_of!(PartInstance, offset), 28);
+        assert_eq!(std::mem::offset_of!(PartInstance, velocity), 44);
+        assert_eq!(std::mem::offset_of!(PartInstance, light), 60);
+    }
 
     #[test]
     fn the_frame_keeps_instance_positions_exact() {

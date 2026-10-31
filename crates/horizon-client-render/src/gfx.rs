@@ -2396,7 +2396,7 @@ impl Renderer {
             bind_group_layouts: &[Some(&entity_bindings), Some(&part_bindings)],
             ..Default::default()
         });
-        let part_attributes = wgpu::vertex_attr_array![7=>Sint32x3, 8=>Float32x4, 9=>Uint8x4];
+        let part_attributes = wgpu::vertex_attr_array![7=>Sint32x3, 8=>Float32x4, 10=>Float32x4, 11=>Float32x4, 9=>Uint8x4];
         let part_vertex = [
             entity_vertex[0].clone(),
             Some(wgpu::VertexBufferLayout {

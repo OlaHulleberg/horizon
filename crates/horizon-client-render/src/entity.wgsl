@@ -165,12 +165,15 @@ fn part_turn(v: vec3<f32>, axis: u32, angle: f32) -> vec3<f32> {
     @location(2) overlay: u32, @location(3) color: vec4<f32>, @location(4) light: vec4<u32>,
     @location(5) normal: vec4<f32>, @location(6) glint_uv: vec2<f32>,
     @location(7) block: vec3<i32>, @location(8) spin: vec4<f32>,
-    @location(9) part_light: vec4<u32>) -> Out {
+    @location(9) part_light: vec4<u32>, @location(10) offset: vec4<f32>,
+    @location(11) velocity: vec4<f32>) -> Out {
     let axis = u32(spin.x);
     let angle = radians(spin.z + spin.y * 6.0 * part_frame.fraction.w);
     let turned = part_turn(position - vec3(0.5), axis, angle) + vec3(0.5);
     let n = vec4(part_turn(normal.xyz, axis, angle), normal.w);
-    let at = vec3<f32>(block - part_frame.block.xyz) - part_frame.fraction.xyz + turned;
+    // An item on a belt: its offset, then its velocity since the time it was set.
+    let moved = offset.xyz + velocity.xyz * max(part_frame.fraction.w - offset.w, 0.0);
+    let at = vec3<f32>(block - part_frame.block.xyz) - part_frame.fraction.xyz + turned + moved;
     return entity_vertex(at, uv, overlay, color, part_light, n);
 }
 struct CloudInfo {

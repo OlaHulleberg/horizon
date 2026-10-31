@@ -17,6 +17,7 @@ pub(super) struct NativeParts {
     keys: FxHashMap<u64, (u32, u32)>,
     owners: Vec<Vec<u64>>,
     by_state: FxHashMap<u32, u32>,
+    by_item: FxHashMap<(String, [u32; 16]), u32>,
     sections: FxHashMap<(i32, i32, i32), Vec<u64>>,
 }
 
@@ -52,6 +53,42 @@ fn part_light(world: &horizon_client::world::World, b: [i32; 3]) -> u32 {
 }
 
 impl NativeParts {
+    /// Shows `instance` of `model` under `key`, moving it if the key is shown: uploaded again
+    /// only if it changed.
+    fn place(&mut self, key: u64, model: u32, instance: PartInstance) {
+        let parts = self;
+        let block = instance.block;
+        if let Some(&(m, i)) = parts.keys.get(&key) {
+            if m == model {
+                let slot = &mut parts.scene.instances[m as usize][i as usize];
+                if *slot != instance {
+                    let moved = section_of(slot.block) != section_of(block);
+                    if moved {
+                        parts.remove(key);
+                    } else {
+                        *slot = instance;
+                        parts.scene.revision[m as usize] += 1;
+                        return;
+                    }
+                } else {
+                    return;
+                }
+            } else {
+                parts.remove(key);
+            }
+        }
+        let list = &mut parts.scene.instances[model as usize];
+        parts.keys.insert(key, (model, list.len() as u32));
+        list.push(instance);
+        parts.owners[model as usize].push(key);
+        parts.scene.revision[model as usize] += 1;
+        parts
+            .sections
+            .entry(section_of(block))
+            .or_default()
+            .push(key);
+    }
+
     fn remove(&mut self, key: u64) -> Option<[i32; 3]> {
         let (model, index) = self.keys.remove(&key)?;
         let list = &mut self.scene.instances[model as usize];
@@ -113,44 +150,76 @@ impl Game<'_> {
         rpm: f32,
         phase: f32,
     ) {
+        self.native_part_glide(key, model, block, axis, rpm, phase, [0.0; 4], [0.0; 3]);
+    }
+
+    /// [`Self::native_part_set`] for a part that also moves: it sits `offset[0..3]` blocks from
+    /// `block` at clock time `offset[3]` (`native_parts_seconds`) and glides at `velocity` blocks
+    /// a second from then on, on the GPU (an item on a belt), so it is uploaded again only when
+    /// its motion changes. Lit at `block`. API 45.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn native_part_glide(
+        &mut self,
+        key: u64,
+        model: u32,
+        block: [i32; 3],
+        axis: u8,
+        rpm: f32,
+        phase: f32,
+        offset: [f32; 4],
+        velocity: [f32; 3],
+    ) {
         let parts = &mut self.native_parts;
-        if model as usize >= parts.scene.models.len() || axis > 2 || !rpm.is_finite() {
+        if model as usize >= parts.scene.models.len()
+            || axis > 2
+            || !rpm.is_finite()
+            || !offset.iter().chain(&velocity).all(|v| v.is_finite())
+        {
             return;
         }
         let instance = PartInstance {
             block,
             spin: [f32::from(axis), rpm, phase, 0.0],
+            offset,
+            velocity: [velocity[0], velocity[1], velocity[2], 0.0],
             light: part_light(&self.world, block),
         };
-        if let Some(&(m, i)) = parts.keys.get(&key) {
-            if m == model {
-                let slot = &mut parts.scene.instances[m as usize][i as usize];
-                if *slot != instance {
-                    let moved = section_of(slot.block) != section_of(block);
-                    if moved {
-                        parts.remove(key);
-                    } else {
-                        *slot = instance;
-                        parts.scene.revision[m as usize] += 1;
-                        return;
-                    }
-                } else {
-                    return;
-                }
-            } else {
-                parts.remove(key);
-            }
+        parts.place(key, model, instance);
+    }
+
+    /// The part model of item `item` as it is drawn in a frame (`ItemDisplayContext.FIXED`,
+    /// the context Create's depots and belts draw items in), placed by `pose` in the part's
+    /// block (0 to 1 across it), baked the first time it is asked for. None for an unknown
+    /// item, or on a `Game` that draws nothing. API 45.
+    pub(super) fn native_part_item_model(&mut self, item: &str, pose: glam::Mat4) -> Option<u32> {
+        self.renderer.as_ref()?;
+        let cache = (item.to_owned(), pose.to_cols_array().map(f32::to_bits));
+        if let Some(&model) = self.native_parts.by_item.get(&cache) {
+            return Some(model);
         }
-        let list = &mut parts.scene.instances[model as usize];
-        parts.keys.insert(key, (model, list.len() as u32));
-        list.push(instance);
-        parts.owners[model as usize].push(key);
-        parts.scene.revision[model as usize] += 1;
-        parts
-            .sections
-            .entry(section_of(block))
-            .or_default()
-            .push(key);
+        self.res.items().get(item)?;
+        let stack = horizon_client::items::ItemStack::new(item, 1);
+        let state = self.resolve_item(
+            &stack,
+            horizon_assets::item_model::DisplayContext::Fixed,
+            None,
+            0,
+        );
+        let mut vertices = Vec::new();
+        self.submit_item_world(&state, pose, 0, &mut vertices);
+        if vertices.is_empty() {
+            return None;
+        }
+        let model = self.native_parts.scene.add_model(vertices);
+        self.native_parts.owners.push(Vec::new());
+        self.native_parts.by_item.insert(cache, model);
+        Some(model)
+    }
+
+    /// The parts' clock in seconds, as the GPU reads it for this frame (the time base of
+    /// `native_part_glide`'s offset). API 45.
+    pub(super) fn native_parts_seconds(&self) -> f32 {
+        self.native_parts.scene.seconds
     }
 
     /// Hides the part under `key`. API 42.
@@ -213,6 +282,34 @@ mod tests {
         parts.scene.add_model(vec![bytemuck::Zeroable::zeroed(); 4]);
         parts.owners.push(Vec::new());
         parts
+    }
+
+    #[test]
+    fn a_glide_is_uploaded_once_until_its_motion_changes() {
+        let mut parts = scene_with_model();
+        let glide = PartInstance {
+            block: [3, 64, 3],
+            offset: [0.5, 0.1, 0.0, 12.0],
+            velocity: [0.0, 0.0, 0.25, 0.0],
+            ..Default::default()
+        };
+        parts.place(7, 0, glide);
+        let shown = parts.scene.revision[0];
+        parts.place(7, 0, glide);
+        assert_eq!(
+            parts.scene.revision[0], shown,
+            "the GPU moves it, not an upload"
+        );
+        parts.place(
+            7,
+            0,
+            PartInstance {
+                velocity: [0.0; 4],
+                ..glide
+            },
+        );
+        assert!(parts.scene.revision[0] > shown, "a stop is uploaded");
+        assert_eq!(parts.scene.instances[0].len(), 1);
     }
 
     fn put(parts: &mut NativeParts, key: u64, block: [i32; 3]) {

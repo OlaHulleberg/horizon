@@ -6,6 +6,9 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 45 adds parts that glide and item part models (`native_part_glide`,
+//! `native_part_item_model`, `native_parts_seconds` in `native_parts.rs`).
+//!
 //! API 44 adds the flow of a fluid at a block (`native_fluid_flow` in
 //! `native_fluids.rs`).
 //!
@@ -211,7 +214,7 @@ pub(super) const MOD_DATA: &str = "horizon:mod_data";
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 44;
+pub(crate) const NATIVE_HOOKS_API: u32 = 45;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.

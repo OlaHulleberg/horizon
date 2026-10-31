@@ -249,6 +249,13 @@ API 44 adds `native_fluid_flow(dimension, pos)`: the flow of the fluid at a bloc
 gives it (a horizontal unit vector downstream, -1 in y where it falls, zero for still water or none), for machines a
 current turns. Server-side, for the level in place. Bundles that use it need `"hooks": 44`.
 
+API 45 adds items and moving parts: `native_part_item_model(item, pose)` bakes an item as it is drawn in a frame
+(`ItemDisplayContext.FIXED`), placed by `pose` in the block (the item is centred on 0, so translate it by 0.5), into a
+part model; `native_part_glide(key, model, block, axis, rpm, phase, offset, velocity)` shows a part that sits `offset`
+blocks from its block at clock time `offset[3]` (`native_parts_seconds()`) and moves at `velocity` blocks a second from
+then on, on the GPU, so an item gliding along a belt is uploaded once per change of motion, not per frame. The clock
+wraps every hour of game time. Client-side. Bundles that use them need `"hooks": 45`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
