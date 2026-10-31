@@ -1014,6 +1014,18 @@ impl Behaviours {
     ) -> i32 {
         self.sim(level, ticks).best_neighbor_signal(pos)
     }
+    /// `SignalGetter.getSignal(pos, direction)`: what the block at `pos` gives toward a block
+    /// reading it in `direction` (a conductor, the strongest direct signal into it), as a
+    /// diode reads its input.
+    pub fn signal<L: LevelAccess + ?Sized>(
+        &self,
+        level: &mut L,
+        ticks: &mut Ticks,
+        pos: BlockPos,
+        direction: Direction,
+    ) -> i32 {
+        self.sim(level, ticks).signal(pos, direction)
+    }
     /// `BlockState.onProjectileHit` of a target block (`TargetBlock`) hit by
     /// a projectile at `location` on the face with normal `face`; `arrow`
     /// for an `AbstractArrow`. Returns the output strength, or None when the

@@ -1900,6 +1900,10 @@ fn a_level_can_answer_for_a_blocks_signal() {
         .insert(source, (9, 0, Some(Direction::Down)));
     assert_eq!(read(&mut w, above), 9);
     assert_eq!(read(&mut w, beside), 0);
+    // `getSignal` toward one direction, as a diode reads its input.
+    let toward = |w: &mut World, d| w.f.behaviours.signal(&mut w.level, &mut w.ticks, source, d);
+    assert_eq!(toward(&mut w, Direction::Down), 9);
+    assert_eq!(toward(&mut w, Direction::Up), 0);
 
     // Vanilla's sources go through the same answer untouched.
     w.level.signals.clear();
