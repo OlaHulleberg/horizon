@@ -29,6 +29,28 @@ fn vertex_light(packed: u8) -> u32 {
     (u32::from(packed >> 4) * 16) | ((u32::from(packed & 15) * 16) << 8)
 }
 
+/// A part's light: the brightest sky and block light of its block and the six beside it. A part
+/// usually reaches out of its block (a shaft's end, a wheel's paddles), and the light stored
+/// inside an opaque block is none.
+fn part_light(world: &horizon_client::world::World, b: [i32; 3]) -> u32 {
+    let mut sky = 0u8;
+    let mut block = 0u8;
+    for o in [
+        [0, 0, 0],
+        [1, 0, 0],
+        [-1, 0, 0],
+        [0, 1, 0],
+        [0, -1, 0],
+        [0, 0, 1],
+        [0, 0, -1],
+    ] {
+        let packed = world.light(b[0] + o[0], b[1] + o[1], b[2] + o[2]);
+        sky = sky.max(packed >> 4);
+        block = block.max(packed & 15);
+    }
+    vertex_light(sky << 4 | block)
+}
+
 impl NativeParts {
     fn remove(&mut self, key: u64) -> Option<[i32; 3]> {
         let (model, index) = self.keys.remove(&key)?;
@@ -81,7 +103,7 @@ impl Game<'_> {
     /// Shows part `model` at `block` under the mod's `key` (a key already shown moves), turning
     /// about `axis` (0 x, 1 y, 2 z) at `rpm` (positive counterclockwise looking down the axis)
     /// from `phase` degrees at time 0. Lit by the world's light at `block`, kept up to date as
-    /// the block's section changes. API 42.
+    /// the block's section changes: the brightest of its block and the six beside it. API 42.
     pub(super) fn native_part_set(
         &mut self,
         key: u64,
@@ -98,7 +120,7 @@ impl Game<'_> {
         let instance = PartInstance {
             block,
             spin: [f32::from(axis), rpm, phase, 0.0],
-            light: vertex_light(self.world.light(block[0], block[1], block[2])),
+            light: part_light(&self.world, block),
         };
         if let Some(&(m, i)) = parts.keys.get(&key) {
             if m == model {
@@ -172,11 +194,7 @@ impl Game<'_> {
                     continue;
                 };
                 let slot = &self.native_parts.scene.instances[model as usize][index as usize];
-                let light = vertex_light(self.world.light(
-                    slot.block[0],
-                    slot.block[1],
-                    slot.block[2],
-                ));
+                let light = part_light(&self.world, slot.block);
                 if slot.light != light {
                     self.native_parts.scene.instances[model as usize][index as usize].light = light;
                     self.native_parts.scene.revision[model as usize] += 1;
