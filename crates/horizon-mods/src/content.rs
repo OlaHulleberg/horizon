@@ -73,6 +73,19 @@ pub struct BlockProperties {
     pub map_color: Option<u8>,
     /// A vanilla block whose sounds this block uses.
     pub sounds: Option<String>,
+    /// How the block draws (`BlockBehaviour.getRenderShape`): `model` (its block model,
+    /// in the chunk mesh), `entityblock_animated` (drawn elsewhere: a native mod's
+    /// animated parts) or `invisible` (not drawn).
+    pub render_shape: Option<RenderShape>,
+}
+
+/// A block's `RenderShape`.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderShape {
+    Model,
+    EntityblockAnimated,
+    Invisible,
 }
 
 /// Per-state outline and collision boxes, selected by one state property.

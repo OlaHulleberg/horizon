@@ -1625,3 +1625,43 @@ fn own_state_properties_load_through_every_table() {
     assert_eq!(facts.get(up).outline[0], [0., 0.5, 0., 1., 1., 1.]);
     fs::remove_dir_all(scratch).unwrap();
 }
+
+#[test]
+fn render_shape_moves_a_block_out_of_the_chunk_mesh() {
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-shape-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    fs::create_dir_all(&base).unwrap();
+    let facts = r#"{"states":[["minecraft:stone",false,false,"Block{minecraft:stone}",{"id":"minecraft:stone"}]],
+      "defaults":{"minecraft:stone":0}}"#;
+    fs::write(base.join("facts.json"), facts).unwrap();
+    let gameplay = r#"{"states":[{"item":"minecraft:stone","render_shape":"MODEL"}]}"#;
+    fs::write(base.join("gameplay-facts.json"), gameplay).unwrap();
+    fs::write(base.join("items.json"), r#"{"minecraft:stone":{}}"#).unwrap();
+    for (shape, expected) in [
+        ("entityblock_animated", "ENTITYBLOCK_ANIMATED"),
+        ("invisible", "INVISIBLE"),
+        ("model", "MODEL"),
+    ] {
+        let declaration = format!(
+            r#"{{"template":"minecraft:stone","properties":{{"render_shape":"{shape}"}}}}"#
+        );
+        let m = folder_mod(
+            &scratch.join(format!("mod-{shape}")),
+            &[
+                ("horizon-mod.toml", &manifest("testmod", "")),
+                ("data/testmod/horizon/block/part.json", &declaration),
+            ],
+        );
+        let mods = [m];
+        let plan = Plan::new(&base, &mods).unwrap();
+        let mut doc: J = serde_json::from_str(gameplay).unwrap();
+        plan.json("gameplay-facts.json", &mut doc).unwrap();
+        let Some(J::Arr(rows)) = doc.get("states") else {
+            panic!("no states")
+        };
+        assert_eq!(rows[1].get("render_shape"), Some(&J::Str(expected.into())));
+        assert_eq!(rows[0].get("render_shape"), Some(&J::Str("MODEL".into())));
+    }
+    fs::remove_dir_all(scratch).unwrap();
+}

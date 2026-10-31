@@ -79,6 +79,10 @@ template ([modpacks.md](modpacks.md#registries-02-data-driven-blocks-items-and-m
   "item": true }
 ```
 
+`properties.render_shape` says how the block draws (vanilla's `RenderShape`): `model`, its block model in the chunk
+mesh (the template's default for most blocks); `entityblock_animated`, not in the chunk mesh, for a block a native mod
+draws as animated parts; `invisible`, not drawn at all.
+
 A block whose state properties no vanilla block has declares its own with `state_properties`: each property's
 values, the first being the default. Its states are every combination, ordered as vanilla's `StateDefinition` orders
 them (properties by name, the last varying fastest, values as listed), and each copies the template state that

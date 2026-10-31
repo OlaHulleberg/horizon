@@ -879,6 +879,15 @@ impl<'a> Plan<'a> {
         if let Some(s) = &p.sounds {
             row.set("sound", self.sounds[s].clone());
         }
+        if let Some(shape) = p.render_shape {
+            use horizon_mods::content::RenderShape;
+            let shape = match shape {
+                RenderShape::Model => "MODEL",
+                RenderShape::EntityblockAnimated => "ENTITYBLOCK_ANIMATED",
+                RenderShape::Invisible => "INVISIBLE",
+            };
+            row.set("render_shape", J::Str(shape.into()));
+        }
     }
 
     /// Adds each new block's copy of the template's entry to a map by name.
