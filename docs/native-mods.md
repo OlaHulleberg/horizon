@@ -277,6 +277,10 @@ API 50 adds `native_part_model_tinted(state, pose, tint)`: `native_part_model_po
 (those with a tint index) coloured `0xRRGGBB`, as a block colour tints them: a fluid's still texture in its colour (Create's
 tanks). Client-side. Bundles that use it need `"hooks": 50`.
 
+API 51 adds `native_part_model_compound(blocks)`: one part model of many block states, each under its pose, for a
+structure that moves as one (Create's contraptions turning about their bearing); and `native_part_model_free(model)`,
+which empties it when the structure is gone. Client-side. Bundles that use them need `"hooks": 51`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

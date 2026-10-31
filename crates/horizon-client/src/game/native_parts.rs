@@ -283,6 +283,40 @@ impl Game<'_> {
         Some(state.uses_block_light())
     }
 
+    /// One part model of many block states, each under its pose (block units): a structure
+    /// that moves as one (Create's contraptions turning about their bearing). Baked anew on
+    /// every call: keep the handle while the structure is the same, and call
+    /// `native_part_model_free` when it is gone. None when nothing in it has a model. API 51.
+    pub(super) fn native_part_model_compound(
+        &mut self,
+        blocks: &[(BlockStateId, glam::Mat4)],
+    ) -> Option<u32> {
+        self.renderer.as_ref()?;
+        let mut vertices = Vec::new();
+        for &(state, pose) in blocks {
+            self.tinted_block_model_vertices(state, 0, pose, |_| 0, true, |_| None, &mut vertices);
+        }
+        if vertices.is_empty() {
+            return None;
+        }
+        let model = self.native_parts.scene.add_model(vertices);
+        self.native_parts.owners.push(Vec::new());
+        Some(model)
+    }
+
+    /// Frees a compound model's vertices (its instances are hidden first); its handle is not
+    /// reused. API 51.
+    pub(super) fn native_part_model_free(&mut self, model: u32) {
+        let parts = &mut self.native_parts;
+        let Some(owners) = parts.owners.get(model as usize).cloned() else {
+            return;
+        };
+        for key in owners {
+            parts.remove(key);
+        }
+        parts.scene.clear_model(model);
+    }
+
     /// The parts' clock in seconds, as the GPU reads it for this frame (the time base of
     /// `native_part_glide`'s offset). API 45.
     pub(super) fn native_parts_seconds(&self) -> f32 {

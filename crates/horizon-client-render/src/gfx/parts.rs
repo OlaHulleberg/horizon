@@ -39,6 +39,8 @@ pub struct PartScene {
     pub models: Vec<Arc<[Vertex]>>,
     pub instances: Vec<Vec<PartInstance>>,
     pub revision: Vec<u64>,
+    /// Changes when a model's vertices do (`clear_model`): the renderer builds them again.
+    pub shapes: Vec<u64>,
     /// Seconds of the animation clock: it stops when the game pauses, as the ticks do.
     pub seconds: f32,
 }
@@ -49,7 +51,20 @@ impl PartScene {
         self.models.push(vertices.into());
         self.instances.push(Vec::new());
         self.revision.push(0);
+        self.shapes.push(0);
         (self.models.len() - 1) as u32
+    }
+    /// Empties a model and its instances (a mod's structure that is gone); its handle stays
+    /// taken.
+    pub fn clear_model(&mut self, model: u32) {
+        let i = model as usize;
+        if i >= self.models.len() {
+            return;
+        }
+        self.models[i] = Arc::from(Vec::new());
+        self.instances[i].clear();
+        self.revision[i] += 1;
+        self.shapes[i] += 1;
     }
     /// The quads of the largest model with instances, for the shared quad index buffer.
     pub fn max_quads(&self) -> u32 {
@@ -85,6 +100,7 @@ impl PartFrame {
 
 struct Model {
     vertices: wgpu::Buffer,
+    shape: u64,
     quads: u32,
     instances: Option<wgpu::Buffer>,
     capacity: usize,
@@ -140,13 +156,27 @@ impl Renderer {
         if scene.models.len() < self.models.len() {
             self.models.clear();
         }
-        for vertices in &scene.models[self.models.len()..] {
+        let buffer = |vertices: &[Vertex]| {
+            // wgpu refuses an empty buffer: an emptied model keeps one vertex's worth, unused.
+            let zero = [<Vertex as bytemuck::Zeroable>::zeroed()];
+            let contents: &[Vertex] = if vertices.is_empty() { &zero } else { vertices };
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Part model"),
+                contents: bytemuck::cast_slice(contents),
+                usage: wgpu::BufferUsages::VERTEX,
+            })
+        };
+        for (i, model) in self.models.iter_mut().enumerate() {
+            if model.shape != scene.shapes[i] {
+                model.shape = scene.shapes[i];
+                model.vertices = buffer(&scene.models[i]);
+                model.quads = (scene.models[i].len() / 4) as u32;
+            }
+        }
+        for (i, vertices) in scene.models.iter().enumerate().skip(self.models.len()) {
             self.models.push(Model {
-                vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Part model"),
-                    contents: bytemuck::cast_slice(vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                }),
+                vertices: buffer(vertices),
+                shape: scene.shapes[i],
                 quads: (vertices.len() / 4) as u32,
                 instances: None,
                 capacity: 0,
@@ -208,6 +238,22 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cleared_model_drops_its_vertices_and_instances() {
+        let mut scene = PartScene::default();
+        let m = scene.add_model(vec![<Vertex as bytemuck::Zeroable>::zeroed(); 8]);
+        scene.instances[m as usize].push(PartInstance::default());
+        let (rev, shape) = (scene.revision[0], scene.shapes[0]);
+        scene.clear_model(m);
+        assert!(scene.models[0].is_empty() && scene.instances[0].is_empty());
+        assert!(scene.revision[0] > rev && scene.shapes[0] > shape);
+        assert_eq!(
+            scene.add_model(vec![<Vertex as bytemuck::Zeroable>::zeroed(); 4]),
+            1,
+            "its handle stays taken"
+        );
+    }
 
     #[test]
     fn the_instance_layout_matches_the_shader() {
