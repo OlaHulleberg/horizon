@@ -269,6 +269,10 @@ API 48 adds `native_part_model_posed(state, pose)`: a block state's model baked 
 block units, for partial models turned in ways block states don't offer (Create's sideways belts). Client-side. Bundles
 that use it need `"hooks": 48`.
 
+API 49 adds `native_update_entity_after_fall_on(pos, stack, at)`: an item entity lies on the block at `pos`
+(`Block.updateEntityAfterFallOn`); a mod's block takes some or all of it by lowering the stack's count (Create's belts
+and depots). Called each tick the item is on the ground. Server-side. Bundles that use it need `"hooks": 49`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

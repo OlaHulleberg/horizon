@@ -3309,6 +3309,7 @@ impl Game<'_> {
         // ServerLevel.tick: only entities in entity-ticking chunks tick.
         let ticking = self.entity_ticking_area();
         let mut removed = vec![false; items.len()];
+        let mut grounded = Vec::new();
         let mut cells = horizon_client::entities::ItemCells::new(&items);
         let catalog = world_items!(self);
         let max_stack =
@@ -3342,6 +3343,9 @@ impl Game<'_> {
                 &self.res.motion().fluids,
             );
             cells.moved(i, item.previous, item.position);
+            if merging && alive && item.on_ground {
+                grounded.push(i);
+            }
             // ItemEntity.tick: merge every 2 ticks while moving between
             // blocks, every 40 otherwise, before the lifetime check.
             let block = |v: Vec3| (v.x.floor(), v.y.floor(), v.z.floor());
@@ -3387,6 +3391,24 @@ impl Game<'_> {
             if !environment.alive {
                 removed[i] = true;
                 cells.remove(i, item.position);
+            }
+        }
+        // Entity.move -> Block.updateEntityAfterFallOn on the block under each item
+        // that moved onto the ground (getOnPosLegacy): a mod's block may take it.
+        for i in grounded {
+            if removed[i] {
+                continue;
+            }
+            let p = items[i].position;
+            let at = [p.x, p.y, p.z];
+            let below = [
+                at[0].floor() as i32,
+                (at[1] - 0.2).floor() as i32,
+                at[2].floor() as i32,
+            ];
+            self.native_update_entity_after_fall_on(below, &mut items[i].stack, at);
+            if items[i].stack.count == 0 {
+                removed[i] = true;
             }
         }
         let mut removed = removed.into_iter();

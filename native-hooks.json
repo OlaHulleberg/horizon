@@ -150,6 +150,14 @@
       "target": "horizon_client::game::native_hooks::Game<'_>::native_block_entity_tick"
     },
     {
+      "name": "update_entity_after_fall_on",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_update_entity_after_fall_on",
+      "neoforge": "Block.updateEntityAfterFallOn",
+      "side": "server",
+      "cancellable": false
+    },
+    {
       "name": "contents_changed",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_contents_changed",

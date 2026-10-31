@@ -6,6 +6,9 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 49 adds `native_update_entity_after_fall_on` (`Block.updateEntityAfterFallOn` for
+//! item entities: a mod's block takes an item that lands on it).
+//!
 //! API 48 adds `native_part_model_posed` (a part model baked under a transform).
 //!
 //! API 47 adds `native_item_uses_block_light` (`BakedModel.isGui3d`).
@@ -222,7 +225,7 @@ pub(super) const MOD_DATA: &str = "horizon:mod_data";
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 48;
+pub(crate) const NATIVE_HOOKS_API: u32 = 49;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -884,6 +887,20 @@ impl Game<'_> {
         container: &mut Option<ModContainer>,
     ) {
         let _ = (block, container);
+    }
+    /// An item entity at `at` is on the ground on the block at `pos`:
+    /// `Block.updateEntityAfterFallOn`, where a mod's block takes an item that
+    /// lands on it (Create's belts and depots). Take some or all of `stack` by
+    /// lowering its count; at 0 the entity is gone. Called each tick the item
+    /// lies on the ground (vanilla's `Entity.move` runs one tick in four for an
+    /// item at rest). Server-side. API 49.
+    pub(super) fn native_update_entity_after_fall_on(
+        &mut self,
+        pos: [i32; 3],
+        stack: &mut ItemStack,
+        at: [f64; 3],
+    ) {
+        let _ = (pos, stack, at);
     }
     /// The items of the mod container at `pos` changed from outside the mod
     /// (a hopper or dropper put or took them): NeoForge's
@@ -2617,6 +2634,28 @@ mod tests {
             Some(&mine)
         );
         assert_eq!(super::Game::native_chunk_data(&loaded, "othermod"), None);
+    }
+
+    #[test]
+    fn items_on_the_ground_are_offered_to_the_block_under_them() {
+        let game = include_str!("../game.rs");
+        let tick = &game[game.find("fn tick_items(&mut self)").unwrap()..];
+        let tick = &tick[..tick.find("\n    fn ").unwrap()];
+        let call = tick
+            .find("self.native_update_entity_after_fall_on(below, &mut items[i].stack, at);")
+            .expect("the hook is called");
+        assert!(
+            tick[..call].contains("if merging && alive && item.on_ground {"),
+            "items that moved onto the ground, on the authoritative side"
+        );
+        assert!(
+            tick[..call].contains("(at[1] - 0.2).floor() as i32"),
+            "getOnPosLegacy"
+        );
+        assert!(
+            tick[call..].contains("if items[i].stack.count == 0 {"),
+            "an emptied stack is gone"
+        );
     }
 
     #[test]
