@@ -216,6 +216,23 @@ impl Game<'_> {
         Some(model)
     }
 
+    /// Whether item `item`'s model is lit like a block (`BakedModel.isGui3d`, a block's
+    /// item): mods that lay items down draw these standing and others flat, as Create's
+    /// depots and belts do. None for an unknown item or on a `Game` that draws nothing.
+    /// API 47.
+    pub(super) fn native_item_uses_block_light(&self, item: &str) -> Option<bool> {
+        self.renderer.as_ref()?;
+        self.res.items().get(item)?;
+        let stack = horizon_client::items::ItemStack::new(item, 1);
+        let state = self.resolve_item(
+            &stack,
+            horizon_assets::item_model::DisplayContext::Fixed,
+            None,
+            0,
+        );
+        Some(state.uses_block_light())
+    }
+
     /// The parts' clock in seconds, as the GPU reads it for this frame (the time base of
     /// `native_part_glide`'s offset). API 45.
     pub(super) fn native_parts_seconds(&self) -> f32 {

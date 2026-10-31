@@ -6,6 +6,8 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 47 adds `native_item_uses_block_light` (`BakedModel.isGui3d`).
+//!
 //! API 46 adds `native_contents_changed` (NeoForge's
 //! `ItemStackHandler.onContentsChanged`): a mod container's items changed
 //! from outside the mod (a hopper, a dropper), and `ModContainer::only_when_empty`.
@@ -218,7 +220,7 @@ pub(super) const MOD_DATA: &str = "horizon:mod_data";
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 46;
+pub(crate) const NATIVE_HOOKS_API: u32 = 47;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.

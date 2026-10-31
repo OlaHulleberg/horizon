@@ -261,6 +261,10 @@ changed the items of a mod's container, so a block entity that does not tick can
 `ModContainer::only_when_empty`, for a container hoppers fill only while it holds nothing (Create's depot).
 Server-side. Bundles that use them need `"hooks": 46`.
 
+API 47 adds `native_item_uses_block_light(item)`: whether an item's model is lit like a block (`BakedModel.isGui3d`),
+for mods that lay items down standing or flat (Create's depots and belts). Client-side. Bundles that use it need
+`"hooks": 47`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
