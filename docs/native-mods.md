@@ -245,6 +245,10 @@ Inside `native_chunk_load`, `Game::native_chunk_data(chunk, mod_id)` reads it ba
 memory (settings of its machines) writes NBT only then; after changing it, `native_mark_chunk_unsaved(dimension,
 chunk)` makes the chunk save. Server-side. Bundles that use them need `"hooks": 43`.
 
+API 44 adds `native_fluid_flow(dimension, pos)`: the flow of the fluid at a block, as vanilla's `FluidState.getFlow`
+gives it (a horizontal unit vector downstream, -1 in y where it falls, zero for still water or none), for machines a
+current turns. Server-side, for the level in place. Bundles that use it need `"hooks": 44`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

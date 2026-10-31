@@ -6,6 +6,9 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 44 adds the flow of a fluid at a block (`native_fluid_flow` in
+//! `native_fluids.rs`).
+//!
 //! API 43 adds native mods' own data saved with a chunk
 //! (`native_chunk_data_save`, NeoForge's `ChunkDataEvent.Save`; read back
 //! with `native_chunk_data` inside `native_chunk_load`), and
@@ -208,7 +211,7 @@ pub(super) const MOD_DATA: &str = "horizon:mod_data";
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 43;
+pub(crate) const NATIVE_HOOKS_API: u32 = 44;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
