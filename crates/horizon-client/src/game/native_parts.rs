@@ -17,6 +17,7 @@ pub(super) struct NativeParts {
     keys: FxHashMap<u64, (u32, u32)>,
     owners: Vec<Vec<u64>>,
     by_state: FxHashMap<u32, u32>,
+    by_posed_state: FxHashMap<(u32, [u32; 16]), u32>,
     by_item: FxHashMap<(String, [u32; 16]), u32>,
     sections: FxHashMap<(i32, i32, i32), Vec<u64>>,
 }
@@ -134,6 +135,31 @@ impl Game<'_> {
         let model = self.native_parts.scene.add_model(vertices);
         self.native_parts.owners.push(Vec::new());
         self.native_parts.by_state.insert(state.0, model);
+        Some(model)
+    }
+
+    /// [`Self::native_part_model`] under `pose`, a transform in block units (0 to 1 across the
+    /// block) applied to the model before it is drawn: a partial model turned in a way its
+    /// block states don't offer (Create turns a sideways belt about z). Baked once per state and
+    /// pose. API 48.
+    pub(super) fn native_part_model_posed(
+        &mut self,
+        state: BlockStateId,
+        pose: glam::Mat4,
+    ) -> Option<u32> {
+        self.renderer.as_ref()?;
+        let cache = (state.0, pose.to_cols_array().map(f32::to_bits));
+        if let Some(&model) = self.native_parts.by_posed_state.get(&cache) {
+            return Some(model);
+        }
+        let mut vertices = Vec::new();
+        self.tinted_block_model_vertices(state, 0, pose, |_| 0, true, |_| None, &mut vertices);
+        if vertices.is_empty() {
+            return None;
+        }
+        let model = self.native_parts.scene.add_model(vertices);
+        self.native_parts.owners.push(Vec::new());
+        self.native_parts.by_posed_state.insert(cache, model);
         Some(model)
     }
 

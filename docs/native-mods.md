@@ -265,6 +265,10 @@ API 47 adds `native_item_uses_block_light(item)`: whether an item's model is lit
 for mods that lay items down standing or flat (Create's depots and belts). Client-side. Bundles that use it need
 `"hooks": 47`.
 
+API 48 adds `native_part_model_posed(state, pose)`: a block state's model baked into a part model under a transform in
+block units, for partial models turned in ways block states don't offer (Create's sideways belts). Client-side. Bundles
+that use it need `"hooks": 48`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
