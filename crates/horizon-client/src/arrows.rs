@@ -1096,7 +1096,8 @@ impl Ticker<'_, '_, '_, '_> {
                         effects.apply(Effect::ClearFreeze);
                         effects.apply(Effect::LavaIgnite);
                     }
-                    FluidKind::Empty => {}
+                    // A mod's `FluidType` does nothing to an entity inside by default.
+                    _ => {}
                 }
             }
         }

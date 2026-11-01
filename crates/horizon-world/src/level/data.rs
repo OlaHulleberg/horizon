@@ -718,7 +718,7 @@ fn build_with_gameplay<G: GameplayStateSource>(
     if fluids
         .iter()
         .copied()
-        .ne(FluidKind::ALL.iter().map(|k| k.name()))
+        .ne(FluidKind::VANILLA.iter().map(|k| k.name()))
     {
         return Err(fail("fluid registry order differs from Horizon's"));
     }
@@ -1089,6 +1089,21 @@ fn build_with_gameplay<G: GameplayStateSource>(
         );
     }
 
+    // A mod fluid's liquid block copied its template's rows (water's fluid): its own fluid.
+    if crate::fluid::mod_fluid(0).is_some() {
+        for (id, fact) in facts.iter_mut().enumerate() {
+            let Some(state) = registry.state(BlockStateId(id as u32)) else {
+                continue;
+            };
+            if state.name.starts_with("minecraft:") {
+                continue;
+            }
+            let fluid = FluidState::from_block(state)?;
+            if fluid.kind().mod_slot().is_some() {
+                fact.fluid = fluid;
+            }
+        }
+    }
     let liquid_blocks = FluidBlockBindings::new(registry)?;
     let mut dynamic = HashMap::new();
     for (id, fact) in facts.iter().enumerate() {

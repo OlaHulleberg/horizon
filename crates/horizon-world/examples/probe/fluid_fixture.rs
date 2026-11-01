@@ -53,8 +53,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fluids = FluidStateTable::new(&registry)?;
     let blocks = FluidBlockBindings::new(&registry)?;
     let mut out = io::BufWriter::new(fs::File::create(dir.join("rust.txt"))?);
-    for first in FluidKind::ALL {
-        for second in FluidKind::ALL {
+    for first in FluidKind::VANILLA {
+        for second in FluidKind::VANILLA {
             writeln!(
                 out,
                 "family {} {} {}",

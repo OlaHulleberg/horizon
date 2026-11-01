@@ -356,7 +356,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             ])
         })
         .transpose()?;
-    let states = FluidKind::ALL
+    let states = FluidKind::VANILLA
         .map(|k| FluidState::from_json(&format!("{{\"id\":\"{}\"}}", k.name())).unwrap());
     let input = fs::read_to_string(dir.join("inputs.txt"))?;
     let first: Value = serde_json::from_str(input.lines().next().unwrap())?;

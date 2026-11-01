@@ -72,7 +72,7 @@ impl Behaviours {
         self.data(state).implements(interface)
     }
     pub(crate) fn fluid_in(&self, kind: FluidKind, mask: u8) -> bool {
-        mask & (1 << kind as u8) != 0
+        mask & kind.mask() != 0
     }
     pub(crate) fn is_water_fluid(&self, kind: FluidKind) -> bool {
         self.fluid_in(kind, self.fluid_tags.water)
@@ -136,6 +136,12 @@ impl Behaviours {
     }
     pub(crate) fn default_of(&self, block: BlockId) -> BlockStateId {
         self.table.default_state(block)
+    }
+    /// The default state of the block named `name` (a mod's, by its id).
+    pub(crate) fn default_state_named(&self, name: &str) -> Option<BlockStateId> {
+        self.table
+            .block_by_name(name)
+            .map(|b| self.table.default_state(b))
     }
     pub(crate) fn air(&self) -> BlockStateId {
         self.table.default_state(self.named.air)

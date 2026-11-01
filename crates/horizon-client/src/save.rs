@@ -575,6 +575,11 @@ fn fluid_name(kind: u32) -> Option<String> {
             FluidKind::Water => "minecraft:water",
             FluidKind::FlowingLava => "minecraft:flowing_lava",
             FluidKind::Lava => "minecraft:lava",
+            // A mod fluid's tick, by its registered name.
+            kind => match kind.name() {
+                "minecraft:empty" => return None,
+                name => name,
+            },
         }
         .to_owned(),
     )
@@ -586,7 +591,8 @@ fn fluid_id(name: &str) -> Option<u32> {
         "minecraft:water" => FluidKind::Water,
         "minecraft:flowing_lava" => FluidKind::FlowingLava,
         "minecraft:lava" => FluidKind::Lava,
-        _ => return None,
+        // A mod fluid's, when that mod's fluid is registered.
+        _ => FluidKind::from_name(name).filter(|k| k.mod_slot().is_some())?,
     } as u32)
 }
 

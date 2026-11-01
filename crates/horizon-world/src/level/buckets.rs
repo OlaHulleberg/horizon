@@ -46,6 +46,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 FluidKind::Water | FluidKind::FlowingWater => "minecraft:water_bucket",
                 FluidKind::Lava | FluidKind::FlowingLava => "minecraft:lava_bucket",
                 FluidKind::Empty => return None,
+                // A mod fluid's bucket (`BucketPickup` on its `LiquidBlock`).
+                kind => kind.mod_slot().and_then(crate::fluid::mod_fluid)?.bucket,
             }
         } else if b.implements(state, Interface::SimpleWaterlogged)
             && b.table.has(state, b.props.waterlogged)

@@ -214,6 +214,8 @@ impl MobWorld<'_> {
                         FluidKind::Empty => continue,
                         FluidKind::Water | FluidKind::FlowingWater => &mut water,
                         FluidKind::Lava | FluidKind::FlowingLava => &mut lava,
+                        // Mod fluids don't push entities yet.
+                        _ => continue,
                     };
                     let surface = f64::from(y) + self.fluid_height(x, y, z).1;
                     if surface < lo.y {

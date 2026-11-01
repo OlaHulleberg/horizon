@@ -107,7 +107,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let fluids = [
         names("water"),
         BTreeSet::new(),
-        FluidKind::ALL
+        FluidKind::VANILLA
             .into_iter()
             .map(|f| f.name().to_owned())
             .collect(),

@@ -236,7 +236,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
         }
     }
-    let fluids = FluidKind::ALL
+    let fluids = FluidKind::VANILLA
         .map(|kind| FluidState::from_json(&format!("{{\"id\":\"{}\"}}", kind.name())).unwrap());
     for line in fs::read_to_string(dir.join("inputs.txt"))?.lines() {
         let f: Value = serde_json::from_str(line)?;

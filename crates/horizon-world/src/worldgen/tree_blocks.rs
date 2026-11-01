@@ -184,6 +184,7 @@ impl TreeBlocks {
                     FluidKind::FlowingWater => *flag |= WATER_FLUID | ANY_FLUID,
                     FluidKind::Lava | FluidKind::FlowingLava => *flag |= LAVA_FLUID | ANY_FLUID,
                     FluidKind::Empty => {}
+                    _ => *flag |= ANY_FLUID,
                 }
                 if fluid.is_source() {
                     *flag |= FLUID_SOURCE;

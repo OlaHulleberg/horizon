@@ -1,4 +1,4 @@
-//! `FlowingFluid` (water and lava) ticking and spreading, `LiquidBlock`
+//! `FlowingFluid` (water, lava and mods' `BaseFlowingFluid`s) ticking and spreading, `LiquidBlock`
 //! interactions, liquid containers (waterlogging) and bucket pickup.
 use super::{
     Behaviours, Dimension, LevelAccess, Sim, Spread,
@@ -27,7 +27,17 @@ const POSSIBLE_FLOW_DIRECTIONS: [Direction; 5] = [
 fn is_water(kind: FluidKind) -> bool {
     matches!(kind, FluidKind::Water | FluidKind::FlowingWater)
 }
+fn is_lava(kind: FluidKind) -> bool {
+    matches!(kind, FluidKind::Lava | FluidKind::FlowingLava)
+}
+/// A mod fluid's `BaseFlowingFluid.Properties`.
+fn mod_params(kind: FluidKind) -> Option<crate::fluid::ModFluid> {
+    kind.mod_slot().and_then(crate::fluid::mod_fluid)
+}
 fn source_of(kind: FluidKind) -> FluidKind {
+    if let Some(slot) = kind.mod_slot() {
+        return FluidKind::of_mod_slot(slot, false);
+    }
     if is_water(kind) {
         FluidKind::Water
     } else {
@@ -35,6 +45,9 @@ fn source_of(kind: FluidKind) -> FluidKind {
     }
 }
 fn flowing_of(kind: FluidKind) -> FluidKind {
+    if let Some(slot) = kind.mod_slot() {
+        return FluidKind::of_mod_slot(slot, true);
+    }
     if is_water(kind) {
         FluidKind::FlowingWater
     } else {
@@ -90,6 +103,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         match kind {
             FluidKind::Empty => 0,
             FluidKind::Water | FluidKind::FlowingWater => 5,
+            _ if kind.mod_slot().is_some() => mod_params(kind).map_or(5, |f| f.tick_delay),
             _ => {
                 if self.fast_lava() {
                     10
@@ -100,6 +114,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
     }
     fn drop_off(&self, kind: FluidKind) -> i32 {
+        if let Some(f) = mod_params(kind) {
+            return f.drop_off;
+        }
         if is_water(kind) || self.fast_lava() {
             1
         } else {
@@ -107,6 +124,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
     }
     fn slope_find_distance(&self, kind: FluidKind) -> i32 {
+        if let Some(f) = mod_params(kind) {
+            // The spread caches reach `SPREAD_REACH`; a farther search reads uncached.
+            return f.slope_find_distance;
+        }
         if is_water(kind) || self.fast_lava() {
             4
         } else {
@@ -114,6 +135,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
     }
     fn can_convert_to_source(&self, kind: FluidKind) -> bool {
+        // `BaseFlowingFluid.canConvertToSource`: the `FluidType`'s, false unless a mod says so.
+        if kind.mod_slot().is_some() {
+            return false;
+        }
         let rules = self.level.game_rules();
         if is_water(kind) {
             rules.water_source_conversion
@@ -143,6 +168,10 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             FluidKind::Empty => true,
             FluidKind::Water | FluidKind::FlowingWater => {
                 direction == Direction::Down && !is_water(other)
+            }
+            // `BaseFlowingFluid.canBeReplacedWith`: water's rule, by its own family.
+            kind if kind.mod_slot().is_some() => {
+                direction == Direction::Down && !kind.same_family(other)
             }
             _ => self.fluid_height(fluid, pos) >= 0.444_444_45 && is_water(other),
         }
@@ -539,7 +568,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         {
             return;
         }
-        if !is_water(kind)
+        if is_lava(kind)
             && direction == Direction::Down
             && b.is_water_fluid(self.fluid_at(pos).kind())
         {
@@ -553,7 +582,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             self.place_liquid(pos, state, target, false);
         } else {
             if !b.is_air(state) {
-                if is_water(kind) {
+                // `beforeDestroyingBlock`: lava's fizz, anything else drops the block.
+                if !is_lava(kind) {
                     self.drop_resources(state, pos);
                 } else {
                     self.level_event(1501, pos, 0);
@@ -638,7 +668,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         new: FluidState,
     ) -> i32 {
         let delay = self.fluid_tick_delay(kind);
-        if is_water(kind) {
+        if !is_lava(kind) {
             return delay;
         }
         if old.kind() != FluidKind::Empty
@@ -674,6 +704,20 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                 self.set_block_and_update(pos, b.default_of(block));
                 self.level_event(1501, pos, 0);
                 return false;
+            }
+            // NeoForge's `FluidInteractionRegistry`: a mod fluid lava meets (a source of lava
+            // turns to its source block, flowing lava to its flowing one).
+            if let Some(f) = mod_params(self.fluid_at(neighbour).kind()) {
+                let name = if self.fluid_at(pos).is_source() {
+                    f.lava_source
+                } else {
+                    f.lava_flowing
+                };
+                if let Some(block) = name.and_then(|n| self.b.default_state_named(&n)) {
+                    self.set_block_and_update(pos, block);
+                    self.level_event(1501, pos, 0);
+                    return false;
+                }
             }
             if over_soul_soil && b.is_block(self.state(neighbour), b.named.blue_ice) {
                 self.set_block_and_update(pos, b.default_of(b.named.basalt));
