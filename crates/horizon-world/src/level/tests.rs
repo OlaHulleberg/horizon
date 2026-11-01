@@ -386,6 +386,16 @@ fn neighbor_observation_follows_dispatch_order() {
         level.seen.borrow().last(),
         Some(&(BlockPos::new(3, 4, 5), b.air(), changed, true))
     );
+    // A diode's `updateNeighborsInFront`: the block in front, then its
+    // neighbours but the diode's own side.
+    level.seen.borrow_mut().clear();
+    let front = BlockPos::new(1, 0, 0);
+    b.neighbor_changed_at(&mut level, &mut ticks, front, changed);
+    b.update_neighbors_at_except(&mut level, &mut ticks, front, changed, Direction::West);
+    let seen: Vec<BlockPos> = level.seen.borrow().iter().map(|e| e.0).collect();
+    assert_eq!(seen.len(), 6);
+    assert_eq!(seen[0], front);
+    assert!(!seen[1..].contains(&BlockPos::new(0, 0, 0)));
 }
 
 #[test]
