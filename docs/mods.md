@@ -137,6 +137,22 @@ the load instead of doing nothing. Behaviour the game ties to a vanilla
 item's id doesn't come along yet: a copy of the trident doesn't throw
 ([#3305](https://github.com/horizon-rust/horizon/issues/3305)).
 
+A flowing fluid is declared in `data/<id>/horizon/fluid/<name>.json` with what NeoForge's `FluidType` and
+`BaseFlowingFluid.Properties` set: its liquid block (one of the mod's blocks with `minecraft:water` as its template, which
+gives it the 16 `level` states), its bucket (one of the mod's items), `tick_delay` (1-255), `drop_off` (levels lost a
+block, 1-8), `slope_find_distance` (1-4), what lava next to it becomes (`lava_source` for a lava source, `lava_flowing`
+for flowing lava; leave them out and lava ignores it), and how it is drawn (block-atlas sprites and an RGB tint):
+
+```json
+{ "block": "ruby:honey", "bucket": "ruby:honey_bucket", "tick_delay": 25, "drop_off": 2,
+  "slope_find_distance": 3, "lava_source": "minecraft:obsidian", "lava_flowing": "ruby:limestone",
+  "still_texture": "ruby:block/fluid/honey_still", "flowing_texture": "ruby:block/fluid/honey_flow", "tint": 15380015 }
+```
+
+It is the fluid `<id>:<name>` (flowing: `<id>:flowing_<name>`). Its block spreads by those rules as water and lava do,
+never makes new sources, is replaced by fluids from above as water is, and a bucket takes its source. A game holds 4 mod
+fluids; mod fluids are in no fluid tag yet and don't push or affect entities.
+
 A mod effect is declared in `data/<id>/horizon/mob_effect/<name>.json` with what vanilla's `MobEffect` takes: its
 category (`beneficial`, `harmful` or `neutral`) and its RGB colour (0 to `0xFFFFFF`), which its particles take:
 

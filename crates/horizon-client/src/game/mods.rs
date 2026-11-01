@@ -73,14 +73,54 @@ pub(super) fn content_root(
                 );
             }
             register_mob_effects(&mods);
+            register_mod_fluids(&mods);
             out
         }
         Err(e) => {
             log::warn!("Horizon: content mods not loaded: {e}");
             register_mob_effects(&[]);
+            register_mod_fluids(&[]);
             root.to_owned()
         }
     }
+}
+
+/// The mods' flowing fluids take the mod fluid slots (`horizon_world::fluid`), in mod then id
+/// order, before the block tables are built from the root: their liquid blocks become their
+/// fluids, which spread by their own rules.
+fn register_mod_fluids(mods: &[horizon_client::mod_content::ContentMod]) {
+    use horizon_world::fluid::{MOD_FLUID_SLOTS, ModFluid, set_mod_fluids};
+    let mut fluids: Vec<&horizon_mods::content::Fluid> =
+        mods.iter().flat_map(|m| &m.content.fluids).collect();
+    fluids.sort_by(|a, b| a.id.cmp(&b.id));
+    if fluids.len() > MOD_FLUID_SLOTS {
+        log::warn!(
+            "Horizon: {} mod fluids, {MOD_FLUID_SLOTS} fit: the rest stay out",
+            fluids.len()
+        );
+    }
+    // Names live as long as the game (one leak per fluid per launch).
+    let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+    set_mod_fluids(
+        fluids
+            .into_iter()
+            .take(MOD_FLUID_SLOTS)
+            .map(|f| {
+                let (ns, path) = f.id.split_once(':').unwrap_or(("minecraft", &f.id));
+                ModFluid {
+                    name: leak(f.id.clone()),
+                    flowing_name: leak(format!("{ns}:flowing_{path}")),
+                    block: f.block.clone(),
+                    bucket: leak(f.bucket.clone()),
+                    tick_delay: i32::from(f.tick_delay),
+                    drop_off: i32::from(f.drop_off),
+                    slope_find_distance: i32::from(f.slope_find_distance),
+                    lava_source: f.lava_source.clone(),
+                    lava_flowing: f.lava_flowing.clone(),
+                }
+            })
+            .collect(),
+    );
 }
 
 /// The mods' mob effects join vanilla's (`brewing::effect`), once the root

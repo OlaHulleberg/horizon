@@ -197,6 +197,34 @@ pub struct MobEffect {
     pub color: u32,
 }
 
+/// A flowing fluid the mod adds (NeoForge's `FluidType` with `BaseFlowingFluid.Properties`): its
+/// source `<mod id>:<path>`, flowing `<mod id>:flowing_<path>`, its liquid block (a block of the
+/// mod with `minecraft:water` as its template: its 16 `level`s), its bucket, how it spreads, what
+/// lava next to it becomes, and how it is drawn.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Fluid {
+    #[serde(skip)]
+    pub id: String,
+    pub block: String,
+    pub bucket: String,
+    /// `tickRate` (1-255), `levelDecreasePerBlock` (1-8), `slopeFindDistance` (1-4).
+    pub tick_delay: u8,
+    pub drop_off: u8,
+    pub slope_find_distance: u8,
+    pub lava_source: Option<String>,
+    pub lava_flowing: Option<String>,
+    /// Block-atlas sprites (`<ns>:block/...`) and an RGB tint.
+    pub still_texture: String,
+    pub flowing_texture: String,
+    #[serde(default = "white")]
+    pub tint: u32,
+}
+
+fn white() -> u32 {
+    0xFF_FFFF
+}
+
 #[derive(Debug)]
 enum Source {
     Dir(PathBuf),
@@ -212,6 +240,7 @@ pub struct Content {
     pub blocks: Vec<Block>,
     pub items: Vec<Item>,
     pub effects: Vec<MobEffect>,
+    pub fluids: Vec<Fluid>,
     /// The namespaces it owns: the mod id, then the manifest's `namespaces`.
     pub namespaces: Vec<String>,
 }
@@ -299,6 +328,7 @@ impl Content {
             blocks: Vec::new(),
             items: Vec::new(),
             effects: Vec::new(),
+            fluids: Vec::new(),
             namespaces: manifest.owned_namespaces().map(str::to_owned).collect(),
         };
         content.check(manifest)?;
@@ -342,6 +372,7 @@ impl Content {
         let mut blocks = Vec::new();
         let mut items = Vec::new();
         let mut effects = Vec::new();
+        let mut fluids = Vec::new();
         for name in &self.files {
             let mut parts = name.splitn(3, '/');
             let (top, namespace, rest) = (
@@ -384,9 +415,11 @@ impl Content {
                 items.push((item, name.clone()));
             } else if let Some(effect) = parse("mob_effect") {
                 effects.push((effect, name.clone()));
+            } else if let Some(fluid) = parse("fluid") {
+                fluids.push((fluid, name.clone()));
             } else {
                 return Err(format!(
-                    "{name}: data/{id}/horizon/ holds block/, item/ and mob_effect/*.json only"
+                    "{name}: data/{id}/horizon/ holds block/, item/, mob_effect/ and fluid/*.json only"
                 ));
             }
         }
@@ -446,6 +479,48 @@ impl Content {
                 return Err(format!("{name}: color is RGB, 0 to 16777215 (0xFFFFFF)"));
             }
             self.effects.push(MobEffect { id: effect, ..file });
+        }
+        for (fluid, name) in fluids {
+            let file: Fluid =
+                serde_json::from_slice(&self.file(&name)?).map_err(|e| format!("{name}: {e}"))?;
+            if !self
+                .blocks
+                .iter()
+                .any(|b| b.id == file.block && b.template == "minecraft:water")
+            {
+                return Err(format!(
+                    "{name}: block {:?} is not one of this mod's blocks with template minecraft:water",
+                    file.block
+                ));
+            }
+            if !ids.contains(&file.bucket) {
+                return Err(format!(
+                    "{name}: bucket {:?} is not one of this mod's items",
+                    file.bucket
+                ));
+            }
+            if file.tick_delay == 0
+                || !(1..=8).contains(&file.drop_off)
+                || !(1..=4).contains(&file.slope_find_distance)
+            {
+                return Err(format!(
+                    "{name}: tick_delay is 1-255, drop_off 1-8, slope_find_distance 1-4"
+                ));
+            }
+            for block in [&file.lava_source, &file.lava_flowing]
+                .into_iter()
+                .flatten()
+            {
+                if !vanilla_id(block) && !self.blocks.iter().any(|b| &b.id == block) {
+                    return Err(format!(
+                        "{name}: {block:?} is not a vanilla block (minecraft:...) or one of this mod's"
+                    ));
+                }
+            }
+            if file.tint > 0xFF_FFFF {
+                return Err(format!("{name}: tint is RGB, 0 to 16777215 (0xFFFFFF)"));
+            }
+            self.fluids.push(Fluid { id: fluid, ..file });
         }
         // After every item, so a remainder may be declared in a later file.
         for (name, rest) in remainders {
@@ -642,6 +717,56 @@ capabilities = ["registries"]
         let content = package.and_then(|p| Content::read(&path, &p.manifest));
         std::fs::remove_dir_all(&dir).unwrap();
         content
+    }
+
+    #[test]
+    fn a_fluid_needs_its_water_templated_block_and_its_bucket() {
+        let fluid = br#"{"block": "ruby:honey", "bucket": "ruby:honey_bucket", "tick_delay": 25,
+            "drop_off": 2, "slope_find_distance": 3, "lava_source": "minecraft:obsidian",
+            "lava_flowing": "ruby:ruby_block", "still_texture": "ruby:block/honey_still",
+            "flowing_texture": "ruby:block/honey_flow", "tint": 15380015}"#;
+        let liquid: &[u8] = br#"{"template": "minecraft:water", "item": false}"#;
+        let bucket: &[u8] = br#"{"template": "minecraft:water_bucket"}"#;
+        let files: &[(&str, &[u8])] = &[
+            ("data/ruby/horizon/block/honey.json", liquid),
+            ("data/ruby/horizon/block/ruby_block.json", BLOCK),
+            ("data/ruby/horizon/fluid/honey.json", fluid),
+            ("data/ruby/horizon/item/honey_bucket.json", bucket),
+        ];
+        let content = hmod("fluid", MANIFEST_TEXT, files).unwrap();
+        let f = &content.fluids[0];
+        assert_eq!(
+            (f.id.as_str(), f.block.as_str()),
+            ("ruby:honey", "ruby:honey")
+        );
+        assert_eq!(
+            (f.tick_delay, f.drop_off, f.slope_find_distance, f.tint),
+            (25, 2, 3, 0xEAAE2F)
+        );
+        // A block that is not water-templated, a bucket the mod lacks, a reach past 4.
+        let text = String::from_utf8_lossy(fluid);
+        let bad: [(&str, String); 3] = [
+            (
+                "block",
+                text.replace(
+                    "\"block\": \"ruby:honey\"",
+                    "\"block\": \"ruby:ruby_block\"",
+                ),
+            ),
+            ("bucket", text.replace("ruby:honey_bucket", "ruby:none")),
+            (
+                "slope",
+                text.replace("\"slope_find_distance\": 3", "\"slope_find_distance\": 5"),
+            ),
+        ];
+        for (what, file) in bad {
+            let mut files = files.to_vec();
+            files[2] = ("data/ruby/horizon/fluid/honey.json", file.as_bytes());
+            assert!(
+                hmod(&format!("fluid-{what}"), MANIFEST_TEXT, &files).is_err(),
+                "{what}"
+            );
+        }
     }
 
     #[test]
