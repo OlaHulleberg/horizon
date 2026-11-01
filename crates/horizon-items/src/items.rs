@@ -1871,7 +1871,15 @@ pub fn bucket_contents(
             "minecraft:item.bucket.empty_sulfur_cube",
             Some("sulfur_cube"),
         ),
-        _ => return None,
+        // A mod fluid's bucket: its source, with `FluidType`'s default empty sound.
+        _ => (
+            C::Fluid(FluidKind::of_mod_slot(
+                horizon_world::fluid::mod_fluid_of_bucket(item)?,
+                false,
+            )),
+            "minecraft:item.bucket.empty",
+            None,
+        ),
     })
 }
 

@@ -52,6 +52,12 @@ pub fn mod_fluid(slot: usize) -> Option<ModFluid> {
     MOD_FLUIDS.read().ok()?.get(slot).cloned()
 }
 
+/// The slot of the mod fluid whose bucket is `item`.
+pub fn mod_fluid_of_bucket(item: &str) -> Option<usize> {
+    let fluids = MOD_FLUIDS.read().ok()?;
+    fluids.iter().position(|f| f.bucket == item)
+}
+
 /// The slot of the mod fluid whose block is `block`.
 fn mod_fluid_of_block(block: &str) -> Option<usize> {
     let fluids = MOD_FLUIDS.read().ok()?;
@@ -506,6 +512,8 @@ mod mod_fluid_tests {
             Some(FluidKind::FlowingMod0)
         );
         assert_eq!(FluidKind::of_mod_slot(1, false), FluidKind::Mod1);
+        assert_eq!(mod_fluid_of_bucket("test:honey_bucket"), Some(0));
+        assert_eq!(mod_fluid_of_bucket("minecraft:water_bucket"), None);
         assert_eq!(FluidKind::Mod3.mod_slot(), Some(3));
         assert_eq!(FluidKind::Lava.mod_slot(), None);
         // Vanilla's liquids read as before.

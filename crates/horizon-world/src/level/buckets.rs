@@ -140,6 +140,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let source = FluidState::new(
             if water {
                 FluidKind::Water
+            } else if let Some(slot) = fluid.mod_slot() {
+                // A mod's `BucketItem`: its own fluid's source.
+                FluidKind::of_mod_slot(slot, false)
             } else {
                 FluidKind::Lava
             },
