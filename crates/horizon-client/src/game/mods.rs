@@ -117,6 +117,9 @@ fn register_mod_fluids(mods: &[horizon_client::mod_content::ContentMod]) {
                     slope_find_distance: i32::from(f.slope_find_distance),
                     lava_source: f.lava_source.clone(),
                     lava_flowing: f.lava_flowing.clone(),
+                    still_texture: f.still_texture.clone(),
+                    flowing_texture: f.flowing_texture.clone(),
+                    tint: f.tint,
                 }
             })
             .collect(),

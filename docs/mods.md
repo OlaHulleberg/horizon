@@ -151,7 +151,8 @@ for flowing lava; leave them out and lava ignores it), and how it is drawn (bloc
 
 It is the fluid `<id>:<name>` (flowing: `<id>:flowing_<name>`). Its block spreads by those rules as water and lava do,
 never makes new sources, is replaced by fluids from above as water is, and a bucket takes its source. A game holds 4 mod
-fluids; mod fluids are in no fluid tag yet and don't push or affect entities.
+fluids; mod fluids are in no fluid tag yet and don't push or affect entities. It is drawn as water and lava are, with
+its sprites and tint, in the solid layer and unlit by itself.
 
 A mod effect is declared in `data/<id>/horizon/mob_effect/<name>.json` with what vanilla's `MobEffect` takes: its
 category (`beneficial`, `harmful` or `neutral`) and its RGB colour (0 to `0xFFFFFF`), which its particles take:

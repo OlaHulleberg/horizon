@@ -227,6 +227,13 @@ impl RenderAssets {
         ] {
             sprites.insert(root, &format!("minecraft:block/{name}"))?;
         }
+        // The mod fluids' still and flowing sprites (`horizon_world::fluid::set_mod_fluids`).
+        for slot in 0..horizon_world::fluid::MOD_FLUID_SLOTS {
+            if let Some(f) = horizon_world::fluid::mod_fluid(slot) {
+                sprites.insert(root, &f.still_texture)?;
+                sprites.insert(root, &f.flowing_texture)?;
+            }
+        }
         for stage in 0..10 {
             sprites.insert(root, &format!("minecraft:block/destroy_stage_{stage}"))?;
         }

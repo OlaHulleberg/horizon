@@ -435,6 +435,8 @@ pub struct MeshTables {
     water_overlay: u16,
     lava_still: u16,
     lava_flow: u16,
+    /// The mod fluids' still and flowing sprites and tint, by slot.
+    modded: [Option<(u16, u16, u32)>; horizon_world::fluid::MOD_FLUID_SLOTS],
 }
 fn stem_color(age: u8) -> u32 {
     let a = u32::from(age);
@@ -586,6 +588,14 @@ impl MeshTables {
             water_overlay: layer("minecraft:block/water_overlay")?,
             lava_still: layer("minecraft:block/lava_still")?,
             lava_flow: layer("minecraft:block/lava_flow")?,
+            modded: std::array::from_fn(|slot| {
+                let f = horizon_world::fluid::mod_fluid(slot)?;
+                Some((
+                    layer(&f.still_texture).ok()?,
+                    layer(&f.flowing_texture).ok()?,
+                    f.tint & 0xFF_FFFF,
+                ))
+            }),
         })
     }
     pub fn facts(&self, state: BlockStateId) -> Option<MeshFacts> {

@@ -29,6 +29,11 @@ pub struct ModFluid {
     /// then flowing lava); None when lava ignores it.
     pub lava_source: Option<String>,
     pub lava_flowing: Option<String>,
+    /// How it is drawn: block-atlas sprites (`create:block/fluid/honey_still`) and an RGB tint;
+    /// in the solid layer, unlit by itself.
+    pub still_texture: String,
+    pub flowing_texture: String,
+    pub tint: u32,
 }
 
 static MOD_FLUIDS: RwLock<Vec<ModFluid>> = RwLock::new(Vec::new());
@@ -463,6 +468,9 @@ mod mod_fluid_tests {
             slope_find_distance: 3,
             lava_source: Some("minecraft:obsidian".into()),
             lava_flowing: None,
+            still_texture: "test:block/honey_still".into(),
+            flowing_texture: "test:block/honey_flow".into(),
+            tint: 0xFF_FFFF,
         }
     }
 

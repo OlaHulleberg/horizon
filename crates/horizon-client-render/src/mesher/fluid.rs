@@ -222,12 +222,16 @@ pub(super) fn tesselate(
         return;
     }
     let water = matches!(kind, FluidKind::Water | FluidKind::FlowingWater);
+    // A mod fluid: its own sprites and tint, solid and unlit (Create's honey and chocolate).
+    let modded = kind.mod_slot().and_then(|slot| tables.modded[slot]);
     let tint = if water {
         water_color & 0xFF_FFFF
+    } else if let Some((_, _, tint)) = modded {
+        tint
     } else {
         0xFF_FFFF
     };
-    let emission = if water {
+    let emission = if water || modded.is_some() {
         0
     } else {
         crate::mesher::INCANDESCENT
@@ -302,6 +306,8 @@ pub(super) fn tesselate(
             tables.water_flow,
             Some(tables.water_overlay),
         )
+    } else if let Some((still, flow, _)) = modded {
+        (still, flow, None)
     } else {
         (tables.lava_still, tables.lava_flow, None)
     };
