@@ -287,6 +287,11 @@ API 52 adds `native_items_in(dimension, min, max, f)`: the item entities whose b
 (`discard`). For machines that act on items in the world (Create's fans and crushing wheels). Server-side, for the
 level in place. Bundles that use it need `"hooks": 52`.
 
+API 53 adds `native_extract_item(pos, face, max)`: takes up to `max` items of one kind from the container at `pos`
+through its side `face` (`IItemHandler.extractItem`): from the first slot a hopper could take from through that face,
+up to its whole stack; None when there is no container or nothing to take. For machines that pull from inventories
+(Create's funnels). Server-side. Bundles that use it need `"hooks": 53`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

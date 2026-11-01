@@ -621,6 +621,34 @@ impl Game<'_> {
         };
         self.add_item(None, &view, stack, Some(face))
     }
+    /// Takes up to `max` items of one kind from the container at `pos` through its side `face`, as
+    /// machines extract (`IItemHandler.extractItem`, a funnel pulling from the inventory behind
+    /// it): from the first slot a hopper could take from through that face, up to its whole
+    /// stack. None when there is no container or nothing to take. Server-side. API 53.
+    #[allow(dead_code)]
+    pub(super) fn native_extract_item(
+        &mut self,
+        pos: [i32; 3],
+        face: Direction,
+        max: u32,
+    ) -> Option<ItemStack> {
+        let view = self.containers().view((pos[0], pos[1], pos[2]), false)?;
+        for slot in view.slots_for_face(Some(face)) {
+            let c = self.containers();
+            let Some(stack) = c.get(&view, slot) else {
+                continue;
+            };
+            if !c.can_take(&view, slot, stack, face) {
+                continue;
+            }
+            let taken = take_up_to(self.slot_mut_at(&view, slot)?, max);
+            if taken.is_some() {
+                self.view_changed(&view);
+                return taken;
+            }
+        }
+        None
+    }
     /// Remove one item from a slot (`removeItem(slot, 1)`).
     fn take_one(&mut self, view: &View, slot: usize) -> Option<ItemStack> {
         let target = self.slot_mut_at(view, slot)?;
@@ -1359,9 +1387,29 @@ mod item_column_tests {
     }
 }
 
+/// Up to `max` of the stack in `slot` (`removeItem(slot, max)`), the slot emptied when all go.
+#[allow(dead_code)]
+fn take_up_to(slot: &mut Option<ItemStack>, max: u32) -> Option<ItemStack> {
+    let current = slot.as_mut()?;
+    let n = current.count.min(max);
+    if n == 0 {
+        return None;
+    }
+    let out = ItemStack {
+        count: n,
+        ..current.clone()
+    };
+    current.count -= n;
+    if current.count == 0 {
+        *slot = None;
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod mod_container_tests {
-    use super::{Kind, ModContainer, View};
+    use super::{Kind, ModContainer, View, take_up_to};
+    use horizon_client::items::ItemStack;
     use horizon_core::geometry::Direction;
     use std::sync::Arc;
 
@@ -1417,5 +1465,22 @@ mod mod_container_tests {
         assert!(changed.contains("self.native_contents_changed([pos.0, pos.1, pos.2]);"));
         let hooks = include_str!("native_hooks.rs");
         assert!(hooks.contains("pub(super) fn native_contents_changed(&mut self, pos: [i32; 3])"));
+    }
+
+    #[test]
+    fn extracting_takes_up_to_a_stack_from_a_slot() {
+        let stone = |count| ItemStack {
+            item: "minecraft:stone".into(),
+            count,
+            damage: 0,
+            extra: None,
+        };
+        let mut slot = Some(stone(40));
+        assert_eq!(take_up_to(&mut slot, 64).map(|s| s.count), Some(40));
+        assert!(slot.is_none(), "emptied");
+        let mut slot = Some(stone(40));
+        assert_eq!(take_up_to(&mut slot, 16).map(|s| s.count), Some(16));
+        assert_eq!(slot.map(|s| s.count), Some(24));
+        assert_eq!(take_up_to(&mut None, 64), None);
     }
 }
