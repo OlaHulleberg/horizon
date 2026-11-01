@@ -45,6 +45,9 @@ pub struct ConsumeEffectSpec {
     pub id: String,
     pub duration: i32,
     pub amplifier: i32,
+    /// `MobEffectInstance`'s `ambient` (default false) and `show_particles` (default true).
+    pub ambient: bool,
+    pub show_particles: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -643,23 +646,7 @@ impl Items {
                                 .map_or(1.0, |p| p as f32);
                             let mut specs = Vec::new();
                             if let Some(list) = effect.get("effects").and_then(|l| l.as_array()) {
-                                for e in list {
-                                    if let Some(id) = e.get("id").and_then(|i| i.as_str()) {
-                                        let duration =
-                                            e.get("duration").and_then(|d| d.as_i64()).unwrap_or(0)
-                                                as i32;
-                                        let amplifier = e
-                                            .get("amplifier")
-                                            .and_then(|a| a.as_i64())
-                                            .unwrap_or(0)
-                                            as i32;
-                                        specs.push(ConsumeEffectSpec {
-                                            id: id.to_string(),
-                                            duration,
-                                            amplifier,
-                                        });
-                                    }
-                                }
+                                specs.extend(list.iter().filter_map(consume_effect_spec));
                             }
                             consume_effects.push(ConsumeEffect::ApplyEffects {
                                 effects: specs,
@@ -1886,6 +1873,37 @@ pub fn bucket_contents(
         ),
         _ => return None,
     })
+}
+
+/// One `MobEffectInstance` of an `apply_effects` consume effect (its codec's defaults).
+fn consume_effect_spec(e: &Value) -> Option<ConsumeEffectSpec> {
+    let flag = |key: &str, default: bool| e.get(key).and_then(|v| v.as_bool()).unwrap_or(default);
+    Some(ConsumeEffectSpec {
+        id: e.get("id")?.as_str()?.to_string(),
+        duration: e.get("duration").and_then(|d| d.as_i64()).unwrap_or(0) as i32,
+        amplifier: e.get("amplifier").and_then(|a| a.as_i64()).unwrap_or(0) as i32,
+        ambient: flag("ambient", false),
+        show_particles: flag("show_particles", true),
+    })
+}
+
+#[cfg(test)]
+mod consume_effect_tests {
+    #[test]
+    fn effects_keep_their_ambient_and_particle_flags() {
+        let quiet =
+            serde_json::json!({"id": "minecraft:haste", "duration": 3600, "show_particles": false});
+        let s = super::consume_effect_spec(&quiet).unwrap();
+        assert_eq!(
+            (s.id.as_str(), s.duration, s.amplifier),
+            ("minecraft:haste", 3600, 0)
+        );
+        assert!(!s.ambient && !s.show_particles);
+        let plain =
+            super::consume_effect_spec(&serde_json::json!({"id": "minecraft:regeneration"}))
+                .unwrap();
+        assert!(!plain.ambient && plain.show_particles);
+    }
 }
 
 #[cfg(test)]
