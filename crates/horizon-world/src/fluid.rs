@@ -59,7 +59,7 @@ pub fn mod_fluid_of_bucket(item: &str) -> Option<usize> {
 }
 
 /// The slot of the mod fluid whose block is `block`.
-fn mod_fluid_of_block(block: &str) -> Option<usize> {
+pub fn mod_fluid_of_block(block: &str) -> Option<usize> {
     let fluids = MOD_FLUIDS.read().ok()?;
     if fluids.is_empty() {
         return None;

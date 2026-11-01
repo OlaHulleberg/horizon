@@ -17,7 +17,7 @@ use std::{
 };
 
 const MAGIC: &[u8; 8] = b"HZFACTS\0";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const FILE_NAME: &str = "block-facts-v1.bin";
 static DIR: OnceLock<PathBuf> = OnceLock::new();
 
@@ -144,6 +144,7 @@ fn fluid_index(f: Fluid) -> u8 {
         Fluid::None => 0,
         Fluid::Water => 1,
         Fluid::Lava => 2,
+        Fluid::Modded => 3,
     }
 }
 
@@ -366,6 +367,7 @@ fn decode(
         let fluid = match r.u8()? {
             1 => Fluid::Water,
             2 => Fluid::Lava,
+            3 => Fluid::Modded,
             _ => Fluid::None,
         };
         let fluid_level = r.u8()?;

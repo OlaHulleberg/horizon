@@ -28,6 +28,8 @@ pub enum Fluid {
     None,
     Water,
     Lava,
+    /// A mod's flowing fluid (`horizon_world::fluid::set_mod_fluids`): neither water nor lava.
+    Modded,
 }
 #[derive(Clone, Debug)]
 pub struct Sounds {
@@ -360,10 +362,17 @@ impl BlockFacts {
             let state = registry.state(id).ok_or("missing registry state")?;
             let sound = &entry.sound;
             let prop = |k: &str| state.properties.get(k).map(String::as_str);
+            let modded = !state.name.starts_with("minecraft:")
+                && horizon_world::fluid::mod_fluid_of_block(&state.name).is_some();
             let (fluid, fluid_level, fluid_falling) = match state.name.as_str() {
-                "minecraft:water" | "minecraft:lava" => {
+                _ if modded
+                    || state.name == "minecraft:water"
+                    || state.name == "minecraft:lava" =>
+                {
                     let level: u8 = prop("level").and_then(|v| v.parse().ok()).unwrap_or(0);
-                    let kind = if state.name == "minecraft:water" {
+                    let kind = if modded {
+                        Fluid::Modded
+                    } else if state.name == "minecraft:water" {
                         Fluid::Water
                     } else {
                         Fluid::Lava

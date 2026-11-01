@@ -164,7 +164,8 @@ impl MobWorld<'_> {
                                 out.lava = out.lava.max(depth);
                                 out.in_lava = true;
                             }
-                            Fluid::None => {}
+                            // Mod fluids don't touch entities yet.
+                            Fluid::None | Fluid::Modded => {}
                         }
                     }
                 }

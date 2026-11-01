@@ -53,7 +53,8 @@ impl Palette {
             let mut b = match f.fluid {
                 Fluid::None => 0,
                 Fluid::Water => 1,
-                Fluid::Lava => 2,
+                // Any other fluid is drawn as lava is: by its block's colour.
+                Fluid::Lava | Fluid::Modded => 2,
             };
             if facts.is_air(horizon_world::registry::BlockStateId(i as u32)) {
                 b |= AIR;
