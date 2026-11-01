@@ -292,6 +292,11 @@ through its side `face` (`IItemHandler.extractItem`): from the first slot a hopp
 up to its whole stack; None when there is no container or nothing to take. For machines that pull from inventories
 (Create's funnels). Server-side. Bundles that use it need `"hooks": 53`.
 
+API 54 adds `native_use_item_at(pos, facing, stack)`: uses `stack` on the block in front of `pos` as a machine standing in
+for a player (Create's deployer): the dispenser's behaviour for items that act on the block there (buckets, flint and
+steel, bone meal, shears, glass bottles, glowstone, honeycomb, brushes), without its sound and smoke. What is left of the
+stack, or None for any other item. Server-side. Bundles that use it need `"hooks": 54`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

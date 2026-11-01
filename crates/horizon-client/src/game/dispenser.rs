@@ -83,6 +83,54 @@ fn overlaps(a: Aabb, b: Aabb) -> bool {
     a0.x < b1.x && b0.x < a1.x && a0.y < b1.y && b0.y < a1.y && a0.z < b1.z && b0.z < a1.z
 }
 /// `ItemStack.shrink(1)`; the slot is empty at zero.
+/// The items `native_use_item_at` uses: those whose dispenser behaviour acts on the block in
+/// front rather than throwing or placing an entity.
+fn usable_at(item: &str) -> bool {
+    matches!(
+        item,
+        "minecraft:bucket"
+            | "minecraft:lava_bucket"
+            | "minecraft:water_bucket"
+            | "minecraft:powder_snow_bucket"
+            | "minecraft:flint_and_steel"
+            | "minecraft:bone_meal"
+            | "minecraft:glass_bottle"
+            | "minecraft:glowstone"
+            | "minecraft:shears"
+            | "minecraft:honeycomb"
+            | "minecraft:brush"
+    )
+}
+
+#[cfg(test)]
+mod use_at_tests {
+    use super::usable_at;
+
+    #[test]
+    fn machines_use_items_that_act_on_the_block_in_front() {
+        for item in [
+            "minecraft:bone_meal",
+            "minecraft:water_bucket",
+            "minecraft:bucket",
+            "minecraft:shears",
+        ] {
+            assert!(usable_at(item), "{item}");
+        }
+        // Thrown, shot or placed as an entity: not a use on the block.
+        for item in [
+            "minecraft:arrow",
+            "minecraft:egg",
+            "minecraft:armor_stand",
+            "minecraft:oak_boat",
+            "minecraft:stone",
+        ] {
+            assert!(!usable_at(item), "{item}");
+        }
+        let source = include_str!("dispenser.rs");
+        assert!(source.contains("pub(super) fn native_use_item_at("));
+    }
+}
+
 fn shrink(mut stack: ItemStack) -> Option<ItemStack> {
     stack.count -= 1;
     (stack.count > 0).then_some(stack)
@@ -635,6 +683,37 @@ impl Game<'_> {
         self.dispenser_event(event, pos, 0);
         self.dispenser_event(2000, pos, data_value(facing));
         Ok(left)
+    }
+    /// Uses `stack` on the block in front of `pos` (toward `facing`) as a machine standing in
+    /// for a player would (Create's deployer, `DeployerHandler.activate`): the dispenser's own
+    /// behaviour for an item that acts on the world there (buckets, flint and steel, bone meal,
+    /// shears, glass bottles, glowstone, honeycomb, brushes), without the dispenser's sound
+    /// and smoke. What is left of the stack; None for any other item (nothing happens).
+    /// Server-side. API 54.
+    #[allow(dead_code)]
+    pub(super) fn native_use_item_at(
+        &mut self,
+        pos: [i32; 3],
+        facing: Direction,
+        stack: ItemStack,
+    ) -> Option<Option<ItemStack>> {
+        let item = stack.item.to_string();
+        if !usable_at(&item) {
+            return None;
+        }
+        let pos = (pos[0], pos[1], pos[2]);
+        let used = match item.as_str() {
+            "minecraft:bucket" => self.dispense_empty_bucket(pos, facing, stack),
+            "minecraft:flint_and_steel" => self.dispense_flint_and_steel(pos, facing, stack),
+            "minecraft:bone_meal" => self.dispense_bone_meal(pos, facing, stack),
+            "minecraft:glass_bottle" => self.dispense_glass_bottle(pos, facing, stack),
+            "minecraft:glowstone" => self.dispense_glowstone(pos, facing, stack),
+            "minecraft:shears" => self.dispense_shears(pos, facing, stack),
+            "minecraft:honeycomb" => self.dispense_honeycomb(pos, facing, stack),
+            "minecraft:brush" => Ok(self.dispense_brush(pos, facing, stack)),
+            _ => self.dispense_filled_bucket(pos, facing, stack),
+        };
+        used.ok().map(|(left, _)| left)
     }
     /// `DispenserBlock.getDefaultDispenseMethod`: equipment, spawn eggs, or a drop.
     fn dispense_default_method(
