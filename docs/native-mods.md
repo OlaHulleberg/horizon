@@ -281,6 +281,12 @@ API 51 adds `native_part_model_compound(blocks)`: one part model of many block s
 structure that moves as one (Create's contraptions turning about their bearing); and `native_part_model_free(model)`,
 which empties it when the structure is gone. Client-side. Bundles that use them need `"hooks": 51`.
 
+API 52 adds `native_items_in(dimension, min, max, f)`: the item entities whose box touches a box of the level
+(`Level.getEntitiesOfClass(ItemEntity.class, box)`), each given to `f` with its entity id, stack, position and motion;
+`f` may change the stack and the motion (`setItem`, `setDeltaMovement`), and a stack left empty removes the entity
+(`discard`). For machines that act on items in the world (Create's fans and crushing wheels). Server-side, for the
+level in place. Bundles that use it need `"hooks": 52`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

@@ -169,6 +169,7 @@ mod music;
 mod names;
 mod native_fluids;
 mod native_hooks;
+mod native_items;
 mod native_lifecycle;
 mod native_menus;
 mod native_mobs;
