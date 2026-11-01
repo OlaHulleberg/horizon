@@ -1,12 +1,14 @@
 //! Per-state gameplay facts exported from vanilla's own block-state accessors
 //! (`gameplay-facts.json`), indexed by registry state ID.
 mod decode;
+mod snapshot;
 use crate::Result;
 use horizon_world::{
     level::{Behaviours, GameplayStateSource},
     registry::{BlockRegistry, BlockStateId},
 };
 use serde_json::Value;
+pub use snapshot::set_dir as set_cache_dir;
 use std::{
     collections::HashMap,
     fs::{self, File},
@@ -242,6 +244,20 @@ impl BlockFacts {
 
     /// Decode state facts once, retaining only the small owned fields needed later.
     pub fn load_with_projection(
+        root: &Path,
+        registry: &BlockRegistry,
+        behaviours: &Value,
+    ) -> Result<(Self, Vec<GameplayProjection>)> {
+        // A snapshot of a previous decode of the same tables (`set_cache_dir`).
+        if let Some(cached) = snapshot::load(root, registry.len()) {
+            return Ok(cached);
+        }
+        let decoded = Self::load_projection_uncached(root, registry, behaviours)?;
+        snapshot::store(root, &decoded.0, &decoded.1);
+        Ok(decoded)
+    }
+
+    fn load_projection_uncached(
         root: &Path,
         registry: &BlockRegistry,
         behaviours: &Value,
