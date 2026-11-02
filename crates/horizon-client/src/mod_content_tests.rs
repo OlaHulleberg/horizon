@@ -1681,6 +1681,40 @@ fn render_shape_moves_a_block_out_of_the_chunk_mesh() {
     fs::remove_dir_all(scratch).unwrap();
 }
 
+/// `properties.dynamic_model` marks the block's facts row, which the mesher's
+/// `StateFacts.dynamic_model` reads; vanilla rows stay without it.
+#[test]
+fn dynamic_model_marks_a_block_for_model_overrides() {
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-dynamic-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    fs::create_dir_all(&base).unwrap();
+    let facts = r#"{"states":[["minecraft:stone",false,false,"Block{minecraft:stone}",{"id":"minecraft:stone"}]],
+      "defaults":{"minecraft:stone":0}}"#;
+    fs::write(base.join("facts.json"), facts).unwrap();
+    let gameplay = r#"{"states":[{"item":"minecraft:stone"}]}"#;
+    fs::write(base.join("gameplay-facts.json"), gameplay).unwrap();
+    fs::write(base.join("items.json"), r#"{"minecraft:stone":{}}"#).unwrap();
+    let declaration = r#"{"template":"minecraft:stone","properties":{"dynamic_model":true}}"#;
+    let m = folder_mod(
+        &scratch.join("mod"),
+        &[
+            ("horizon-mod.toml", &manifest("testmod", "")),
+            ("data/testmod/horizon/block/copy.json", declaration),
+        ],
+    );
+    let mods = [m];
+    let plan = Plan::new(&base, &mods).unwrap();
+    let mut doc: J = serde_json::from_str(gameplay).unwrap();
+    plan.json("gameplay-facts.json", &mut doc).unwrap();
+    let Some(J::Arr(rows)) = doc.get("states") else {
+        panic!("no states")
+    };
+    assert_eq!(rows[1].get("dynamic_model"), Some(&J::Bool(true)));
+    assert_eq!(rows[0].get("dynamic_model"), None);
+    fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn analog_output_makes_comparators_read_a_block() {
     let scratch = std::env::temp_dir().join(format!("horizon-mod-analog-{}", std::process::id()));

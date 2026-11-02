@@ -56,6 +56,9 @@ pub struct StateFacts {
     pub random_ticks: bool,
     pub block_entity: bool,
     pub render_shape: RenderShape,
+    /// A content block's `properties.dynamic_model`: the chunk mesher looks its positions
+    /// up in the native mods' model overrides.
+    pub dynamic_model: bool,
     pub full_collision: bool,
     pub friction: f32,
     pub explosion_resistance: f32,
@@ -436,6 +439,7 @@ impl BlockFacts {
                     Some("ENTITYBLOCK_ANIMATED") => RenderShape::Animated,
                     _ => RenderShape::Model,
                 },
+                dynamic_model: entry.dynamic_model,
                 full_collision: entry.full_collision,
                 friction: entry.friction as f32,
                 explosion_resistance: entry.explosion_resistance as f32,

@@ -80,6 +80,10 @@ pub struct BlockProperties {
     /// Whether comparators read the block (`Block.hasAnalogOutputSignal`); a native mod answers
     /// what they read with `native_analog_output_signal`. Unset keeps the template's.
     pub analog_output: Option<bool>,
+    /// Whether the chunk mesher asks a native mod's model overrides for the block's positions
+    /// (NeoForge's per-position `ModelData`, set with `native_block_model_override`), as a
+    /// copycat block that draws another block's model. Unset or false: never asked.
+    pub dynamic_model: Option<bool>,
 }
 
 /// A block's `RenderShape`.

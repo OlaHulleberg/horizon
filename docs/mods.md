@@ -93,6 +93,11 @@ draws as animated parts; `invisible`, not drawn at all.
 native mod's `native_analog_output_signal` ([native-mods.md](native-mods.md)); `false` and they don't, even when the
 template has an analog output (a barrel's).
 
+`properties.dynamic_model` (NeoForge's per-position `ModelData`): `true` and the chunk mesher draws each of the block's
+positions as a native mod's client says with `native_block_model_override` ([native-mods.md](native-mods.md)), for a
+copycat block that shows another block's model cut to its own shape; a position with no override draws the block's
+own model. Blocks without it never look one up.
+
 A block whose state properties no vanilla block has declares its own with `state_properties`: each property's
 values, the first being the default. Its states are every combination, ordered as vanilla's `StateDefinition` orders
 them (properties by name, the last varying fastest, values as listed), and each copies the template state that

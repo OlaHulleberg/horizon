@@ -17,7 +17,7 @@ use std::{
 };
 
 const MAGIC: &[u8; 8] = b"HZFACTS\0";
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 const FILE_NAME: &str = "block-facts-v1.bin";
 static DIR: OnceLock<PathBuf> = OnceLock::new();
 
@@ -180,6 +180,7 @@ fn encode(facts: &BlockFacts, projection: &[GameplayProjection], key: u64) -> Ve
             u8::from(s.random_ticks),
             u8::from(s.block_entity),
             shape_index(s.render_shape),
+            u8::from(s.dynamic_model),
             u8::from(s.full_collision),
             fluid_index(s.fluid),
             s.fluid_level,
@@ -363,6 +364,7 @@ fn decode(
             1 => RenderShape::Invisible,
             _ => RenderShape::Animated,
         };
+        let dynamic_model = r.bool()?;
         let full_collision = r.bool()?;
         let fluid = match r.u8()? {
             1 => Fluid::Water,
@@ -397,6 +399,7 @@ fn decode(
             random_ticks,
             block_entity,
             render_shape,
+            dynamic_model,
             full_collision,
             friction,
             explosion_resistance,
@@ -472,6 +475,7 @@ mod tests {
             random_ticks: false,
             block_entity: false,
             render_shape: RenderShape::Animated,
+            dynamic_model: true,
             full_collision: true,
             friction: 0.6,
             explosion_resistance: 6.0,

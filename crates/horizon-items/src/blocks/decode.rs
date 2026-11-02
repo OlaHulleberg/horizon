@@ -170,6 +170,7 @@ object!(Entry<'a> {
     ignited_by_lava: bool = false => value(flag),
     push: Option<String> = None => value(text),
     render_shape: Option<String> = None => value(text),
+    dynamic_model: bool = false => value(flag),
     full_collision: bool = false => value(flag),
     friction: f64 = 0.0 => value(number),
     explosion_resistance: f64 = 0.0 => value(number),

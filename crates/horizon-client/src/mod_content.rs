@@ -888,6 +888,9 @@ impl<'a> Plan<'a> {
             };
             row.set("render_shape", J::Str(shape.into()));
         }
+        if let Some(on) = p.dynamic_model {
+            row.set("dynamic_model", J::Bool(on));
+        }
     }
 
     /// `properties.analog_output` on the new blocks' behaviour rows (`[sturdy, flags, ...]`):
