@@ -1539,6 +1539,8 @@ pub struct Resources {
 
 struct WorldCore {
     facts: BlockFacts,
+    /// Whether a state has `entity_inside` (content blocks a native mod hears entities in).
+    entity_inside: bool,
     biomes: Arc<Biomes>,
     environment: Environment,
     collision: BlockCollisionRegistry<'static>,
@@ -1592,6 +1594,10 @@ impl Resources {
     }
     fn facts(&self) -> &BlockFacts {
         &self.core.facts
+    }
+    /// Whether any block state has `entity_inside`, so the hook's search is skipped otherwise.
+    fn any_entity_inside(&self) -> bool {
+        self.core.entity_inside
     }
     fn items(&self) -> &Items {
         &self.rest().items
@@ -3988,6 +3994,7 @@ impl Game<'_> {
                 b.entity_on_big_dripleaf(level, ticks, pos, on_ground, feet_y);
             }
         });
+        self.native_entities_inside();
         self.process_level_events()?;
         self.tick_scheduled()?;
         self.with_level(|b, level, ticks| {
@@ -16901,6 +16908,7 @@ fn load_resources(
     progress.set(5);
     let resources = Resources {
         core: WorldCore {
+            entity_inside: facts.states.iter().any(|s| s.entity_inside),
             facts,
             biomes: biomes.clone(),
             environment,

@@ -380,6 +380,13 @@
       "name": "player_tick",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_player_tick"
+    },
+    {
+      "name": "entity_inside",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_entity_inside",
+      "side": "server",
+      "cancellable": false
     }
   ]
 }

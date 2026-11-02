@@ -369,6 +369,14 @@ API 60 adds [entities](#entities) for server mods: read any entity of a level by
 (NeoForge's `Entity.setDeltaMovement` with `hurtMarked`), reset its fall (`Entity.resetFallDistance`) or turn it
 (`Entity.setYRot`), players included. Bundles that use them need `"hooks": 60`.
 
+API 61 adds `native_entity_inside(dimension, pos, state, entity)`, vanilla's `BlockBehaviour.entityInside`, for content
+blocks with `properties.entity_inside` ([mods.md](mods.md)): each server tick, once for each such block an entity's box
+(less 1.0E-5 on each side) is in, with the entity as `native_entity` reads it (players, mobs, item entities,
+minecarts, boats and armor stands; not spectators). It fires where the level's block tick checks pressure plates and
+tripwires, with the entities where the last tick left them; inside it, the [entity helpers](#entities) move, turn and
+stop them (a turntable, a belt). With no block of that property in the game nothing is searched. Server-side. Bundles
+that use it need `"hooks": 61`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
@@ -628,7 +636,7 @@ are reached; ids are entity ids, the ones the mob, item and hook helpers give.
   again; a player's client is turned by the difference from the yaw the server last heard
   (`ClientboundPlayerRotationPacket`, relative), so their own mouse movement on the way is kept.
 - A player inside their own hook (`native_player_tick`, `native_use_item_on`...) has their state swapped in and is not
-  reached: call these from `native_level_tick_post`, where every player of the level is.
+  reached: call these from `native_level_tick_post` or `native_entity_inside`, where every player of the level is.
 
 ### Mod messages
 

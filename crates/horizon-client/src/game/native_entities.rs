@@ -5,7 +5,10 @@
 //! minecarts, boats and armor stands; on a server only, for the level in place, which each
 //! names by its `dimension` as `native_set_block` does.
 use super::Game;
-use horizon_core::geometry::{Aabb, Vec3};
+use horizon_core::{
+    geometry::{Aabb, Vec3},
+    position::BlockPos,
+};
 use horizon_protocol::packets::play::{self, Clientbound as C};
 
 /// An entity as a native mod reads it.
@@ -39,6 +42,16 @@ enum Found {
     Cart(usize),
     Boat(usize),
     Stand(usize),
+}
+
+/// The blocks a box is in, less 1.0E-5 on each side (`Entity.checkInsideBlocks`).
+fn cells(min: [f64; 3], max: [f64; 3]) -> impl Iterator<Item = [i32; 3]> {
+    let e = 1.0e-5;
+    let lo = min.map(|v| (v + e).floor() as i32);
+    let hi = max.map(|v| (v - e).floor() as i32);
+    (lo[0]..=hi[0]).flat_map(move |x| {
+        (lo[1]..=hi[1]).flat_map(move |y| (lo[2]..=hi[2]).map(move |z| [x, y, z]))
+    })
 }
 
 fn finite(v: [f64; 3]) -> bool {
@@ -205,6 +218,15 @@ impl Game<'_> {
         if !self.native_server_level(dimension) || !finite(min) || !finite(max) {
             return Vec::new();
         }
+        self.native_all_entities(false)
+            .into_iter()
+            .filter(|e| touches(min, max, e.min, e.max))
+            .collect()
+    }
+
+    /// Every entity of the level in place the helpers reach; without spectators when
+    /// `affected` (`Entity.isAffectedByBlocks`: a spectator has no physics).
+    fn native_all_entities(&self, affected: bool) -> Vec<NativeEntity> {
         let players = self.lan.as_ref().map_or(0, |h| h.hub.guests.len());
         let all = (0..players)
             .map(Found::Player)
@@ -216,14 +238,37 @@ impl Game<'_> {
         all.filter(|f| match *f {
             Found::Player(i) => self.lan.as_ref().is_some_and(|h| {
                 let g = &h.hub.guests[i];
-                h.hub.here(g) && g.loaded && !g.dead
+                h.hub.here(g) && g.loaded && !g.dead && !(affected && g.spectator())
             }),
             Found::Mob(i) => !self.mobs[i].removed,
             _ => true,
         })
         .filter_map(|f| self.native_entity_at(f))
-        .filter(|e| touches(min, max, e.min, e.max))
         .collect()
+    }
+
+    /// `Entity.checkInsideBlocks` → `BlockBehaviour.entityInside` for content blocks with
+    /// `properties.entity_inside`: each entity, once a server tick, for each such block its box
+    /// (less 1.0E-5 on each side) is in. Nothing is searched when no block has the property.
+    pub(super) fn native_entities_inside(&mut self) {
+        if !self.res.any_entity_inside()
+            || (self.serving.is_none() && self.options.dedicated.is_none())
+        {
+            return;
+        }
+        let mut inside = Vec::new();
+        for e in self.native_all_entities(true) {
+            for [x, y, z] in cells(e.min, e.max) {
+                let state = self.world.block(x, y, z);
+                if self.res.facts().get(state).entity_inside {
+                    inside.push((BlockPos::new(x, y, z), state, e.clone()));
+                }
+            }
+        }
+        let dimension = self.dim.id();
+        for (pos, state, entity) in inside {
+            self.native_entity_inside(dimension, pos, state, &entity);
+        }
     }
 
     /// `Entity.setDeltaMovement` with `hurtMarked`: entity `id`'s motion becomes `velocity`
@@ -334,7 +379,34 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{touches, turn};
+    use super::{cells, touches, turn};
+
+    #[test]
+    fn a_box_is_inside_the_blocks_it_reaches_past_the_margin() {
+        // A player standing on a block: their feet touch its top, but aren't inside it.
+        let got: Vec<_> = cells([0.2, 64.0, 0.2], [0.8, 65.8, 0.8]).collect();
+        assert_eq!(got, vec![[0, 64, 0], [0, 65, 0]]);
+        let got: Vec<_> = cells([0.7, 64.5, 0.2], [1.3, 64.9, 0.8]).collect();
+        assert_eq!(got, vec![[0, 64, 0], [1, 64, 0]]);
+    }
+
+    #[test]
+    fn the_inside_hook_fires_from_the_block_tick_and_only_with_flagged_blocks() {
+        let game = include_str!("../game.rs");
+        let blocks = &game[game.find("fn tick_blocks(").unwrap()..];
+        let blocks = &blocks[..blocks.find("\n    fn ").unwrap()];
+        assert!(blocks.contains("self.native_entities_inside();"));
+        assert!(game.contains("entity_inside: facts.states.iter().any(|s| s.entity_inside)"));
+        let source = include_str!("native_entities.rs");
+        let inside = &source[source.find("fn native_entities_inside(").unwrap()..];
+        let gate = inside.find("!self.res.any_entity_inside()").unwrap();
+        let search = inside.find("self.native_all_entities(true)").unwrap();
+        let hook = inside
+            .find("self.native_entity_inside(dimension, pos, state, &entity)")
+            .unwrap();
+        assert!(gate < search && search < hook);
+        assert!(inside.contains("if self.res.facts().get(state).entity_inside"));
+    }
 
     #[test]
     fn a_player_is_turned_the_short_way_round() {

@@ -6,6 +6,9 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 61 adds `native_entity_inside` (`BlockBehaviour.entityInside`) for content blocks
+//! with `properties.entity_inside`.
+//!
 //! API 60 adds any entity's motion for server mods (`native_entity`, `native_entities_in`,
 //! `native_set_delta_movement`, `native_reset_fall_distance`, `native_set_yaw` in
 //! `native_entities.rs`: `Entity.setDeltaMovement` with `hurtMarked`, `resetFallDistance`,
@@ -203,6 +206,7 @@ use super::native_lifecycle::{NativeLifecycleContext, ServerTickPhase, WorldPhas
 use super::{
     Game, GameLevel, LevelDimension, Screen,
     execution_role::ExecutionRole,
+    native_entities::NativeEntity,
     native_panel_recipes::RecipePage,
     native_server::{NativeCommand, NativeServerPlayer},
 };
@@ -298,7 +302,7 @@ fn input_key(
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 60;
+pub(crate) const NATIVE_HOOKS_API: u32 = 61;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -889,6 +893,22 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         let _ = (pos, face, state, canceled);
+    }
+    /// `BlockBehaviour.entityInside`: `entity` is inside the block `state` at `pos` of a content
+    /// block with `properties.entity_inside`, its box (less 1.0E-5 on each side) in the block's
+    /// cell. Once a server tick for each such block an entity is in (players, mobs, item
+    /// entities, minecarts, boats and armor stands; not spectators), where the level's block
+    /// tick checks pressure plates and tripwires, with the entities where the last tick left
+    /// them. Move, turn or stop it with the API 60 helpers (`native_set_delta_movement`...).
+    /// Server-side. API 61.
+    pub(super) fn native_entity_inside(
+        &mut self,
+        dimension: &str,
+        pos: BlockPos,
+        state: BlockStateId,
+        entity: &NativeEntity,
+    ) {
+        let _ = (dimension, pos, state, entity);
     }
     /// A living player's server tick ends (`ServerPlayer.tick`): once a tick
     /// for every player in the world, after their digging, item use,
