@@ -1175,6 +1175,19 @@ impl LevelAccess for GameLevel<'_> {
         }
         machines::container_signal(self.world, self.behaviours, self.items, self.registry, pos)
     }
+    fn adjust_analog_output(
+        &self,
+        pos: BlockPos,
+        state: BlockStateId,
+        direction: Direction,
+        vanilla: i32,
+    ) -> i32 {
+        let mut signal = vanilla;
+        if self.native_authoritative {
+            self.native_analog_output_signal(self.dimension, pos, state, direction, &mut signal);
+        }
+        signal.clamp(0, 15)
+    }
     fn item_frame_analog_output(&self, pos: BlockPos, facing: Direction) -> Option<i32> {
         let mut frames = self
             .item_frames

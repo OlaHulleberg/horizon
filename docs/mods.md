@@ -89,6 +89,10 @@ blockstate variant turns the mesh as it turns any model. Nothing culls an OBJ fa
 mesh (the template's default for most blocks); `entityblock_animated`, not in the chunk mesh, for a block a native mod
 draws as animated parts; `invisible`, not drawn at all.
 
+`properties.analog_output` (vanilla's `Block.hasAnalogOutputSignal`): `true` and comparators read the block, through a
+native mod's `native_analog_output_signal` ([native-mods.md](native-mods.md)); `false` and they don't, even when the
+template has an analog output (a barrel's).
+
 A block whose state properties no vanilla block has declares its own with `state_properties`: each property's
 values, the first being the default. Its states are every combination, ordered as vanilla's `StateDefinition` orders
 them (properties by name, the last varying fastest, values as listed), and each copies the template state that

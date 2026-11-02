@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 56 adds comparators reading mods' blocks (`native_analog_output_signal`,
+//! `Block.getAnalogOutputSignal`, for content blocks with `properties.analog_output`) and the
+//! helper `native_update_neighbour_for_output_signal`.
+//!
 //! API 55 adds text in the world for mods' blocks (`native_text_set`, `native_text_clear` and
 //! `TextLine` in `native_text.rs`: NeoForge's `BlockEntityRenderer` drawing with
 //! `Font.drawInBatch`).
@@ -235,7 +239,7 @@ pub(super) const MOD_DATA: &str = "horizon:mod_data";
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 55;
+pub(crate) const NATIVE_HOOKS_API: u32 = 56;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -321,6 +325,25 @@ impl GameLevel<'_> {
         signal: &mut i32,
     ) {
         let _ = (dimension, pos, state, face, direct, signal);
+    }
+
+    /// `Block.getAnalogOutputSignal`: what a comparator reads from the block `state` at `pos`,
+    /// `direction` pointing from the block to the comparator. Asked only of blocks with an
+    /// analog output (`hasAnalogOutputSignal`: vanilla's, and content blocks with
+    /// `properties.analog_output`). `signal` holds vanilla's answer (the template's, or 0):
+    /// change it when the block is yours (0 to 15; anything else is clamped). Answer from your
+    /// own state, without changing the world; when it changes, call
+    /// `native_update_neighbour_for_output_signal`. Authoritative servers only. API 56.
+    #[inline(always)]
+    pub(super) fn native_analog_output_signal(
+        &self,
+        dimension: LevelDimension,
+        pos: BlockPos,
+        state: BlockStateId,
+        direction: Direction,
+        signal: &mut i32,
+    ) {
+        let _ = (dimension, pos, state, direction, signal);
     }
 
     /// `BlockState.isSignalSource`: set `source` for a block of yours that
@@ -1543,6 +1566,24 @@ impl Game<'_> {
         });
         true
     }
+    /// The block at `pos` changed what comparators read from it: comparators beside it, or
+    /// behind a conductor there, read it again (`Level.updateNeighbourForOutputSignal`). Acts
+    /// on the level in place: false (and nothing happens) when `dimension` is another, or this
+    /// window isn't a server. API 56.
+    pub(super) fn native_update_neighbour_for_output_signal(
+        &mut self,
+        dimension: &str,
+        pos: [i32; 3],
+    ) -> bool {
+        if (self.serving.is_none() && self.options.dedicated.is_none())
+            || dimension != self.dim.id()
+        {
+            return false;
+        }
+        let at = BlockPos::new(pos[0], pos[1], pos[2]);
+        self.with_level(|b, level, ticks| b.update_neighbour_for_output_signal(level, ticks, at));
+        true
+    }
     /// Runs `change` on the mod block entity at `pos` (a generator charging
     /// the machine beside it) and returns what it returns; none for any
     /// other block entity, and for the one ticking now, which is out of the
@@ -2612,6 +2653,24 @@ mod tests {
         assert!(take < gate, "the queue is emptied before the server check");
         assert!(events.contains("self.native_chunk_load(dimension, &chunk)"));
         assert!(events.contains("self.native_chunk_unload(dimension, chunk)"));
+    }
+
+    #[test]
+    fn comparators_ask_the_mods_on_a_server() {
+        let game = include_str!("../game.rs");
+        let adjust = &game[game.find("fn adjust_analog_output(").unwrap()..];
+        let adjust = &adjust[..adjust.find("\n    fn ").unwrap()];
+        let gate = adjust.find("if self.native_authoritative").unwrap();
+        let hook = adjust
+            .find("self.native_analog_output_signal(self.dimension, pos, state, direction, &mut signal)")
+            .unwrap();
+        assert!(gate < hook);
+        assert!(adjust.contains("signal.clamp(0, 15)"));
+        let hooks = include_str!("native_hooks.rs");
+        let update = &hooks[hooks
+            .find("fn native_update_neighbour_for_output_signal")
+            .unwrap()..];
+        assert!(update.contains("b.update_neighbour_for_output_signal(level, ticks, at)"));
     }
 
     #[test]

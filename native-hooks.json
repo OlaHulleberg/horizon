@@ -326,6 +326,13 @@
       "target": "horizon_client::game::native_hooks::GameLevel<'_>::native_block_signal"
     },
     {
+      "name": "analog_output_signal",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::GameLevel<'_>::native_analog_output_signal",
+      "side": "server",
+      "cancellable": false
+    },
+    {
       "name": "is_signal_source",
       "version": 1,
       "target": "horizon_client::game::native_hooks::GameLevel<'_>::native_is_signal_source"

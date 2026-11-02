@@ -307,6 +307,15 @@ text's font and stays on the GPU as a part model: it is laid out again only when
 may set it every tick, and it shows within 64 blocks of the camera in a loaded chunk. Client-side (the window's `Game`).
 Bundles that use it need `"hooks": 55`.
 
+API 56 adds comparators reading a mod's blocks, vanilla's `Block.hasAnalogOutputSignal` and `getAnalogOutputSignal`: a
+content block with `properties.analog_output` set to `true` is read by comparators (`false` stops a template's analog
+output), and `native_analog_output_signal(dimension, pos, state, direction, signal)` answers what they read (0 to 15;
+`direction` points from the block to the comparator; `signal` holds the template's answer). It is asked only of
+blocks with an analog output, as comparators read them: check the block first and answer from the mod's own state.
+When the answer changes, `native_update_neighbour_for_output_signal(dimension, pos)` (`Level.updateNeighbourForOutputSignal`)
+makes the comparators beside the block, or behind a conductor there, read it again; it acts on the level in place and
+is refused for another dimension. Server-side. Bundles that use them need `"hooks": 56`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

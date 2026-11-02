@@ -1680,3 +1680,59 @@ fn render_shape_moves_a_block_out_of_the_chunk_mesh() {
     }
     fs::remove_dir_all(scratch).unwrap();
 }
+
+#[test]
+fn analog_output_makes_comparators_read_a_block() {
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-analog-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    fs::create_dir_all(&base).unwrap();
+    let facts = r#"{"states":[["minecraft:stone",false,false,"Block{minecraft:stone}",{"id":"minecraft:stone"}],
+      ["minecraft:barrel",false,false,"Block{minecraft:barrel}",{"id":"minecraft:barrel"}]],
+      "defaults":{"minecraft:stone":0,"minecraft:barrel":1}}"#;
+    fs::write(base.join("facts.json"), facts).unwrap();
+    let gameplay = r#"{"states":[{"item":"minecraft:stone"},{"item":"minecraft:barrel"}]}"#;
+    fs::write(base.join("gameplay-facts.json"), gameplay).unwrap();
+    fs::write(
+        base.join("items.json"),
+        r#"{"minecraft:stone":{},"minecraft:barrel":{}}"#,
+    )
+    .unwrap();
+    // Stone's flags are 5 (solid, conductor), a barrel's 21 (and an analog output).
+    let behaviours = r#"{"states":[[0,5],[0,21]],"blocks":[],"items":{}}"#;
+    let m = folder_mod(
+        &scratch.join("mod"),
+        &[
+            ("horizon-mod.toml", &manifest("testmod", "")),
+            (
+                "data/testmod/horizon/block/gauge.json",
+                r#"{"template":"minecraft:stone","properties":{"analog_output":true}}"#,
+            ),
+            (
+                "data/testmod/horizon/block/crate.json",
+                r#"{"template":"minecraft:barrel","properties":{"analog_output":false}}"#,
+            ),
+            (
+                "data/testmod/horizon/block/plain.json",
+                r#"{"template":"minecraft:barrel"}"#,
+            ),
+        ],
+    );
+    let mods = [m];
+    let plan = Plan::new(&base, &mods).unwrap();
+    let mut doc: J = serde_json::from_str(behaviours).unwrap();
+    plan.json("block-behaviours.json", &mut doc).unwrap();
+    let Some(J::Arr(rows)) = doc.get("states") else {
+        panic!("no states")
+    };
+    let flags: Vec<_> = rows
+        .iter()
+        .map(|r| match r {
+            J::Arr(r) => r[1].as_u32(),
+            _ => None,
+        })
+        .collect();
+    // Vanilla's rows, then the mod's blocks by id: crate, gauge, plain.
+    assert_eq!(flags, [5, 21, 5, 21, 21].map(Some));
+    fs::remove_dir_all(scratch).unwrap();
+}

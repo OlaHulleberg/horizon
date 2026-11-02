@@ -77,6 +77,9 @@ pub struct BlockProperties {
     /// in the chunk mesh), `entityblock_animated` (drawn elsewhere: a native mod's
     /// animated parts) or `invisible` (not drawn).
     pub render_shape: Option<RenderShape>,
+    /// Whether comparators read the block (`Block.hasAnalogOutputSignal`); a native mod answers
+    /// what they read with `native_analog_output_signal`. Unset keeps the template's.
+    pub analog_output: Option<bool>,
 }
 
 /// A block's `RenderShape`.

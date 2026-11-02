@@ -55,6 +55,8 @@ pub(crate) struct TestLevel {
     /// What `adjust_signal` answers at a position: the weak and direct signal,
     /// and the only direction they go in, if any.
     pub signals: HashMap<BlockPos, (i32, i32, Option<Direction>)>,
+    /// What `adjust_analog_output` answers at a position.
+    pub analog: HashMap<BlockPos, i32>,
 }
 impl TestLevel {
     fn new(b: &Behaviours) -> Self {
@@ -63,6 +65,7 @@ impl TestLevel {
             air: b.air(),
             random: LegacyRandom::new(42),
             signals: HashMap::new(),
+            analog: HashMap::new(),
             time: 0,
             day_time: 0,
             events: Vec::new(),
@@ -73,6 +76,15 @@ impl TestLevel {
     }
 }
 impl LevelAccess for TestLevel {
+    fn adjust_analog_output(
+        &self,
+        pos: BlockPos,
+        _state: BlockStateId,
+        _direction: Direction,
+        vanilla: i32,
+    ) -> i32 {
+        self.analog.get(&pos).copied().unwrap_or(vanilla)
+    }
     fn adjust_signal(
         &self,
         pos: BlockPos,
@@ -1920,6 +1932,62 @@ fn a_level_can_answer_for_a_blocks_signal() {
     let redstone = w.id("redstone_block", &[]);
     w.set(source, redstone);
     assert_eq!(read(&mut w, beside), 15);
+}
+
+#[test]
+fn a_level_can_answer_for_a_blocks_analog_output() {
+    let mut w = world!();
+    let source = BlockPos::new(0, 1, 0);
+    let comparator = BlockPos::new(1, 1, 0);
+    let stone = w.id("stone", &[]);
+    w.put(BlockPos::new(0, 0, 0), stone);
+    w.put(BlockPos::new(1, 0, 0), stone);
+    // A barrel has an analog output; empty, it gives 0.
+    w.set(
+        source,
+        w.id("barrel", &[("facing", "up"), ("open", "false")]),
+    );
+    let reading = w.id(
+        "comparator",
+        &[
+            ("facing", "west"),
+            ("mode", "compare"),
+            ("powered", "false"),
+        ],
+    );
+    w.set(comparator, reading);
+    let output = |w: &World| w.ticks.comparator_outputs.get(&comparator).copied();
+    for _ in 0..4 {
+        w.tick();
+    }
+    assert_eq!(output(&w).unwrap_or(0), 0);
+
+    // The level answers 7 for the block: comparators read it once told to.
+    w.level.analog.insert(source, 7);
+    for _ in 0..4 {
+        w.tick();
+    }
+    assert_eq!(output(&w).unwrap_or(0), 0, "not read again until told");
+    w.f.behaviours
+        .update_neighbour_for_output_signal(&mut w.level, &mut w.ticks, source);
+    for _ in 0..4 {
+        w.tick();
+    }
+    assert_eq!(output(&w), Some(7));
+    assert!(
+        w.name(comparator).contains("powered=true"),
+        "{}",
+        w.name(comparator)
+    );
+
+    // Without an answer, vanilla's again.
+    w.level.analog.clear();
+    w.f.behaviours
+        .update_neighbour_for_output_signal(&mut w.level, &mut w.ticks, source);
+    for _ in 0..4 {
+        w.tick();
+    }
+    assert_eq!(output(&w), Some(0));
 }
 
 #[test]

@@ -479,6 +479,18 @@ pub trait LevelAccess {
     ) -> i32 {
         0
     }
+    /// `BlockState.getAnalogOutputSignal` once the library answered `vanilla`, for a block
+    /// with an analog output (`hasAnalogOutputSignal`) that a comparator reads: the signal to
+    /// use. `direction` points from the block to the comparator. The default keeps it.
+    fn adjust_analog_output(
+        &self,
+        _pos: BlockPos,
+        _state: BlockStateId,
+        _direction: Direction,
+        vanilla: i32,
+    ) -> i32 {
+        vanilla
+    }
     /// `ItemFrame.getAnalogOutput` of the one item frame in the block at
     /// `pos` that faces `facing` (`ComparatorBlock.getItemFrame`), or None when
     /// there is not exactly one.

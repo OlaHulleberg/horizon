@@ -667,7 +667,8 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         }
     }
 
-    /// `getAnalogOutputSignal` for state-only sources; others ask the caller.
+    /// `getAnalogOutputSignal` for state-only sources; others ask the caller, and the
+    /// caller may change the answer (`LevelAccess::adjust_analog_output`).
     pub(crate) fn analog_output(
         &self,
         state: BlockStateId,
@@ -676,7 +677,7 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
     ) -> i32 {
         let b = self.b;
         let p = b.props;
-        match b.data(state).class {
+        let vanilla = match b.data(state).class {
             Class::Beehive => b.table.int(state, p.honey_level),
             Class::Cake => (7 - b.table.int(state, p.bites)) * 2,
             Class::CandleCake => 14,
@@ -708,7 +709,9 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
                     .map_or(1, |i| i as i32 + 1)
             }
             _ => self.level.block_entity_analog_signal(pos, state, direction),
-        }
+        };
+        self.level
+            .adjust_analog_output(pos, state, direction, vanilla)
     }
 
     // ---- torches ----

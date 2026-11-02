@@ -890,6 +890,32 @@ impl<'a> Plan<'a> {
         }
     }
 
+    /// `properties.analog_output` on the new blocks' behaviour rows (`[sturdy, flags, ...]`):
+    /// whether comparators read them (`Block.hasAnalogOutputSignal`).
+    fn analog_outputs(&self, rows: &mut [J]) {
+        use horizon_world::level::data::state_flags::ANALOG_OUTPUT;
+        for b in &self.blocks {
+            let Some(on) = b.decl.properties.analog_output else {
+                continue;
+            };
+            for i in 0..b.sources.len() as u32 {
+                let Some(J::Arr(row)) = rows.get_mut((b.rename.first + i) as usize) else {
+                    continue;
+                };
+                if let Some(J::Num(n)) = row.get_mut(1)
+                    && let Some(flags) = n.as_u64()
+                {
+                    let flags = if on {
+                        flags | u64::from(ANALOG_OUTPUT)
+                    } else {
+                        flags & !u64::from(ANALOG_OUTPUT)
+                    };
+                    *n = flags.into();
+                }
+            }
+        }
+    }
+
     /// Adds each new block's copy of the template's entry to a map by name.
     fn names(&self, map: &mut J, ids: bool) {
         for b in &self.blocks {
@@ -1001,6 +1027,9 @@ impl<'a> Plan<'a> {
             "gameplay-facts.json" => states(doc, "states", false, true)?,
             "block-behaviours.json" => {
                 states(doc, "states", false, false)?;
+                if let Some(J::Arr(rows)) = doc.at("states") {
+                    self.analog_outputs(rows);
+                }
                 let Some(J::Arr(blocks)) = doc.at("blocks") else {
                     return Err("no blocks".into());
                 };
