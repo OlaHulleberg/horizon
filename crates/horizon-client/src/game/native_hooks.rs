@@ -6,6 +6,11 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 60 adds any entity's motion for server mods (`native_entity`, `native_entities_in`,
+//! `native_set_delta_movement`, `native_reset_fall_distance`, `native_set_yaw` in
+//! `native_entities.rs`: `Entity.setDeltaMovement` with `hurtMarked`, `resetFallDistance`,
+//! `setYRot`) for players, mobs, item entities, minecarts, boats and armor stands.
+//!
 //! API 59 adds per-position block models (`native_block_model_override` in
 //! `native_models.rs`: NeoForge's `ModelData` read by an `IDynamicBakedModel`) for content
 //! blocks with `properties.dynamic_model`.
@@ -293,7 +298,7 @@ fn input_key(
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 59;
+pub(crate) const NATIVE_HOOKS_API: u32 = 60;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.

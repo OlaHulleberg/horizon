@@ -69,6 +69,10 @@ mod tests {
         assert!(set_override(&mut world, true, [1, 64, 2], None));
         assert!(world.model_overrides.is_empty());
         let hooks = include_str!("native_hooks.rs");
-        assert!(hooks.contains("pub(crate) const NATIVE_HOOKS_API: u32 = 59;"));
+        let api = hooks
+            .split("pub(crate) const NATIVE_HOOKS_API: u32 = ")
+            .nth(1)
+            .unwrap();
+        assert!(api[..api.find(';').unwrap()].parse::<u32>().unwrap() >= 59);
     }
 }

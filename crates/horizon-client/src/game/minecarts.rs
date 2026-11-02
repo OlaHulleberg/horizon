@@ -88,7 +88,7 @@ pub(super) struct Minecart {
     pub flipped: bool,
     pub(super) on_ground: bool,
     horizontal_collision: bool,
-    fall_distance: f64,
+    pub(super) fall_distance: f64,
     pub hurt_time: i32,
     pub hurt_dir: i32,
     pub damage: f32,

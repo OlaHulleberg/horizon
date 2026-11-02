@@ -365,6 +365,10 @@ self.native_block_model_override(pos, Some(model));
 self.native_block_model_override(pos, None);
 ```
 
+API 60 adds [entities](#entities) for server mods: read any entity of a level by id or in a box, and set its motion
+(NeoForge's `Entity.setDeltaMovement` with `hurtMarked`), reset its fall (`Entity.resetFallDistance`) or turn it
+(`Entity.setYRot`), players included. Bundles that use them need `"hooks": 60`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
@@ -606,6 +610,25 @@ place; `native_server_tick` does not define one, so name the dimension and expec
   and no loot (it is not saved either).
 - While the game ticks its mobs they are out of the level: from a hook inside that tick, a spawned mob joins after the tick, and the others
   read as gone.
+
+### Entities
+
+API 60, `crates/horizon-client/src/game/native_entities.rs`: any entity of the level in place, for server mods (a
+server's `Game` only; elsewhere the readers give nothing and the setters answer false). Each takes the `dimension` of
+the level it means, as the [mob helpers](#mobs) do. Players, mobs, item entities, minecarts, boats and armor stands
+are reached; ids are entity ids, the ones the mob, item and hook helpers give.
+
+- `native_entity(dimension, id)` and `native_entities_in(dimension, min, max)` read them as `NativeEntity`: id, kind
+  (`minecraft:player`...), feet, motion, yaw, ground, the vehicle it rides and its box. A player's motion is the
+  server's copy: their client moves them.
+- `native_set_delta_movement(dimension, id, velocity)` sets the motion, in blocks a tick. A player's client is sent it
+  as a knockback is (`ClientboundSetEntityMotionPacket`), which is how a fan or a belt moves a player.
+- `native_reset_fall_distance(dimension, id)`: the entity has fallen nowhere yet, so landing doesn't hurt it.
+- `native_set_yaw(dimension, id, yaw)`: degrees, 0 facing south. A mob's head turns with it, and its AI may turn it
+  again; a player's client is turned by the difference from the yaw the server last heard
+  (`ClientboundPlayerRotationPacket`, relative), so their own mouse movement on the way is kept.
+- A player inside their own hook (`native_player_tick`, `native_use_item_on`...) has their state swapped in and is not
+  reached: call these from `native_level_tick_post`, where every player of the level is.
 
 ### Mod messages
 
