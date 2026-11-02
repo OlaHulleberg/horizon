@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 59 adds per-position block models (`native_block_model_override` in
+//! `native_models.rs`: NeoForge's `ModelData` read by an `IDynamicBakedModel`) for content
+//! blocks with `properties.dynamic_model`.
+//!
 //! API 58 adds native mods' world data (`native_saved_data`, `native_set_saved_data_dirty`:
 //! vanilla's `SavedData` in `data/<mod id>/<name>.dat`) with `native_level_load` and
 //! `native_level_save` (NeoForge's `LevelEvent.Load` and `.Save`).
@@ -289,7 +293,7 @@ fn input_key(
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 58;
+pub(crate) const NATIVE_HOOKS_API: u32 = 59;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.

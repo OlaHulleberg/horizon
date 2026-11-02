@@ -339,6 +339,32 @@ mod that keeps typed state in memory fills its compound there and marks it dirty
 storage is the world folder; other dimensions fire none yet. Server-side (a client of a server gets none). Bundles that
 use them need `"hooks": 58`.
 
+API 59 adds per-position block models, what NeoForge's `ModelData` gives an `IDynamicBakedModel`
+(`IBlockGetterExtension.getModelData`, read in `getQuads`): a copycat block that draws the block it imitates cut to its
+own shape. `native_block_model_override(pos, Some(model))` draws block `pos` of a content block with
+`properties.dynamic_model` ([mods.md](mods.md)) as a `ModelOverride` says: `state`'s baked model, with `faces[d]` (by
+`Direction` ordinal) giving another state's quads for the faces looking `d`, cut to `boxes` (`[min, max]` in block
+units; empty draws the model whole). A quad on the block's side moves to the box's side and is clipped to the box,
+its UVs following; one inside is clipped; one that isn't an axis-aligned rectangle is kept only whole inside a box.
+Faces between two boxes are drawn, so give boxes that don't touch where the material should not show. The block keeps
+its own state: it is lit (smooth light, AO) and culled against its neighbours as itself, they cull against it as
+before, and each quad takes the tint of the state it comes from (a grass block's top stays green). `None` draws the
+block's own model again. Only the position's section is meshed again, and only when the override changed, so a mod
+may set it every tick; a position of a block without `dynamic_model` never reads it. Overrides are kept until cleared
+or the level changes (a dimension, another world). Client-side (the window's `Game`): in multiplayer each client's
+half of the mod sets them, from the block's data it sent with its own messages. Bundles that use it need
+`"hooks": 59`.
+
+```rust
+use horizon_client::mesher::ModelOverride;
+// A copycat panel on the north side, showing the material its client half received.
+let mut model = ModelOverride::new(material);
+model.boxes.push([[0.0, 0.0, 0.0], [1.0, 1.0, 0.125]]);
+self.native_block_model_override(pos, Some(model));
+// Its material taken out: back to the panel's own model.
+self.native_block_model_override(pos, None);
+```
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
