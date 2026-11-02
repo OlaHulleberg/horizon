@@ -62,6 +62,9 @@ pub struct StateFacts {
     /// A content block's `properties.entity_inside`: native mods hear the entities inside it
     /// (`native_entity_inside`, `BlockBehaviour.entityInside`).
     pub entity_inside: bool,
+    /// A content block's `properties.rail`: minecarts run on it as on a plain rail, with its
+    /// `shape` state property, and native mods hear them pass (`native_minecart_pass`).
+    pub rail: bool,
     pub full_collision: bool,
     pub friction: f32,
     pub explosion_resistance: f32,
@@ -444,6 +447,7 @@ impl BlockFacts {
                 },
                 dynamic_model: entry.dynamic_model,
                 entity_inside: entry.entity_inside,
+                rail: entry.rail,
                 full_collision: entry.full_collision,
                 friction: entry.friction as f32,
                 explosion_resistance: entry.explosion_resistance as f32,

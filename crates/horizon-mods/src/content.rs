@@ -88,6 +88,11 @@ pub struct BlockProperties {
     /// (`BlockBehaviour.entityInside`, through `native_entity_inside`), as a turntable turns
     /// what stands on it. Unset or false: never asked.
     pub entity_inside: Option<bool>,
+    /// Whether minecarts run on the block as on a plain rail (`BaseRailBlock`), along its
+    /// `shape` state property, and native mods hear each cart that passes
+    /// (`IBlockExtension.onMinecartPass`, through `native_minecart_pass`). Unset or false: carts
+    /// leave it as any other block.
+    pub rail: Option<bool>,
 }
 
 /// A block's `RenderShape`.

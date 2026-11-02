@@ -1749,6 +1749,43 @@ fn entity_inside_marks_a_block_for_the_native_hook() {
     fs::remove_dir_all(scratch).unwrap();
 }
 
+/// `properties.rail` marks the block's facts row for minecarts and `native_minecart_pass`; vanilla
+/// rows stay without it.
+#[test]
+fn rail_marks_a_block_for_minecarts() {
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-rail-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let base = scratch.join("base");
+    fs::create_dir_all(&base).unwrap();
+    let facts = r#"{"states":[["minecraft:stone",false,false,"Block{minecraft:stone}",{"id":"minecraft:stone"}]],
+      "defaults":{"minecraft:stone":0}}"#;
+    fs::write(base.join("facts.json"), facts).unwrap();
+    let gameplay = r#"{"states":[{"item":"minecraft:stone"}]}"#;
+    fs::write(base.join("gameplay-facts.json"), gameplay).unwrap();
+    fs::write(base.join("items.json"), r#"{"minecraft:stone":{}}"#).unwrap();
+    let declaration = r#"{"template":"minecraft:stone","properties":{"rail":true}}"#;
+    let m = folder_mod(
+        &scratch.join("mod"),
+        &[
+            ("horizon-mod.toml", &manifest("testmod", "")),
+            (
+                "data/testmod/horizon/block/controller_rail.json",
+                declaration,
+            ),
+        ],
+    );
+    let mods = [m];
+    let plan = Plan::new(&base, &mods).unwrap();
+    let mut doc: J = serde_json::from_str(gameplay).unwrap();
+    plan.json("gameplay-facts.json", &mut doc).unwrap();
+    let Some(J::Arr(rows)) = doc.get("states") else {
+        panic!("no states")
+    };
+    assert_eq!(rows[1].get("rail"), Some(&J::Bool(true)));
+    assert_eq!(rows[0].get("rail"), None);
+    fs::remove_dir_all(scratch).unwrap();
+}
+
 #[test]
 fn analog_output_makes_comparators_read_a_block() {
     let scratch = std::env::temp_dir().join(format!("horizon-mod-analog-{}", std::process::id()));
