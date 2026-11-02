@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 66 adds `native_interaction_key_mapping_triggered` (NeoForge's
+//! `InputEvent.InteractionKeyMappingTriggered`): an attack, use or pick-block click on the
+//! client, which a mod may cancel.
+//!
 //! API 65 adds `native_spawn_minecart` and `native_remove_minecart` in `native_minecarts.rs`
 //! (`EntityType.create` with `Level.addFreshEntity`, `Entity.discard`).
 //!
@@ -236,7 +240,9 @@ use horizon_client::{
     extras::Corner,
     extras_hud::Corners,
     fast_hash::FxHashMap,
+    first_person::{Hand, SwingAnimation},
     hud::{HudBatch, rgba},
+    interaction_input::Button,
     items::ItemStack,
     keybinds,
     mod_list::{self, Installed, NativePage},
@@ -317,7 +323,7 @@ fn input_key(
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 65;
+pub(crate) const NATIVE_HOOKS_API: u32 = 66;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -1002,6 +1008,23 @@ impl Game<'_> {
         consumed: &mut bool,
     ) {
         let _ = (key, action, modifiers, screen, consumed);
+    }
+    /// A click of the attack, use or pick-block key while playing, before the game acts on it:
+    /// NeoForge's `InputEvent.InteractionKeyMappingTriggered`, where `Minecraft.startAttack`,
+    /// `startUseItem` (the main hand's turn, held use repeating included) and `pickBlock`
+    /// start, whatever the crosshair is on, a block, an entity or nothing. Set `canceled` to
+    /// keep the click from the game (nothing is attacked, used or picked, and nothing is sent
+    /// to the server); the hand then swings unless the mod clears `swing`. A mod reading its
+    /// own things in the world here (a moving contraption's blocks) sends the click to its
+    /// server half itself. Client-side (the window's `Game`, a client of its server). API 66.
+    pub(super) fn native_interaction_key_mapping_triggered(
+        &mut self,
+        button: Button,
+        hand: Hand,
+        canceled: &mut bool,
+        swing: &mut bool,
+    ) {
+        let _ = (button, hand, canceled, swing);
     }
     /// Wheel steps while playing: set `claimed` to keep them from the hotbar.
     pub(super) fn native_wheel(&mut self, steps: f32, claimed: &mut bool) {
@@ -2699,6 +2722,21 @@ impl Game<'_> {
             },
         )
     }
+    /// An interaction key's click for `native_interaction_key_mapping_triggered`: whether a mod
+    /// canceled it (the hand swung if it asked).
+    pub(super) fn native_interaction_event(&mut self, button: Button) -> bool {
+        let (mut canceled, mut swing) = (false, true);
+        self.native_interaction_key_mapping_triggered(
+            button,
+            Hand::Main,
+            &mut canceled,
+            &mut swing,
+        );
+        if canceled && swing {
+            self.swing_hand(Hand::Main, SwingAnimation::DEFAULT);
+        }
+        canceled
+    }
     /// A mouse button while playing, for `native_key`.
     pub(super) fn native_mouse_event(&mut self, button: MouseButton, pressed: bool) {
         let name = keybinds::mouse_name(button);
@@ -2927,6 +2965,53 @@ mod tests {
         let wrapper = &wrapper[..wrapper.find("\n    }").unwrap()];
         assert!(wrapper.contains("if self.player.is_none() {"));
         assert!(wrapper.contains("self.native_input_key(name, action, bits, screen, consumed)"));
+    }
+
+    #[test]
+    fn interaction_clicks_ask_the_mods_before_the_game_acts() {
+        // `Minecraft.startAttack`: after its miss-time check, before any target is hit.
+        let remote = include_str!("remote.rs");
+        let body = |name: &str| {
+            let f = &remote[remote.find(name).unwrap()..];
+            f[..f.find("\n    }\n").unwrap()].to_owned()
+        };
+        let attack = body("fn remote_start_attack(&mut self) -> bool {");
+        let hook = attack
+            .find("if self.native_interaction_event(Button::Attack) {")
+            .unwrap();
+        assert!(attack.find("self.clicks.miss_time > 0").unwrap() < hook);
+        assert!(hook < attack.find("self.spectator()").unwrap());
+        assert!(attack[hook..].trim_start().contains("return false;"));
+        // `startUseItem`: after the right-click delay is set, before the entity, block or
+        // item turn.
+        let use_ = body("fn remote_use(&mut self) {");
+        let hook = use_
+            .find("if self.native_interaction_event(Button::Use) {")
+            .unwrap();
+        assert!(use_.find("self.use_delay = 4;").unwrap() < hook);
+        assert!(hook < use_.find("self.entity_targeted()").unwrap());
+        // `pickBlock`: before an entity or a block is asked for.
+        let pick = body("    fn pick(&mut self) {");
+        let hook = pick
+            .find("if self.0.native_interaction_event(Button::Pick) {")
+            .unwrap();
+        assert!(hook < pick.find("S::PickItemFromEntity").unwrap());
+        // The wrapper hands the main hand, swings only a canceled click the mod let swing,
+        // and says whether the click was canceled.
+        let hooks = include_str!("native_hooks.rs");
+        let wrapper = &hooks[hooks.find("fn native_interaction_event(").unwrap()..];
+        let wrapper = &wrapper[..wrapper.find("\n    }").unwrap()];
+        assert!(wrapper.contains("let (mut canceled, mut swing) = (false, true);"));
+        let call: String = wrapper[wrapper
+            .find("self.native_interaction_key_mapping_triggered(")
+            .unwrap()..]
+            .split_whitespace()
+            .collect();
+        assert!(call.starts_with(
+            "self.native_interaction_key_mapping_triggered(button,Hand::Main,&mutcanceled,&mutswing,);"
+        ));
+        assert!(wrapper.contains("if canceled && swing {"));
+        assert!(wrapper.trim_end().ends_with("canceled"));
     }
 
     #[test]

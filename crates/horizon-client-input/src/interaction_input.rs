@@ -5,7 +5,7 @@ pub struct InteractionInput {
     clicks: [u32; 3],
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Button {
     Attack,
     Use,

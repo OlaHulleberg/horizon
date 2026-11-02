@@ -392,6 +392,16 @@ sneaking player less and lets a flying one go. Bundles that read them need `"hoo
 API 65 adds `native_spawn_minecart` and `native_remove_minecart` ([minecarts](#minecarts)). Bundles that use them
 need `"hooks": 65`.
 
+API 66 adds clicks for client mods, NeoForge's `InputEvent.InteractionKeyMappingTriggered`:
+`native_interaction_key_mapping_triggered(button, hand, canceled, swing)` hears each click of the attack, use and
+pick-block keys while playing (`Button::Attack`, `Use`, `Pick`; `hand` is the main hand, whose turn comes first),
+where `Minecraft.startAttack`, `startUseItem` (a held use repeating too) and `pickBlock` start, whatever the
+crosshair is on: a block, an entity or nothing. A mod that sets `canceled` keeps the click from the game (nothing is
+attacked, used or picked, nothing is sent to the server) and the hand swings unless it clears `swing`. It is for what
+only the mod knows is there, such as the blocks of a moving contraption it draws: it reads the crosshair itself and
+sends the click to its server half with [its own messages](#mod-messages). Client-side (the window's `Game` as a
+client of its server: single player's server thread, LAN, multiplayer). Bundles that use it need `"hooks": 66`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

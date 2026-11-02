@@ -16,6 +16,7 @@ use horizon_client::{
     containers::{BlockEntity, Furnace, FurnaceKind},
     entities::{Experience, ExperienceOrb, ItemEntity},
     hud::HudBatch,
+    interaction_input::Button,
     items::ItemStack,
     menu::Input,
     mobs::{Mob, MobType, Who},
@@ -6084,6 +6085,9 @@ impl Game<'_> {
             return;
         }
         self.use_delay = 4;
+        if self.native_interaction_event(Button::Use) {
+            return;
+        }
         // Resolve the crosshair once. A passing entity interaction keeps
         // that target and may only fall back to using the item itself.
         let entity = self.entity_targeted();
@@ -7038,7 +7042,6 @@ impl Game<'_> {
     }
     /// MouseHandler updates KeyMapping; handleKeybinds sends packets on a tick.
     pub(super) fn remote_mouse(&mut self, button: MouseButton, pressed: bool) -> Result<()> {
-        use horizon_client::interaction_input::Button;
         let input = match button {
             MouseButton::Left => {
                 self.toggles
@@ -7136,6 +7139,9 @@ impl Game<'_> {
 
     fn remote_start_attack(&mut self) -> bool {
         if self.clicks.miss_time > 0 {
+            return false;
+        }
+        if self.native_interaction_event(Button::Attack) {
             return false;
         }
         if self.spectator() {
@@ -8573,6 +8579,9 @@ impl horizon_client::interaction_input::InteractionWorld for RemoteInputWorld<'_
         self.0.remote_use();
     }
     fn pick(&mut self) {
+        if self.0.native_interaction_event(Button::Pick) {
+            return;
+        }
         // Minecraft.pickBlockOrEntity: an entity before the block is asked
         // for (`handlePickItemFromEntity`), else the block.
         if let Some(entity) = self.0.pick_entity_hit() {

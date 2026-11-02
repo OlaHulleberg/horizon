@@ -403,6 +403,14 @@
       "neoforge": "EntityMountEvent",
       "side": "server",
       "cancellable": true
+    },
+    {
+      "name": "interaction_key_mapping_triggered",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_interaction_key_mapping_triggered",
+      "neoforge": "InputEvent.InteractionKeyMappingTriggered",
+      "side": "client",
+      "cancellable": true
     }
   ]
 }
