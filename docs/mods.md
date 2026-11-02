@@ -98,6 +98,10 @@ positions as a native mod's client says with `native_block_model_override` ([nat
 copycat block that shows another block's model cut to its own shape; a position with no override draws the block's
 own model. Blocks without it never look one up.
 
+`properties.entity_inside` (vanilla's `BlockBehaviour.entityInside`): `true` and a native mod's `native_entity_inside`
+hears every entity whose box is inside one of the block's positions, each server tick, as a turntable turns what stands
+on it ([native-mods.md](native-mods.md)). Blocks without it are never asked.
+
 A block whose state properties no vanilla block has declares its own with `state_properties`: each property's
 values, the first being the default. Its states are every combination, ordered as vanilla's `StateDefinition` orders
 them (properties by name, the last varying fastest, values as listed), and each copies the template state that

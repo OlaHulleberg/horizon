@@ -59,6 +59,9 @@ pub struct StateFacts {
     /// A content block's `properties.dynamic_model`: the chunk mesher looks its positions
     /// up in the native mods' model overrides.
     pub dynamic_model: bool,
+    /// A content block's `properties.entity_inside`: native mods hear the entities inside it
+    /// (`native_entity_inside`, `BlockBehaviour.entityInside`).
+    pub entity_inside: bool,
     pub full_collision: bool,
     pub friction: f32,
     pub explosion_resistance: f32,
@@ -440,6 +443,7 @@ impl BlockFacts {
                     _ => RenderShape::Model,
                 },
                 dynamic_model: entry.dynamic_model,
+                entity_inside: entry.entity_inside,
                 full_collision: entry.full_collision,
                 friction: entry.friction as f32,
                 explosion_resistance: entry.explosion_resistance as f32,

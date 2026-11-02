@@ -84,6 +84,10 @@ pub struct BlockProperties {
     /// (NeoForge's per-position `ModelData`, set with `native_block_model_override`), as a
     /// copycat block that draws another block's model. Unset or false: never asked.
     pub dynamic_model: Option<bool>,
+    /// Whether native mods hear each entity inside the block, every tick
+    /// (`BlockBehaviour.entityInside`, through `native_entity_inside`), as a turntable turns
+    /// what stands on it. Unset or false: never asked.
+    pub entity_inside: Option<bool>,
 }
 
 /// A block's `RenderShape`.

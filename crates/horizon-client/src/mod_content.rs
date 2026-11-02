@@ -891,6 +891,9 @@ impl<'a> Plan<'a> {
         if let Some(on) = p.dynamic_model {
             row.set("dynamic_model", J::Bool(on));
         }
+        if let Some(on) = p.entity_inside {
+            row.set("entity_inside", J::Bool(on));
+        }
     }
 
     /// `properties.analog_output` on the new blocks' behaviour rows (`[sturdy, flags, ...]`):

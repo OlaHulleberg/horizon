@@ -171,6 +171,7 @@ object!(Entry<'a> {
     push: Option<String> = None => value(text),
     render_shape: Option<String> = None => value(text),
     dynamic_model: bool = false => value(flag),
+    entity_inside: bool = false => value(flag),
     full_collision: bool = false => value(flag),
     friction: f64 = 0.0 => value(number),
     explosion_resistance: f64 = 0.0 => value(number),
