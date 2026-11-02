@@ -21,7 +21,7 @@ pub(crate) struct NativeEntity {
     pub(crate) kind: String,
     /// Its feet.
     pub(crate) pos: [f64; 3],
-    /// Blocks a tick. A player's is the server's copy: their client moves them.
+    /// Blocks a tick. A player's is the server's copy: their client moves them. A rider's is 0.
     pub(crate) velocity: [f64; 3],
     /// Degrees; 0 faces south.
     pub(crate) yaw: f32,
@@ -133,7 +133,12 @@ impl Game<'_> {
                     id: g.entity_id as u32,
                     kind: "minecraft:player".to_owned(),
                     pos: g.position,
-                    velocity: g.motion.as_ref().map_or([0.0; 3], |m| v(m.velocity)),
+                    // `Entity.rideTick`: a passenger doesn't move on its own.
+                    velocity: g
+                        .motion
+                        .as_ref()
+                        .filter(|_| g.vehicle.is_none())
+                        .map_or([0.0; 3], |m| v(m.velocity)),
                     yaw: g.yaw,
                     on_ground: g.on_ground,
                     vehicle: g.vehicle,
