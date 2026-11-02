@@ -97,6 +97,9 @@ pub(super) struct Minecart {
     /// stays between ticks (it sets the push's length), only saving drops it.
     pub fuel: i32,
     pub push: Vec3,
+    /// A native mod keeps something on the cart that isn't an entity (a contraption): it moves
+    /// as a ridden cart does (`isVehicle`). Not saved; the mod sets it again. API 68.
+    pub carrying: bool,
     /// TNT minecarts: ticks until the explosion, -1 when not primed.
     pub fuse: i32,
     /// Hopper minecarts: an unpowered activator rail enables them.
@@ -228,6 +231,7 @@ impl Minecart {
             items: vec![None; kind.slots()],
             fuel: 0,
             push: Vec3::ZERO,
+            carrying: false,
             fuse: -1,
             enabled: true,
             loot: None,
@@ -444,7 +448,7 @@ impl Game<'_> {
     /// `OldMinecartBehavior.moveAlongTrack`.
     fn move_along_track(&mut self, c: &mut Minecart, pos: [i32; 3], rail: &Rail, intent: [f64; 2]) {
         c.fall_distance = 0.0;
-        let ridden = Some(c.id) == self.riding;
+        let ridden = Some(c.id) == self.riding || c.carrying;
         let (x, z) = (c.position.x, c.position.z);
         let old = self.rail_pos(x, c.position.y, z);
         let mut y = f64::from(pos[1]);

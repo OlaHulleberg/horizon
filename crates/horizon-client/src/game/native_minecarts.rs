@@ -2,7 +2,8 @@
 //! API 62): content blocks with `properties.rail` are plain rails to the carts, along their
 //! `shape`, and `native_minecart_pass` hears each cart on one every tick
 //! (NeoForge's `IBlockExtension.onMinecartPass`) and may change its motion; and the carts
-//! of the level in place, with their riders, read by id. API 65 spawns and removes them.
+//! of the level in place, with their riders, read by id. API 65 spawns and removes them; API 68
+//! moves them, fuels furnace carts and marks a cart carrying something that isn't an entity.
 use super::{
     Game,
     minecarts::{CartKind, Minecart},
@@ -30,6 +31,12 @@ pub(crate) struct NativeMinecart {
     /// still true.
     pub(crate) riders: Vec<u32>,
     pub(crate) ridden: bool,
+    /// A furnace cart's fuel ticks and push (`MinecartFurnace.fuel`, `push`; blocks a tick, its
+    /// length the push's speed); 0 and none for other kinds. API 68.
+    pub(crate) fuel: i32,
+    pub(crate) push: [f64; 3],
+    /// Set by `native_set_minecart_carrying`. API 68.
+    pub(crate) carrying: bool,
 }
 
 // Native mods use these; nothing in Horizon does.
@@ -66,6 +73,9 @@ impl Game<'_> {
             yaw: c.yaw,
             riders,
             ridden,
+            fuel: c.fuel,
+            push: v(c.push),
+            carrying: c.carrying,
         }
     }
 
@@ -137,6 +147,74 @@ impl Game<'_> {
         self.world
             .modified
             .insert((p.x.floor() as i32 >> 4, p.z.floor() as i32 >> 4));
+        true
+    }
+
+    /// `Entity.setPos`: minecart `id` stands at `pos`, its motion kept (clients see it move
+    /// through the tracker, as any move). The mod keeps it on its rail: a cart off one falls.
+    /// False for no such cart, another dimension, off a server or a value that isn't finite.
+    /// API 68.
+    pub(super) fn native_set_minecart_position(
+        &mut self,
+        dimension: &str,
+        id: u32,
+        pos: [f64; 3],
+    ) -> bool {
+        if !self.native_server_level(dimension) || !pos.iter().all(|v| v.is_finite()) {
+            return false;
+        }
+        let Some(c) = self.carts.iter_mut().find(|c| c.id == id) else {
+            return false;
+        };
+        c.position = Vec3::new(pos[0], pos[1], pos[2]);
+        let (x, z) = (pos[0].floor() as i32, pos[2].floor() as i32);
+        self.world.modified.insert((x >> 4, z >> 4));
+        true
+    }
+
+    /// A furnace minecart's `fuel` (ticks, `MinecartFurnace.fuel`) and `push` (its `push`,
+    /// blocks a tick: the way it drives and, by its length, how hard), as a player's coal sets
+    /// them. Fuel runs out as vanilla's does, and the push with it. False for no such cart,
+    /// another kind, another dimension, off a server or a value that isn't finite. API 68.
+    pub(super) fn native_set_furnace_fuel(
+        &mut self,
+        dimension: &str,
+        id: u32,
+        fuel: i32,
+        push: [f64; 3],
+    ) -> bool {
+        if !self.native_server_level(dimension) || !push.iter().all(|v| v.is_finite()) {
+            return false;
+        }
+        let Some(c) = self.carts.iter_mut().find(|c| c.id == id) else {
+            return false;
+        };
+        if c.kind != CartKind::Furnace {
+            return false;
+        }
+        c.fuel = fuel.max(0);
+        c.push = Vec3::new(push[0], push[1], push[2]);
+        true
+    }
+
+    /// Whether minecart `id` carries something of the mod's that isn't an entity (a
+    /// contraption on it): it then moves as a cart with a passenger does (`isVehicle` in
+    /// `OldMinecartBehavior.moveAlongTrack` and `applyNaturalSlowdown`: 0.997 of its speed kept
+    /// a tick, not 0.96, and three quarters of its motion moved). Not saved: set it again when
+    /// the world opens. False for no such cart, another dimension or off a server. API 68.
+    pub(super) fn native_set_minecart_carrying(
+        &mut self,
+        dimension: &str,
+        id: u32,
+        carrying: bool,
+    ) -> bool {
+        if !self.native_server_level(dimension) {
+            return false;
+        }
+        let Some(c) = self.carts.iter_mut().find(|c| c.id == id) else {
+            return false;
+        };
+        c.carrying = carrying;
         true
     }
 
@@ -217,5 +295,54 @@ mod tests {
             .find("self.native_stop_riding(dimension, rider)")
             .unwrap();
         assert!(off < remove.find("self.carts.remove(i)").unwrap());
+    }
+    #[test]
+    fn mods_move_fuel_and_load_carts_on_a_server_only() {
+        let source = include_str!("native_minecarts.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap();
+        for helper in [
+            "fn native_set_minecart_position(",
+            "fn native_set_furnace_fuel(",
+            "fn native_set_minecart_carrying(",
+        ] {
+            let body = &code[code.find(helper).unwrap()..];
+            let body = &body[..body.find("\n    }\n").unwrap()];
+            assert!(
+                body.contains("self.native_server_level(dimension)"),
+                "{helper}"
+            );
+        }
+        let fuel = &code[code.find("fn native_set_furnace_fuel(").unwrap()..];
+        assert!(fuel.contains("if c.kind != CartKind::Furnace {"));
+        // A carrying cart moves as a ridden one: its slowdown and its step, one bool read.
+        let carts = include_str!("minecarts.rs");
+        let track = &carts[carts.find("fn move_along_track(").unwrap()..];
+        assert!(track.contains("let ridden = Some(c.id) == self.riding || c.carrying;"));
+        assert!(track.contains("self.natural_slowdown(c, ridden)"));
+        let slow = &carts[carts.find("fn natural_slowdown(").unwrap()..];
+        assert!(slow.contains("let f = if ridden { 0.997 } else { 0.96 };"));
+    }
+
+    #[test]
+    fn carrying_is_not_saved() {
+        use super::super::minecarts::{CartKind, Minecart};
+        use horizon_world::nbt::Tag;
+        let tag = Tag::compound([
+            ("id", Tag::String("minecraft:minecart".into())),
+            (
+                "Pos",
+                Tag::List(
+                    [0.5f64, 40.5, 0.5]
+                        .map(|v| Tag::Double(v.to_bits()))
+                        .to_vec(),
+                ),
+            ),
+        ]);
+        let mut cart = Minecart::from_nbt(&tag, 1, CartKind::Rideable).unwrap();
+        assert!(!cart.carrying, "nothing carried until a mod says so");
+        cart.carrying = true;
+        let saved = cart.to_nbt([0; 4], None);
+        let back = Minecart::from_nbt(&saved, 2, CartKind::Rideable).unwrap();
+        assert!(!back.carrying, "the mod sets it again when the world opens");
     }
 }

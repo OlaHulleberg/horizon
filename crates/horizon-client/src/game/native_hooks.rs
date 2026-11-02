@@ -6,6 +6,11 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 68 adds `native_set_minecart_position`, `native_set_furnace_fuel` and
+//! `native_set_minecart_carrying` in `native_minecarts.rs` (`Entity.setPos`, `MinecartFurnace`'s
+//! fuel and push, a cart counted as ridden: `isVehicle`), and a cart's fuel, push and carrying
+//! in `NativeMinecart`.
+//!
 //! API 67 adds `native_seat_loaded` (NeoForge's `EntityJoinLevelEvent` loaded from disk):
 //! mod seats save with their chunk and their riders, or in their player's file, as vanilla's
 //! vehicles do, and a mod hears each one that comes back.
@@ -327,7 +332,7 @@ fn input_key(
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 67;
+pub(crate) const NATIVE_HOOKS_API: u32 = 68;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.

@@ -392,6 +392,10 @@ sneaking player less and lets a flying one go. Bundles that read them need `"hoo
 API 65 adds `native_spawn_minecart` and `native_remove_minecart` ([minecarts](#minecarts)). Bundles that use them
 need `"hooks": 65`.
 
+API 68 adds three [minecart](#minecarts) helpers for a mod that carries something on a cart:
+`native_set_minecart_position`, `native_set_furnace_fuel` and `native_set_minecart_carrying`, and
+`fuel`, `push` and `carrying` in `NativeMinecart`. Bundles that use them need `"hooks": 68`.
+
 API 66 adds clicks for client mods, NeoForge's `InputEvent.InteractionKeyMappingTriggered`:
 `native_interaction_key_mapping_triggered(button, hand, canceled, swing)` hears each click of the attack, use and
 pick-block keys while playing (`Button::Attack`, `Use`, `Pick`; `hand` is the main hand, whose turn comes first),
@@ -686,6 +690,17 @@ API 62, `crates/horizon-client/src/game/native_minecarts.rs`, for server mods.
   (`minecraft:minecart`, `minecraft:chest_minecart`...) in a loaded chunk, as `EntityType.create` and
   `Level.addFreshEntity`; its id. `native_remove_minecart(dimension, id)` (API 65): `Entity.discard`, nothing dropped,
   its riders let off first. A mod that keeps something on a cart (a contraption riding it) spawns and picks it up so.
+- `native_set_minecart_position(dimension, id, pos)` (API 68): `Entity.setPos`, its motion kept (two linked carts
+  pulled back to their length after a collision). The mod keeps it on its rail; clients see it move as any move.
+- `native_set_furnace_fuel(dimension, id, fuel, push)` (API 68): a furnace cart's fuel ticks and push (blocks a
+  tick, its way and strength), as a player's coal sets them; `NativeMinecart.fuel` and `push` read them (0 and none
+  for other kinds). Fuel runs out as vanilla's does. False for another kind.
+- `native_set_minecart_carrying(dimension, id, carrying)` (API 68): the cart carries something of the mod's that
+  isn't an entity (a contraption) and moves as a cart with a passenger does (`isVehicle`: 0.997 of its speed kept a
+  tick instead of 0.96, three quarters of its motion moved). One flag read in the cart's tick; not saved, so the mod
+  sets it again when the world opens. `NativeMinecart.carrying` reads it.
+- These setters act on the level in place, from `native_level_tick_post` or another hook outside the cart's own
+  tick: inside `native_minecart_pass`, change that cart through `cart` only.
 
 ```rust
 // A powered-rail-like booster: carts on it speed up along their motion, to 0.4 blocks a tick.
