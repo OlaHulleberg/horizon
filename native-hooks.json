@@ -45,6 +45,22 @@
       "cancellable": false
     },
     {
+      "name": "level_load",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_level_load",
+      "neoforge": "LevelEvent.Load",
+      "side": "server",
+      "cancellable": false
+    },
+    {
+      "name": "level_save",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_level_save",
+      "neoforge": "LevelEvent.Save",
+      "side": "server",
+      "cancellable": false
+    },
+    {
       "name": "level_tick_pre",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_level_tick_pre"

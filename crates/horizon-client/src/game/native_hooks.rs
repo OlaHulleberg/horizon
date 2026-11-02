@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 58 adds native mods' world data (`native_saved_data`, `native_set_saved_data_dirty`:
+//! vanilla's `SavedData` in `data/<mod id>/<name>.dat`) with `native_level_load` and
+//! `native_level_save` (NeoForge's `LevelEvent.Load` and `.Save`).
+//!
 //! API 57 adds key input for client mods (`native_input_key`, NeoForge's `InputEvent.Key`:
 //! a key's name, action and modifiers, which a mod may consume) and the helper
 //! `native_is_key_down` for polling keys and mouse buttons.
@@ -285,7 +289,7 @@ fn input_key(
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 57;
+pub(crate) const NATIVE_HOOKS_API: u32 = 58;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -814,6 +818,20 @@ impl Game<'_> {
         data: &mut Compound,
     ) {
         let _ = (dimension, chunk, data);
+    }
+    /// The world opened on its server (NeoForge's `LevelEvent.Load` for `dimension`, the
+    /// overworld, whose storage is the world folder's `data/`): read your data with
+    /// `native_saved_data`. Fired once per world, before `WorldOpenReady`; the other
+    /// dimensions fire none yet. Server-side. API 58.
+    pub(super) fn native_level_load(&mut self, dimension: &str) {
+        let _ = dimension;
+    }
+    /// The world is being saved (NeoForge's `LevelEvent.Save` for `dimension`, the overworld):
+    /// on every autosave, `/save-all` and the closing save, before the dirty data is written.
+    /// A mod that keeps typed state in memory puts it in its `native_saved_data` here and calls
+    /// `native_set_saved_data_dirty`; data that isn't dirty is not written. Server-side. API 58.
+    pub(super) fn native_level_save(&mut self, dimension: &str) {
+        let _ = dimension;
     }
     /// Before an authoritative server level's tick pass. `dimension` is its ID.
     pub(super) fn native_level_tick_pre(&mut self, dimension: &str) {
@@ -1719,6 +1737,24 @@ impl Game<'_> {
         }
         self.world.modified.insert((chunk[0], chunk[1]));
         true
+    }
+    /// A mod's world data, vanilla's `SavedData` (`DimensionDataStorage.computeIfAbsent`):
+    /// the compound kept in the world folder as `data/<mod_id>/<name>.dat`, read the first
+    /// time it is asked for in a world (empty when there is no file), then held in memory.
+    /// Change it, then call `native_set_saved_data_dirty`, or the change isn't saved. `mod_id`
+    /// is `[a-z0-9_.-]`, `name` the same with `/` between parts. None for another name, and
+    /// on a client of a server or outside a world. API 58.
+    pub(super) fn native_saved_data(&mut self, mod_id: &str, name: &str) -> Option<&mut Compound> {
+        if self.remote.is_some() || self.world_root.as_os_str().is_empty() {
+            return None;
+        }
+        let root = self.world_root.clone();
+        self.native_saved.get(&root, mod_id, name)
+    }
+    /// `SavedData.setDirty`: the next world save writes the data. False when the mod hasn't
+    /// asked for it (`native_saved_data`) in this world. API 58.
+    pub(super) fn native_set_saved_data_dirty(&mut self, mod_id: &str, name: &str) -> bool {
+        self.native_saved.set_dirty(mod_id, name)
     }
     /// In a world, for the recipe helpers: a window with its player, or a server's own
     /// `Game` (single player's server thread, a dedicated server), which holds no player

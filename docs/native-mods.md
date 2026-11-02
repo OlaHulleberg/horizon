@@ -327,6 +327,18 @@ nothing stays held. `native_is_key_down(key)` (`InputConstants.isKeyDown`) says 
 (`key.mouse.left`), is held on the keyboard and mouse themselves, a consumed key's too, for a mod that polls in
 `native_tick` (NeoForge's `ClientTickEvent`). Client-side (the window's `Game`). Bundles that use them need `"hooks": 57`.
 
+API 58 adds a mod's own world data, vanilla's `SavedData` in the overworld's `DimensionDataStorage`:
+`native_saved_data(mod_id, name)` gives the compound kept in the world folder as `data/<mod_id>/<name>.dat` (beside
+`data/minecraft/scoreboard.dat`, written as vanilla writes them: `{data: {...}, DataVersion: N}`), read the first time it
+is asked for in a world (empty when there is no file) and then held in memory; `mod_id` is `[a-z0-9_.-]` and `name` the
+same with `/` between parts. `native_set_saved_data_dirty(mod_id, name)` (`SavedData.setDirty`) has the next save write
+it: data that isn't dirty is never written. `native_level_load(dimension)` (NeoForge's `LevelEvent.Load`) fires once
+when the world opens on its server, before `WorldOpenReady`, to read the data; `native_level_save(dimension)`
+(`LevelEvent.Save`) fires on every save (autosave, `/save-all`, the closing save), before the dirty data is written, so a
+mod that keeps typed state in memory fills its compound there and marks it dirty. Both carry the overworld, whose
+storage is the world folder; other dimensions fire none yet. Server-side (a client of a server gets none). Bundles that
+use them need `"hooks": 58`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

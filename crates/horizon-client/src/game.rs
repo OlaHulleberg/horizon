@@ -178,6 +178,7 @@ mod native_panel;
 mod native_panel_recipes;
 mod native_parts;
 mod native_recipes;
+mod native_saved_data;
 mod native_server;
 mod native_shaders;
 mod native_text;
@@ -2354,6 +2355,8 @@ struct Game<'a> {
     native_parts: native_parts::NativeParts,
     /// Native mods' messages waiting (`game/native_net.rs`).
     native_net: native_net::NativeNet,
+    /// Native mods' world data (`game/native_saved_data.rs`).
+    native_saved: native_saved_data::NativeSavedData,
     /// Meshed sections waiting for an upload budget (Horizon settings).
     pending_uploads: Vec<((i32, i32, i32), horizon_client::mesher::SectionMesh)>,
     /// This frame's view frustum, for culling entities and block entities.
@@ -13250,6 +13253,7 @@ impl Game<'_> {
         self.save_bossbars();
         self.save_schedule();
         self.save_warden_tracker();
+        self.save_native_saved_data();
         self.sync_level();
         self.store_owner();
         if self.options.dedicated.is_some() {
@@ -16131,6 +16135,7 @@ impl<'a> Game<'a> {
             native_lifecycle: Default::default(),
             native_parts: Default::default(),
             native_net: Default::default(),
+            native_saved: Default::default(),
             sky_darken_memo: Default::default(),
             persist: Default::default(),
             remote: None,
