@@ -392,10 +392,6 @@ sneaking player less and lets a flying one go. Bundles that read them need `"hoo
 API 65 adds `native_spawn_minecart` and `native_remove_minecart` ([minecarts](#minecarts)). Bundles that use them
 need `"hooks": 65`.
 
-API 68 adds three [minecart](#minecarts) helpers for a mod that carries something on a cart:
-`native_set_minecart_position`, `native_set_furnace_fuel` and `native_set_minecart_carrying`, and
-`fuel`, `push` and `carrying` in `NativeMinecart`. Bundles that use them need `"hooks": 68`.
-
 API 66 adds clicks for client mods, NeoForge's `InputEvent.InteractionKeyMappingTriggered`:
 `native_interaction_key_mapping_triggered(button, hand, canceled, swing)` hears each click of the attack, use and
 pick-block keys while playing (`Button::Attack`, `Use`, `Pick`; `hand` is the main hand, whose turn comes first),
@@ -409,6 +405,10 @@ client of its server: single player's server thread, LAN, multiplayer). Bundles 
 API 67 saves [seats](#riding) with their riders, as vanilla's vehicles: with their chunk and the mobs on them, or in
 the file of the player riding one, who sits on it again at the next login. `native_seat_loaded(dimension, seat, pos)`
 hears each one come back. Bundles that use it need `"hooks": 67`.
+
+API 68 adds three [minecart](#minecarts) helpers for a mod that carries something on a cart:
+`native_set_minecart_position`, `native_set_furnace_fuel` and `native_set_minecart_carrying`, and
+`fuel`, `push` and `carrying` in `NativeMinecart`. Bundles that use them need `"hooks": 68`.
 
 ## What the launcher does
 
