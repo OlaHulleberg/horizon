@@ -223,6 +223,7 @@ fn relit_columns_keep_every_mesh_current() {
             tables: &context.tables,
             biomes: &context.biomes,
             visibility: context.tables.visibility.clone(),
+            overrides: None,
         };
         // The workers sort solid quads by side, as uploads expect.
         let mut fresh = mesher.mesh(&borrow(&region), sy);

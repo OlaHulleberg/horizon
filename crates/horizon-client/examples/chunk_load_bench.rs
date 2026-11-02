@@ -143,6 +143,7 @@ fn main() -> Result<(), Error> {
             tables: &context.tables,
             biomes: &context.biomes,
             visibility: context.tables.visibility.clone(),
+            overrides: None,
         };
         vertices = 0;
         let mut hash = DefaultHasher::new();

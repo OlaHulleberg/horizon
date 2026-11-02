@@ -5,13 +5,14 @@
 //! follow `FluidRenderer` (see `fluid`).
 mod fluid;
 mod lighting;
+mod model_override;
 mod sides;
 use crate::{
     assets::{Assets, RenderAssets},
     biome::Biomes,
     blocks::{BlockFacts, RenderShape},
     chunk::{Chunk, MIN_Y},
-    models::catalog::BakedFace,
+    models::catalog::{BakedFace, BakedModel},
 };
 use horizon_core::{
     biome::BiomeZoom, geometry::Direction, position::BlockPos, random::position_seed,
@@ -21,6 +22,7 @@ use horizon_world::{
     fluid::{FluidKind, FluidState},
     registry::BlockStateId,
 };
+pub use model_override::{ModelOverride, ModelOverrides};
 pub use sides::Sides;
 use std::sync::Arc;
 
@@ -393,6 +395,8 @@ struct Info {
     emissive: bool,
     fluid: FluidState,
     model: bool,
+    /// `dynamic_model`: the mesher looks its positions up in `Mesher::overrides`.
+    dynamic: bool,
     /// The state has a block entity (candidates for block-entity renderers).
     block_entity: bool,
     tints: [Tint; 2],
@@ -566,6 +570,7 @@ impl MeshTables {
                 emissive,
                 fluid: FluidState::from_block(state)?,
                 model: s.render_shape == RenderShape::Model,
+                dynamic: s.dynamic_model,
                 block_entity: s.block_entity,
                 tints,
                 tint_count,
@@ -971,6 +976,9 @@ pub struct Mesher<'a> {
     pub smooth_lighting: bool,
     /// The `cutoutLeaves` option (fancy graphics); off makes leaves opaque.
     pub cutout_leaves: bool,
+    /// The native mods' model overrides, read only at `dynamic_model` blocks; None
+    /// when there are none.
+    pub overrides: Option<&'a ModelOverrides>,
 }
 impl Mesher<'_> {
     /// `region[dz][dx]` are the chunks around the meshed column (centre 1,1).
@@ -1039,10 +1047,14 @@ impl Mesher<'_> {
                         continue;
                     }
                     let world = BlockPos::new(center.x * 16 + x, base_y + y, center.z * 16 + z);
-                    if catalog
-                        .models_at(BlockStateId(id), world, &mut models)
-                        .is_err()
-                    {
+                    let over = match self.overrides {
+                        Some(overrides) if state.dynamic => {
+                            overrides.get(&[world.x, world.y, world.z])
+                        }
+                        _ => None,
+                    };
+                    let drawn = over.map_or(BlockStateId(id), |o| o.state);
+                    if catalog.models_at(drawn, world, &mut models).is_err() {
                         continue;
                     }
                     // ModelBlockRenderer: the first part decides smooth lighting
@@ -1077,6 +1089,11 @@ impl Mesher<'_> {
                                 )
                                 .unwrap_or(true);
                     }
+                    if let Some(over) = over {
+                        let at = ([x, y, z], origin, world, ao);
+                        self.override_faces(pad, &mut tints, &mut out, at, over, &models, visible);
+                        continue;
+                    }
                     for model in &models {
                         for face in &model.faces {
                             if face.quad.cull.is_some_and(|d| !visible[d as usize]) {
@@ -1090,7 +1107,7 @@ impl Mesher<'_> {
                                 origin,
                                 face,
                                 ao,
-                                state,
+                                (state, state),
                             );
                         }
                     }
@@ -1117,6 +1134,61 @@ impl Mesher<'_> {
             Tint::Stem(age) => stem_color(age),
         })
     }
+    /// An overridden position: the quads of `over`'s states, cut to its boxes, with the
+    /// position's own block lit and culled as usual and each quad tinted by the state
+    /// it comes from. `models` are `over.state`'s; `at` is the position in the
+    /// section, its model origin, its world position and whether it takes AO.
+    #[allow(clippy::too_many_arguments)]
+    fn override_faces(
+        &self,
+        pad: &Padded,
+        tints: &mut Tints,
+        out: &mut SectionMesh,
+        (pos, origin, world, ao): ([i32; 3], [f32; 3], BlockPos, bool),
+        over: &ModelOverride,
+        models: &[&BakedModel],
+        visible: [bool; 6],
+    ) {
+        let info = &self.tables.info;
+        let own = &info[pad.blocks[pi(pos[0], pos[1], pos[2])] as usize];
+        let mut other = Vec::new();
+        for d in Direction::ALL {
+            let from = over.face_state(d);
+            let Some(tinted) = info.get(from.0 as usize) else {
+                continue;
+            };
+            let parts = if from == over.state {
+                models
+            } else if self
+                .render
+                .model_catalog
+                .models_at(from, world, &mut other)
+                .is_ok()
+            {
+                &other[..]
+            } else {
+                continue;
+            };
+            let faces = parts.iter().flat_map(|m| &m.faces);
+            for face in faces.filter(|f| f.quad.facing as usize == d as usize) {
+                let mut emit = |face: &BakedFace| {
+                    if !face.quad.cull.is_some_and(|c| !visible[c as usize]) {
+                        self.face(pad, tints, out, pos, origin, face, ao, (own, tinted));
+                    }
+                };
+                if over.boxes.is_empty() {
+                    emit(face);
+                }
+                for b in &over.boxes {
+                    if let Some(cut) = model_override::cut(face, b) {
+                        emit(&cut);
+                    }
+                }
+            }
+        }
+    }
+    /// One quad of the block at `pos`: `state` is the block's own (light, AO, emission),
+    /// `tinted` the state whose tint sources colour it.
     #[allow(clippy::too_many_arguments)]
     fn face(
         &self,
@@ -1127,7 +1199,7 @@ impl Mesher<'_> {
         origin: [f32; 3],
         face: &BakedFace,
         ao: bool,
-        state: &Info,
+        (state, tinted): (&Info, &Info),
     ) {
         let q = &face.quad;
         let tier = state.tier.max(hdr_tier("", q.light_emission));
@@ -1147,7 +1219,7 @@ impl Mesher<'_> {
             };
             ([lighting::gray(directional); 4], [coords; 4])
         };
-        let tint = Self::tint(state, q.tint_index, tints, pos);
+        let tint = Self::tint(tinted, q.tint_index, tints, pos);
         let target = if face.translucent {
             &mut out.translucent
         } else {

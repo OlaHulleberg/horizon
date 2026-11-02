@@ -112,6 +112,9 @@ pub struct World {
     /// The moving-piston block entities of the level, by position, copied
     /// from the block ticks after each tick: collision and rendering read them.
     pub moving_pistons: Vec<([i32; 3], horizon_world::piston_shape::MovingPistonState)>,
+    /// Native mods' model overrides (`set_model_override`), which mesh jobs take a
+    /// snapshot of; only `dynamic_model` blocks read them.
+    pub model_overrides: Arc<crate::mesher::ModelOverrides>,
 }
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Weather {
@@ -208,7 +211,32 @@ impl World {
             moving_piston_fallback: Vec::new(),
             moving_pistons: Vec::new(),
             pois: Default::default(),
+            model_overrides: Default::default(),
         }
+    }
+    /// Draws a `dynamic_model` block at `pos` as `model` says, or as itself for None,
+    /// and remeshes its section: its neighbours cull against its own state, which
+    /// stays. Whether anything changed.
+    pub fn set_model_override(
+        &mut self,
+        [x, y, z]: [i32; 3],
+        model: Option<crate::mesher::ModelOverride>,
+    ) -> bool {
+        if self.model_overrides.get(&[x, y, z]) == model.as_ref() {
+            return false;
+        }
+        let overrides = Arc::make_mut(&mut self.model_overrides);
+        match model {
+            Some(model) => overrides.insert([x, y, z], model),
+            None => overrides.remove(&[x, y, z]),
+        };
+        if let Some(chunk) = self.chunks.get(&(x >> 4, z >> 4)) {
+            let sy = (y - chunk.min_y()) >> 4;
+            if (0..chunk.sections.len() as i32).contains(&sy) {
+                self.dirty_sections.insert((x >> 4, sy, z >> 4));
+            }
+        }
+        true
     }
     /// A controlled blockstate scene for the native scene probes: material
     /// layers, a stepped pyramid and the model gallery. Not generated terrain.
@@ -514,6 +542,30 @@ mod tests {
                 assert_eq!(world.dirty_sections.len(), 8);
             }
         }
+    }
+
+    /// A model override remeshes its own section only, and only when it changes.
+    #[test]
+    fn model_overrides_remesh_their_section() {
+        use crate::mesher::ModelOverride;
+        let mut world = World::new(BlockStateId(0), 0);
+        world.chunks.insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        let over = ModelOverride::new(BlockStateId(1));
+        assert!(world.set_model_override([3, 70, 3], Some(over.clone())));
+        let section = (70 - MIN_Y) >> 4;
+        assert_eq!(world.dirty_sections.columns().count(), 1);
+        assert_eq!(world.dirty_sections.len(), 1);
+        assert!(world.dirty_sections.contains(&(0, section, 0)));
+        world.dirty_sections.clear();
+        assert!(!world.set_model_override([3, 70, 3], Some(over)));
+        assert_eq!(world.dirty_sections.len(), 0);
+        assert!(world.set_model_override([3, 70, 3], None));
+        assert!(world.model_overrides.is_empty());
+        assert_eq!(world.dirty_sections.len(), 1);
+        // An unloaded column keeps the override for when it is meshed.
+        world.dirty_sections.clear();
+        assert!(world.set_model_override([40, 70, 3], Some(ModelOverride::new(BlockStateId(2)))));
+        assert_eq!(world.dirty_sections.len(), 0);
     }
 
     /// A box misses a state only where no section it reaches lists it, and

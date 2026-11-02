@@ -25,6 +25,7 @@ use std::{
     path::Path,
 };
 
+#[derive(Clone)]
 pub struct BakedFace {
     pub quad: ModelQuad,
     pub layer: u32,

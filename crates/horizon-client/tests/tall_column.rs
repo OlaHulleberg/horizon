@@ -135,6 +135,7 @@ fn a_tall_column_streams_lights_and_meshes_to_its_top() {
             tables: &context.tables,
             biomes: &context.biomes,
             visibility: context.tables.visibility.clone(),
+            overrides: None,
         };
         // The workers sort solid quads by side, as uploads expect.
         let mut fresh = mesher.mesh(&borrow(&region), sy);

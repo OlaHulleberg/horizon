@@ -167,9 +167,10 @@ impl<G: ChunkGenerator> Saves for G {
     }
 }
 /// Per-job mesher inputs that change with the dimension or the options.
-#[derive(Clone, Copy)]
 struct MeshSettings {
     nether: bool,
+    /// The level's model overrides when it has any (`World::set_model_override`).
+    overrides: Option<Arc<crate::mesher::ModelOverrides>>,
     zoom: BiomeZoom,
     blend_radius: i32,
     smooth_lighting: bool,
@@ -684,6 +685,7 @@ impl Streaming {
                                         blend_radius: settings.blend_radius,
                                         smooth_lighting: settings.smooth_lighting,
                                         cutout_leaves: settings.cutout_leaves,
+                                        overrides: settings.overrides.as_deref(),
                                         assets: &context.assets,
                                         render: &context.render,
                                         tables: &context.tables,
@@ -1549,6 +1551,8 @@ impl Streaming {
                         self.sequence,
                         MeshSettings {
                             nether: self.nether_shading,
+                            overrides: (!world.model_overrides.is_empty())
+                                .then(|| world.model_overrides.clone()),
                             zoom: self.biome_zoom,
                             blend_radius: self.biome_blend,
                             smooth_lighting: self.smooth_lighting,
