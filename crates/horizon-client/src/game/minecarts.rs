@@ -201,6 +201,8 @@ pub(super) struct Rail {
     name: Arc<str>,
     pub(super) shape: Shape,
     powered: bool,
+    /// A content block with `properties.rail`: a plain rail native mods hear carts pass.
+    pub(super) native: Option<BlockStateId>,
 }
 impl Minecart {
     /// `Entity.onGround`.
@@ -283,14 +285,16 @@ impl CartModels {
 impl Game<'_> {
     pub(super) fn rail(&self, x: i32, y: i32, z: i32) -> Option<Rail> {
         let state = self.world.block(x, y, z);
-        let name = self.res.facts().get(state).name.clone();
-        if !matches!(
+        let facts = self.res.facts().get(state);
+        let name = facts.name.clone();
+        let vanilla = matches!(
             &*name,
             "minecraft:rail"
                 | "minecraft:powered_rail"
                 | "minecraft:detector_rail"
                 | "minecraft:activator_rail"
-        ) {
+        );
+        if !vanilla && !facts.rail {
             return None;
         }
         let s = self.pack.assets.registry.state(state)?;
@@ -300,6 +304,7 @@ impl Game<'_> {
             name,
             shape,
             powered,
+            native: (!vanilla).then_some(state),
         })
     }
     /// `getCurrentBlockPosOrRailBelow`.
@@ -594,6 +599,9 @@ impl Game<'_> {
         c.velocity.y -= if self.cart_in_water(c) { 0.005 } else { 0.04 };
         let pos = self.rail_block(c.position);
         if let Some(rail) = self.rail(pos[0], pos[1], pos[2]) {
+            if let Some(state) = rail.native {
+                self.native_minecart_passes(c, pos, state);
+            }
             self.move_along_track(c, pos, &rail, intent);
             if &*rail.name == "minecraft:activator_rail" {
                 self.activate_cart(c, rail.powered);

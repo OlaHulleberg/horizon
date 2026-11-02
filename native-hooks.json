@@ -387,6 +387,14 @@
       "target": "horizon_client::game::native_hooks::Game<'_>::native_entity_inside",
       "side": "server",
       "cancellable": false
+    },
+    {
+      "name": "minecart_pass",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_minecart_pass",
+      "neoforge": "IBlockExtension.onMinecartPass",
+      "side": "server",
+      "cancellable": false
     }
   ]
 }

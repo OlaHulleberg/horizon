@@ -377,6 +377,11 @@ tripwires, with the entities where the last tick left them; inside it, the [enti
 stop them (a turntable, a belt). With no block of that property in the game nothing is searched. Server-side. Bundles
 that use it need `"hooks": 61`.
 
+API 62 adds [minecarts](#minecarts) on a mod's rails: content blocks with `properties.rail` ([mods.md](mods.md)) are
+plain rails to the carts, and `native_minecart_pass` (NeoForge's `IBlockExtension.onMinecartPass`) hears each cart on one
+and may change its motion; `native_minecart` and `native_minecarts` read the carts with their riders. Bundles that use
+them need `"hooks": 62`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
@@ -637,6 +642,36 @@ are reached; ids are entity ids, the ones the mob, item and hook helpers give.
   (`ClientboundPlayerRotationPacket`, relative), so their own mouse movement on the way is kept.
 - A player inside their own hook (`native_player_tick`, `native_use_item_on`...) has their state swapped in and is not
   reached: call these from `native_level_tick_post` or `native_entity_inside`, where every player of the level is.
+
+### Minecarts
+
+API 62, `crates/horizon-client/src/game/native_minecarts.rs`, for server mods.
+
+- A content block with `properties.rail` is a rail to Horizon's minecarts (`OldMinecartBehavior`): they are placed on
+  it, follow it along its `shape` state property and climb its slopes as on `minecraft:rail`, with no powered or
+  activator rail's behaviour. Vanilla's rails are known by name, so they and every other block cost one bit read more.
+- `native_minecart_pass(dimension, pos, state, cart)`: a cart is on such a rail, as its tick starts to follow it,
+  once a tick. `cart.velocity` (blocks a tick) is the motion it goes on with; the track then turns it along the
+  rail, as it turns a powered rail's boost. Change this cart through `cart` only.
+- `native_minecart(dimension, id)` and `native_minecarts(dimension)` read the level's carts as `NativeMinecart`: id,
+  UUID (kept in the save: key a mod's own saved data on it), kind, position, motion, yaw and riders (players and mobs, by
+  entity id). Ids last while the world is open, so a mod may keep what it tracks about a cart in a map by id, and drop
+  an entry once `native_minecart` gives nothing. API 60's `native_set_delta_movement` moves a cart from any hook.
+
+```rust
+// A powered-rail-like booster: carts on it speed up along their motion, to 0.4 blocks a tick.
+fn native_minecart_pass(&mut self, _dimension: &str, _pos: BlockPos, state: BlockStateId, cart: &mut NativeMinecart) {
+    if !my_booster(state) {
+        return;
+    }
+    let [x, y, z] = cart.velocity;
+    let speed = x.hypot(z);
+    if speed > 0.01 {
+        let boost = (speed + 0.06).min(0.4) / speed;
+        cart.velocity = [x * boost, y, z * boost];
+    }
+}
+```
 
 ### Mod messages
 

@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 62 adds minecarts on mods' rails (`native_minecart_pass`, NeoForge's
+//! `IBlockExtension.onMinecartPass`, for content blocks with `properties.rail`) and the helpers
+//! `native_minecart` and `native_minecarts` in `native_minecarts.rs`.
+//!
 //! API 61 adds `native_entity_inside` (`BlockBehaviour.entityInside`) for content blocks
 //! with `properties.entity_inside`.
 //!
@@ -207,6 +211,7 @@ use super::{
     Game, GameLevel, LevelDimension, Screen,
     execution_role::ExecutionRole,
     native_entities::NativeEntity,
+    native_minecarts::NativeMinecart,
     native_panel_recipes::RecipePage,
     native_server::{NativeCommand, NativeServerPlayer},
 };
@@ -302,7 +307,7 @@ fn input_key(
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 61;
+pub(crate) const NATIVE_HOOKS_API: u32 = 62;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -909,6 +914,21 @@ impl Game<'_> {
         entity: &NativeEntity,
     ) {
         let _ = (dimension, pos, state, entity);
+    }
+    /// `IBlockExtension.onMinecartPass`: minecart `cart` is on the rail `state` at `pos`, a
+    /// content block with `properties.rail`, as its tick starts to follow it
+    /// (`OldMinecartBehavior.moveAlongTrack`): once a tick for each cart on such a rail. Change
+    /// `cart.velocity` (blocks a tick) to boost, brake or stop it, as a powered rail does; the
+    /// track then turns it along the rail. Change this cart through `cart` only: the helpers
+    /// reach the level's copy, which this tick replaces. Server-side. API 62.
+    pub(super) fn native_minecart_pass(
+        &mut self,
+        dimension: &str,
+        pos: BlockPos,
+        state: BlockStateId,
+        cart: &mut NativeMinecart,
+    ) {
+        let _ = (dimension, pos, state, cart);
     }
     /// A living player's server tick ends (`ServerPlayer.tick`): once a tick
     /// for every player in the world, after their digging, item use,

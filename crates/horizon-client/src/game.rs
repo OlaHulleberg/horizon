@@ -173,6 +173,7 @@ mod native_hooks;
 mod native_items;
 mod native_lifecycle;
 mod native_menus;
+mod native_minecarts;
 mod native_mobs;
 mod native_models;
 mod native_net;
