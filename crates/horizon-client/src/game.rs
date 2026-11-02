@@ -7376,7 +7376,6 @@ impl Game<'_> {
             self.draw_effect_icons(&mut batch);
             // Hud: the action bar and titles draw over the hotbar (nextStratum).
             self.draw_boss_bars(&mut batch);
-            self.draw_extras(&mut batch);
         }
         if show_hud {
             // Hud.nextContextualInfoState: the jump bar, the experience bar or
@@ -7499,6 +7498,10 @@ impl Game<'_> {
                 let draws = self.locator_bar_draws(wi, hi);
                 hud_layout::paint(&mut batch, &self.gui.atlas, &draws);
             }
+            // The minimap and the native mods' HUD over the bars, as NeoForge's mod
+            // layers registered above vanilla's (a vehicle HUD over the bar above the
+            // hotbar), under the selected item's name.
+            self.draw_extras(&mut batch);
             if !spectator {
                 self.draw_selected_name(&mut batch, bar_height, !self.creative);
             }

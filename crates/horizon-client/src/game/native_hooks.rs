@@ -884,7 +884,9 @@ impl Game<'_> {
     pub(super) fn native_level_tick_post(&mut self, dimension: &str) {
         let _ = dimension;
     }
-    /// The HUD (not drawn under F1), after the minimap: place a box with
+    /// The HUD (not drawn under F1), after the minimap, over the hotbar, the
+    /// health rows and the bar above the hotbar (experience, jump or locator)
+    /// and under the selected item's name: place a box with
     /// `corners.place` (boxes stack away from their edge) and draw it with
     /// `native_fill` and `native_text`. Skip a corner `native_corner_shown`
     /// says is taken.
