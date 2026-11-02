@@ -386,6 +386,9 @@ API 63 adds [riding](#riding): seats a mod spawns and moves, players and mobs pu
 (`Entity.startRiding`, `stopRiding`), who rides what, and `native_entity_mount` (NeoForge's `EntityMountEvent`) when a
 player gets on or sneaks off a vehicle. Bundles that use them need `"hooks": 63`.
 
+API 64 adds `sneaking` and `flying` to `NativeEntity` (`Entity.isShiftKeyDown`, `Abilities.flying`): a fan pushes a
+sneaking player less and lets a flying one go. Bundles that read them need `"hooks": 64`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
@@ -636,7 +639,8 @@ the level it means, as the [mob helpers](#mobs) do. Players, mobs, item entities
 are reached; ids are entity ids, the ones the mob, item and hook helpers give.
 
 - `native_entity(dimension, id)` and `native_entities_in(dimension, min, max)` read them as `NativeEntity`: id, kind
-  (`minecraft:player`...), feet, motion, yaw, ground, the vehicle it rides and its box. A player's motion is the
+  (`minecraft:player`...), feet, motion, yaw, ground, whether a player sneaks or flies (API 64), the vehicle it rides
+  and its box. A player's motion is the
   server's copy: their client moves them.
 - `native_set_delta_movement(dimension, id, velocity)` sets the motion, in blocks a tick. A player's client is sent it
   as a knockback is (`ClientboundSetEntityMotionPacket`), which is how a fan or a belt moves a player.

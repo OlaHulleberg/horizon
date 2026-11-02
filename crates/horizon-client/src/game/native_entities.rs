@@ -26,6 +26,10 @@ pub(crate) struct NativeEntity {
     /// Degrees; 0 faces south.
     pub(crate) yaw: f32,
     pub(crate) on_ground: bool,
+    /// `Entity.isShiftKeyDown`: a player holding sneak. API 64.
+    pub(crate) sneaking: bool,
+    /// `Abilities.flying`: a player flying in creative or spectator. API 64.
+    pub(crate) flying: bool,
     /// The vehicle it rides.
     pub(crate) vehicle: Option<u32>,
     /// Its box.
@@ -120,6 +124,8 @@ impl Game<'_> {
                 velocity: v(velocity),
                 yaw,
                 on_ground: false,
+                sneaking: false,
+                flying: false,
                 vehicle: None,
                 min,
                 max,
@@ -141,6 +147,8 @@ impl Game<'_> {
                         .map_or([0.0; 3], |m| v(m.velocity)),
                     yaw: g.yaw,
                     on_ground: g.on_ground,
+                    sneaking: g.sneaking,
+                    flying: g.flying,
                     vehicle: g.vehicle,
                     min,
                     max,
@@ -451,5 +459,7 @@ mod tests {
         assert!(push.contains("C::SetEntityMotion(play::SetEntityMotion"));
         let yaw = &code[code.find("fn native_set_yaw(").unwrap()..];
         assert!(yaw.contains("relative_yaw: true"));
+        // A player reads as sneaking and flying as the server last heard them (API 64).
+        assert!(code.contains("sneaking: g.sneaking,") && code.contains("flying: g.flying,"));
     }
 }

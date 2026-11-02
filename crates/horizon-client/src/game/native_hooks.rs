@@ -6,6 +6,9 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 64 adds `sneaking` and `flying` to `NativeEntity` (`Entity.isShiftKeyDown`,
+//! `Abilities.flying`).
+//!
 //! API 63 adds riding (`native_entity_mount`, NeoForge's `EntityMountEvent`, and in
 //! `native_riding.rs` mod seats, `native_start_riding`, `native_stop_riding` and
 //! `native_passengers`).
@@ -311,7 +314,7 @@ fn input_key(
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 63;
+pub(crate) const NATIVE_HOOKS_API: u32 = 64;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
