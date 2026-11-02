@@ -3341,6 +3341,9 @@ pub struct Level {
     /// The vehicle the player rides, by UUID (`ServerPlayer.saveParentVehicle`'s
     /// "RootVehicle"), so the ride comes back on the next login.
     pub root_vehicle: Option<[i32; 4]>,
+    /// Its "Entity", the vehicle's tree, for a vehicle that goes with its player instead of
+    /// staying in the world (a native mod's seat).
+    pub root_vehicle_entity: Option<Tag>,
     /// The player compound as loaded, for fields Horizon does not model
     /// (ender chest, effects, abilities, recipe book, attributes, ...).
     pub player_extra: Option<Tag>,
@@ -3866,11 +3869,9 @@ impl Level {
         if let Some(vehicle) = self.root_vehicle
             && p.get("RootVehicle").is_none()
         {
-            put(
-                &mut p,
-                "RootVehicle",
-                Tag::compound([("Attach", uuid_tag(vehicle))]),
-            );
+            let mut root = vec![("Attach", uuid_tag(vehicle))];
+            root.extend(self.root_vehicle_entity.clone().map(|e| ("Entity", e)));
+            put(&mut p, "RootVehicle", Tag::compound(root));
         }
         p
     }
@@ -6326,6 +6327,35 @@ mod tests {
         // Even saving before the vehicle is restored must not destroy it.
         level.root_vehicle = None;
         assert_eq!(level.player_tag().get("RootVehicle"), Some(&vehicle));
+    }
+
+    #[test]
+    fn a_vehicle_that_goes_with_its_player_is_in_the_file() {
+        // `ServerPlayer.saveParentVehicle`: a mod's seat leaves its chunk with the player, so
+        // the file holds its tree beside the UUID it rides, and reads back as vanilla's.
+        let seat = Tag::compound([
+            ("id", Tag::String("minecraft:item_display".into())),
+            ("UUID", uuid_tag([1, 2, 3, 4])),
+            ("horizon:seat", Tag::Byte(1)),
+        ]);
+        let mut level = Level {
+            root_vehicle: Some([1, 2, 3, 4]),
+            root_vehicle_entity: Some(seat.clone()),
+            ..Level::default()
+        };
+        let tag = level.player_tag();
+        let root = tag.get("RootVehicle").unwrap();
+        assert_eq!(root.get("Attach"), Some(&uuid_tag([1, 2, 3, 4])));
+        assert_eq!(root.get("Entity"), Some(&seat));
+        let mut read = Level::default();
+        read.read_player(&tag);
+        assert_eq!(read.root_vehicle, Some([1, 2, 3, 4]));
+        // Any other vehicle stays in the world: the file names it only.
+        level.root_vehicle_entity = None;
+        assert_eq!(
+            level.player_tag().get("RootVehicle").unwrap().get("Entity"),
+            None
+        );
     }
 
     /// `RecipesUsed` is what a furnace owes in experience, so a save that drops it pays the

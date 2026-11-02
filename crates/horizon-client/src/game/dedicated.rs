@@ -1668,7 +1668,8 @@ impl Game<'_> {
             for g in &host.hub.guests {
                 // The vehicle the guest rides, for the file that names it.
                 let vehicle = self.root_vehicle_uuid(g.vehicle);
-                horizon_client::lan::playerdata::save(g, &self.world_root, vehicle);
+                let entity = self.root_vehicle_entity(g.vehicle);
+                horizon_client::lan::playerdata::save(g, &self.world_root, vehicle, entity);
             }
             self.lan = Some(host);
         }

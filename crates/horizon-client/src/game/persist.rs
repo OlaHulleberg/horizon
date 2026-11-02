@@ -264,6 +264,7 @@ impl Game<'_> {
     pub(super) fn spawn_loaded_entities(&mut self) {
         let loaded = std::mem::take(&mut self.world.loaded_entities);
         let player_uuid = self.level.player_uuid;
+        let mut seats = Vec::new();
         for (key, tags) in loaded {
             for tag in tags {
                 let kind = entity_nbt::kind(&tag).unwrap_or_default();
@@ -483,6 +484,9 @@ impl Game<'_> {
                             self.persist.unknown.entry(key).or_default().push(tag);
                         }
                     }
+                    "minecraft:item_display" if tag.get(super::native_riding::SEAT).is_some() => {
+                        seats.extend(self.load_seat(tag));
+                    }
                     _ if self.res.mob_types().contains_key(&kind) => {
                         self.load_mob(tag, None);
                     }
@@ -493,6 +497,7 @@ impl Game<'_> {
                 }
             }
         }
+        self.seats_loaded(seats);
     }
     /// A saved mob and, under `Passengers`, the mobs riding it.
     pub(super) fn load_mob(&mut self, tag: Tag, mount: Option<u32>) -> Option<u32> {
@@ -561,7 +566,7 @@ impl Game<'_> {
     }
     /// The mobs under an entity's `Passengers`, taken out of it; the
     /// passengers Horizon doesn't simulate stay.
-    fn take_mob_passengers(&self, tag: &mut Tag) -> Vec<Tag> {
+    pub(super) fn take_mob_passengers(&self, tag: &mut Tag) -> Vec<Tag> {
         let mut riders = Vec::new();
         if let Tag::Compound(c) = tag
             && let Some(Tag::List(list)) = c.remove(&"Passengers".into())
@@ -584,7 +589,7 @@ impl Game<'_> {
     }
     /// The mobs riding entity `id` under `tag`'s `Passengers`, after the
     /// passengers it kept from loading.
-    fn put_mob_passengers(&mut self, tag: &mut Tag, id: u32) {
+    pub(super) fn put_mob_passengers(&mut self, tag: &mut Tag, id: u32) {
         let riders: Vec<usize> = (0..self.mobs.len())
             .filter(|&j| self.mobs[j].extra.mount == Some(id) && self.mobs[j].alive())
             .collect();
@@ -603,7 +608,7 @@ impl Game<'_> {
         }
     }
     /// An entity of a type Horizon does not simulate, kept as its compound.
-    fn load_other(&mut self, mut tag: Tag, kind: &str) -> Option<u32> {
+    pub(super) fn load_other(&mut self, mut tag: Tag, kind: &str) -> Option<u32> {
         strip_finalize(&mut tag);
         let position = entity_nbt::position(&tag)?;
         let rotation = match tag.get("Rotation") {
@@ -661,7 +666,7 @@ impl Game<'_> {
         tag
     }
     /// The root of a stack of riders (`Entity.getRootVehicle`).
-    fn mob_root(&self, mut i: usize) -> usize {
+    pub(super) fn mob_root(&self, mut i: usize) -> usize {
         for _ in 0..8 {
             let Some(v) = self.mobs[i].extra.mount else {
                 break;
@@ -675,9 +680,7 @@ impl Game<'_> {
     }
     /// `RootVehicle.Attach` names the immediate mount, not the root of its tree.
     pub(super) fn root_vehicle_uuid(&mut self, id: Option<u32>) -> Option<[i32; 4]> {
-        // A native mod's seat is not saved: the player loads standing.
-        let id = id.filter(|&id| self.native_seat(id).is_none())?;
-        Some(self.uuid_for(id))
+        Some(self.uuid_for(id?))
     }
     /// The vehicle with this UUID, among the ones in the world.
     pub(super) fn vehicle_by_uuid(&self, uuid: [i32; 4]) -> Option<u32> {
@@ -689,7 +692,8 @@ impl Game<'_> {
             .map(|(id, _)| id)?;
         let there = self.mobs.iter().any(|m| m.id == id && m.alive())
             || self.boats.iter().any(|b| b.id == id)
-            || self.carts.iter().any(|c| c.id == id);
+            || self.carts.iter().any(|c| c.id == id)
+            || self.native_seat(id).is_some();
         there.then_some(id)
     }
     /// A vehicle already in the world that was restored from the player's file
@@ -716,6 +720,7 @@ impl Game<'_> {
         if !self.res.mob_types().contains_key(&kind)
             && super::boats::any_boat_wood(&kind).is_none()
             && super::minecarts::CartKind::from_id(&kind).is_none()
+            && tag.get(super::native_riding::SEAT).is_none()
         {
             return None;
         }
@@ -906,10 +911,9 @@ impl Game<'_> {
         let mobs: Vec<usize> = (0..self.mobs.len())
             .filter(|&i| {
                 self.mob_root(i) == i
-                    && self.mobs[i]
-                        .extra
-                        .mount
-                        .is_none_or(|v| self.boats.iter().all(|b| b.id != v))
+                    && self.mobs[i].extra.mount.is_none_or(|v| {
+                        self.boats.iter().all(|b| b.id != v) && self.native_seat(v).is_none()
+                    })
                     && keys.contains(&chunk_of(self.mobs[i].position))
                     && self.mobs[i].alive()
                     && !self.mobs[i].removed
@@ -1112,17 +1116,28 @@ impl Game<'_> {
                 out.entry(chunk_of(at)).or_default().push(tag);
             }
         }
-        for o in self.others.iter().filter(|o| !o.seat) {
-            if keys.contains(&chunk_of(o.position)) {
+        let others: Vec<usize> = (0..self.others.len())
+            .filter(|&i| keys.contains(&chunk_of(self.others[i].position)))
+            .collect();
+        for i in others {
+            let o = &self.others[i];
+            let tag = if !o.seat {
                 let uuid = self
                     .persist
                     .uuids
                     .get(&o.id)
                     .copied()
                     .unwrap_or_else(random_uuid);
-                let tag = self.other_to_nbt(o, uuid);
-                out.entry(chunk_of(o.position)).or_default().push(tag);
-            }
+                self.other_to_nbt(o, uuid)
+            } else if self.seat_has_player(o.id) {
+                // `Entity.shouldBeSaved`: the player's file holds it (`RootVehicle`).
+                continue;
+            } else {
+                self.seat_tree_nbt(i)
+            };
+            out.entry(chunk_of(self.others[i].position))
+                .or_default()
+                .push(tag);
         }
         for key in keys {
             let unknown = if remove {
@@ -1158,8 +1173,14 @@ impl Game<'_> {
                 }
                 keep
             });
+            let seated: Vec<u32> = self
+                .others
+                .iter()
+                .filter(|o| o.seat && self.seat_has_player(o.id))
+                .map(|o| o.id)
+                .collect();
             self.others.retain(|o| {
-                let keep = !gone(o.position);
+                let keep = !gone(o.position) || seated.contains(&o.id);
                 if !keep {
                     removed.push(o.id);
                 }

@@ -73,7 +73,7 @@ pub(in crate::game) struct OtherEntity {
     pub yaw: f32,
     pub pitch: f32,
     /// A native mod's seat (`native_spawn_seat`): an empty `minecraft:item_display` players
-    /// and mobs ride, never saved.
+    /// and mobs ride, saved marked `horizon:seat` with its riders (`native_riding.rs`).
     pub seat: bool,
 }
 pub(super) fn err(key: &str, args: &[&dyn std::fmt::Display]) -> CommandError {

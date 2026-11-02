@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 67 adds `native_seat_loaded` (NeoForge's `EntityJoinLevelEvent` loaded from disk):
+//! mod seats save with their chunk and their riders, or in their player's file, as vanilla's
+//! vehicles do, and a mod hears each one that comes back.
+//!
 //! API 66 adds `native_interaction_key_mapping_triggered` (NeoForge's
 //! `InputEvent.InteractionKeyMappingTriggered`): an attack, use or pick-block click on the
 //! client, which a mod may cancel.
@@ -323,7 +327,7 @@ fn input_key(
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 66;
+pub(crate) const NATIVE_HOOKS_API: u32 = 67;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -963,6 +967,16 @@ impl Game<'_> {
         canceled: &mut bool,
     ) {
         let _ = (dimension, rider, vehicle, mounting, canceled);
+    }
+    /// A mod's seat (`native_spawn_seat`) came back from a save at `pos`, with its chunk or
+    /// with the player whose file held it (NeoForge's `EntityJoinLevelEvent` with
+    /// `loadedFromDisk`): `seat` is its new id, its mobs already on it (`native_passengers`); a
+    /// player gets on in the same tick. Seats save as vanilla's vehicles do: with their chunk
+    /// and the mobs riding them, or in the file of the player riding one (`RootVehicle`). Take
+    /// it back into the mod's own state, or remove it. Before the level's next tick, so act on
+    /// it there. Server-side. API 67.
+    pub(super) fn native_seat_loaded(&mut self, dimension: &str, seat: u32, pos: [f64; 3]) {
+        let _ = (dimension, seat, pos);
     }
     /// A living player's server tick ends (`ServerPlayer.tick`): once a tick
     /// for every player in the world, after their digging, item use,

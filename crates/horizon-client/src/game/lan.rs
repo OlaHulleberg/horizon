@@ -1375,12 +1375,14 @@ impl Game<'_> {
     pub(super) fn save_guest(&mut self, host: &LanHost, guest: &horizon_client::lan::guest::Guest) {
         // The vehicle the guest rides, for the file that names it.
         let vehicle = self.root_vehicle_uuid(guest.vehicle);
+        let entity = self.root_vehicle_entity(guest.vehicle);
         if host.owner.as_ref().is_some_and(|o| o.uuid == guest.uuid) {
             if guest.placed {
                 playerdata::store(guest, &mut self.level, vehicle);
+                self.level.root_vehicle_entity = entity;
             }
         } else {
-            playerdata::save(guest, &self.world_root, vehicle);
+            playerdata::save(guest, &self.world_root, vehicle, entity);
         }
         self.save_guest_records(host, guest);
     }
@@ -1507,11 +1509,13 @@ impl Game<'_> {
         });
         // The vehicle the owner rides, by the UUID it is saved with.
         let vehicle = self.root_vehicle_uuid(riding);
+        let entity = self.root_vehicle_entity(riding);
         let Some(host) = &self.lan else {
             return;
         };
         if let Some(g) = host.hub.guests.iter().find(|g| g.uuid == uuid && g.placed) {
             playerdata::store(g, &mut self.level, vehicle);
+            self.level.root_vehicle_entity = entity;
             self.save_guest_records(host, g);
         }
     }
@@ -1874,6 +1878,7 @@ impl Game<'_> {
                             host.award_leave_game(guest.conn);
                         }
                         self.save_guest(&host, &guest);
+                        self.seat_leaves_with_player(guest.vehicle);
                         host.models.remove(&guest.conn);
                         host.play.remove(&guest.conn);
                         self.guest_combat.remove(&guest.conn);

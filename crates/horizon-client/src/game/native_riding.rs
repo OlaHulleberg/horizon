@@ -2,11 +2,16 @@
 //! spawns and moves (an empty `minecraft:item_display`, so every client draws nothing and
 //! places its riders itself), players and mobs put on it or taken off (`Entity.startRiding`,
 //! `stopRiding`), who rides what, and `native_entity_mount` (NeoForge's `EntityMountEvent`)
-//! when a player gets on or sneaks off a vehicle. Seats are never saved: a mod spawns them
-//! again as it needs them.
+//! when a player gets on or sneaks off a vehicle. A seat saves as vanilla's vehicles do
+//! (API 67): with its chunk and the mobs riding it, or in the file of the player riding it
+//! (`RootVehicle`), and `native_seat_loaded` tells the mods when it comes back.
 use super::{Game, commands::OtherEntity};
 use horizon_client::mobs::riders;
 use horizon_core::geometry::Vec3;
+use horizon_world::nbt::Tag;
+
+/// The key that marks a saved `minecraft:item_display` as a mod's seat (vanilla ignores it).
+pub(super) const SEAT: &str = "horizon:seat";
 
 /// `Display.DATA_POS_ROT_INTERPOLATION_DURATION_ID` of a seat: clients glide it to each new
 /// position over vanilla's 3 interpolation steps, and its riders with it.
@@ -34,6 +39,81 @@ impl Game<'_> {
             .map(|o| o.position)
     }
 
+    /// Whether a server player in this level rides seat `id` (`hasExactlyOnePlayerPassenger`).
+    pub(super) fn seat_has_player(&self, id: u32) -> bool {
+        let rides = |h: &super::lan::LanHost| {
+            let mut guests = h.hub.guests.iter();
+            guests.any(|g| h.hub.here(g) && g.vehicle == Some(id))
+        };
+        self.lan.as_ref().is_some_and(rides)
+    }
+
+    /// Seat number `i` of `others` with the mobs riding it under `Passengers`, marked [`SEAT`].
+    pub(super) fn seat_tree_nbt(&mut self, i: usize) -> Tag {
+        let o = self.others[i].clone();
+        let uuid = self.uuid_for(o.id);
+        let mut tag = self.other_to_nbt(&o, uuid);
+        if let Tag::Compound(c) = &mut tag {
+            c.insert(SEAT.into(), Tag::Byte(1));
+        }
+        self.put_mob_passengers(&mut tag, o.id);
+        tag
+    }
+
+    /// `ServerPlayer.saveParentVehicle`'s "Entity" for a player on a seat: the seat's tree,
+    /// which leaves its chunk with the player (`Entity.shouldBeSaved`). None for any other
+    /// vehicle, which stays in the world.
+    pub(super) fn root_vehicle_entity(&mut self, vehicle: Option<u32>) -> Option<Tag> {
+        let i = self
+            .others
+            .iter()
+            .position(|o| o.seat && Some(o.id) == vehicle)?;
+        Some(self.seat_tree_nbt(i))
+    }
+
+    /// A saved seat and the mobs riding it: its id.
+    pub(super) fn load_seat(&mut self, mut tag: Tag) -> Option<u32> {
+        let riders = self.take_mob_passengers(&mut tag);
+        if let Tag::Compound(c) = &mut tag {
+            c.remove(&SEAT.into());
+        }
+        let id = self.load_other(tag, "minecraft:item_display")?;
+        if let Some(o) = self.others.iter_mut().find(|o| o.id == id) {
+            o.seat = true;
+        }
+        for rider in riders {
+            self.load_mob(rider, Some(id));
+        }
+        Some(id)
+    }
+
+    /// `native_seat_loaded` for each seat that came back, its riders on it.
+    pub(super) fn seats_loaded(&mut self, seats: Vec<u32>) {
+        for id in seats {
+            if let Some(at) = self.native_seat(id) {
+                self.native_seat_loaded(self.dim.id(), id, [at.x, at.y, at.z]);
+            }
+        }
+    }
+
+    /// `ServerPlayer.disconnect`'s `UNLOADED_WITH_PLAYER`: the seat a leaving player rode,
+    /// saved in their file, leaves the world with the mobs on it.
+    pub(super) fn seat_leaves_with_player(&mut self, vehicle: Option<u32>) {
+        let Some(id) = vehicle.filter(|&id| self.native_seat(id).is_some()) else {
+            return;
+        };
+        let gone: Vec<u32> = (0..self.mobs.len())
+            .filter(|&i| self.mobs[self.mob_root(i)].extra.mount == Some(id))
+            .map(|i| self.mobs[i].id)
+            .chain([id])
+            .collect();
+        self.mobs.retain(|m| !gone.contains(&m.id));
+        self.others.retain(|o| o.id != id);
+        for id in gone {
+            self.forget_entity(id);
+        }
+    }
+
     /// `LivingEntity.stopRiding` off a seat: the player stands where the seat is
     /// (`Entity.getDismountLocationForPassenger`: its box's top, which is its position).
     pub(super) fn get_off_seat(&mut self, at: Vec3) {
@@ -52,7 +132,8 @@ impl Game<'_> {
 impl Game<'_> {
     /// Spawns a seat at `pos` facing `yaw` in the level in place, `dimension`: its id, for
     /// `native_start_riding`. A player on it stands 0.6 below it (`Player`'s vehicle
-    /// attachment); a mob by its own attachment. None off a server, for another dimension, a
+    /// attachment); a mob by its own attachment. It saves with its riders (API 67:
+    /// `native_seat_loaded` hears it come back). None off a server, for another dimension, a
     /// position that isn't finite, or in a chunk that isn't loaded. API 63.
     pub(super) fn native_spawn_seat(
         &mut self,
@@ -239,10 +320,34 @@ mod tests {
     }
 
     #[test]
-    fn seats_are_ridden_everywhere_and_never_saved() {
+    fn seats_save_as_vanilla_vehicles() {
+        // With their chunk and their mobs, unless a player rides one: their file holds it.
         let persist = include_str!("persist.rs");
-        assert!(persist.contains("for o in self.others.iter().filter(|o| !o.seat) {"));
-        assert!(persist.contains("let id = id.filter(|&id| self.native_seat(id).is_none())?;"));
+        let chunks = &persist[persist.find("fn entity_chunks(").unwrap()..];
+        let skip = chunks
+            .find("} else if self.seat_has_player(o.id) {")
+            .unwrap();
+        assert!(chunks[skip..].contains("continue;"));
+        assert!(chunks.contains("self.seat_tree_nbt(i)"));
+        assert!(
+            chunks
+                .contains("self.boats.iter().all(|b| b.id != v) && self.native_seat(v).is_none()")
+        );
+        let load = &persist[persist.find("fn spawn_loaded_entities(").unwrap()..];
+        assert!(load.contains("seats.extend(self.load_seat(tag));"));
+        assert!(load.contains("self.seats_loaded(seats);"));
+        assert!(persist.contains("|| self.native_seat(id).is_some();"));
+        let lan = include_str!("lan.rs");
+        assert!(lan.contains("let entity = self.root_vehicle_entity(guest.vehicle);"));
+        assert!(lan.contains("self.seat_leaves_with_player(guest.vehicle);"));
+        assert!(
+            include_str!("dedicated.rs")
+                .contains("let entity = self.root_vehicle_entity(g.vehicle);")
+        );
+    }
+
+    #[test]
+    fn seats_are_ridden_everywhere() {
         // The server keeps a player on it, lets it off on a sneak, and asks the mods first.
         let vehicles = include_str!("lan_vehicles.rs");
         let tick = &vehicles[vehicles.find("fn guest_vehicle_tick(").unwrap()..];

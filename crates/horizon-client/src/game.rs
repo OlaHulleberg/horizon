@@ -13170,6 +13170,7 @@ impl Game<'_> {
         level.xp_progress = self.experience.progress;
         level.xp_total = self.experience.total;
         level.root_vehicle = vehicle.or(self.pending_vehicle);
+        level.root_vehicle_entity = None;
         if let Some(p) = &self.player {
             level.position = Some([p.position.x, p.position.y, p.position.z]);
             level.health = p.health.health();

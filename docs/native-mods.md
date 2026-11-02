@@ -402,6 +402,10 @@ only the mod knows is there, such as the blocks of a moving contraption it draws
 sends the click to its server half with [its own messages](#mod-messages). Client-side (the window's `Game` as a
 client of its server: single player's server thread, LAN, multiplayer). Bundles that use it need `"hooks": 66`.
 
+API 67 saves [seats](#riding) with their riders, as vanilla's vehicles: with their chunk and the mobs on them, or in
+the file of the player riding one, who sits on it again at the next login. `native_seat_loaded(dimension, seat, pos)`
+hears each one come back. Bundles that use it need `"hooks": 67`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
@@ -705,8 +709,11 @@ API 63, `crates/horizon-client/src/game/native_riding.rs`, for server mods, on t
 
 - `native_spawn_seat(dimension, pos, yaw)`: a seat, an empty `minecraft:item_display` that every client (vanilla's
   too) draws as nothing and seats its riders on itself; its id. A player on it stands 0.6 below `pos` (`Player`'s
-  vehicle attachment), a mob by its own attachment. Seats are never saved, nor is a player's ride on one: spawn them
-  again when the world opens (`native_chunk_load`, `native_level_load`).
+  vehicle attachment), a mob by its own attachment. A seat saves as vanilla's vehicles do (API 67): with its chunk and
+  the mobs riding it, or, ridden by a player, in that player's file (`RootVehicle`), leaving the world with them.
+- `native_seat_loaded(dimension, seat, pos)`: a seat came back from a save (NeoForge's `EntityJoinLevelEvent` with
+  `loadedFromDisk`), under a new id, its mobs on it; a player whose file held it gets on in the same tick. Take it
+  back into the mod's state in `native_level_tick_post`, or remove it.
 - `native_move_seat(dimension, id, pos, yaw)`: its riders go with it, and clients glide it over vanilla's 3
   interpolation steps, so a move every tick is a smooth ride (a train, a contraption).
   `native_remove_seat(dimension, id)` lets its riders off first.

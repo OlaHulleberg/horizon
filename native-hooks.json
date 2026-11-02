@@ -411,6 +411,14 @@
       "neoforge": "InputEvent.InteractionKeyMappingTriggered",
       "side": "client",
       "cancellable": true
+    },
+    {
+      "name": "seat_loaded",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_seat_loaded",
+      "neoforge": "EntityJoinLevelEvent",
+      "side": "server",
+      "cancellable": false
     }
   ]
 }
