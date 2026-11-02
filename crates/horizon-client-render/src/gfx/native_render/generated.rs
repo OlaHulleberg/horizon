@@ -12,7 +12,7 @@ pub trait RenderHooks: Send + Sync {
         let _ = event;
     }
     /// The first-person hand is drawn (see [`HandDrawn`]), on every frame [`native_world_drawn`]
-    /// runs, with no hand too. API @API:hand_drawn@.
+    /// runs, with no hand too. API 364.
     fn hand_drawn(&self, event: &mut HandDrawnEvent<'_, '_>) {
         let _ = event;
     }
