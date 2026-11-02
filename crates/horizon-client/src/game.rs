@@ -13268,7 +13268,10 @@ impl Game<'_> {
         self.save_native_saved_data();
         self.sync_level();
         self.store_owner();
-        if self.options.dedicated.is_some() {
+        // An integrated server writes its owner's file with the world (`store_owner`); a
+        // dedicated one saves its players apart.
+        let owner = self.lan.as_ref().is_some_and(|h| h.owner.is_some());
+        if self.options.dedicated.is_some() && !owner {
             self.level.write_without_player(&self.world_root)?;
         } else {
             self.level.write(&self.world_root)?;

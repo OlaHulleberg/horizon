@@ -337,6 +337,9 @@ mod tests {
         assert!(load.contains("seats.extend(self.load_seat(tag));"));
         assert!(load.contains("self.seats_loaded(seats);"));
         assert!(persist.contains("|| self.native_seat(id).is_some();"));
+        // The single player server writes its owner's file, the seat in it.
+        let game = include_str!("../game.rs");
+        assert!(game.contains("if self.options.dedicated.is_some() && !owner {"));
         let lan = include_str!("lan.rs");
         assert!(lan.contains("let entity = self.root_vehicle_entity(guest.vehicle);"));
         assert!(lan.contains("self.seat_leaves_with_player(guest.vehicle);"));
