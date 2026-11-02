@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 57 adds key input for client mods (`native_input_key`, NeoForge's `InputEvent.Key`:
+//! a key's name, action and modifiers, which a mod may consume) and the helper
+//! `native_is_key_down` for polling keys and mouse buttons.
+//!
 //! API 56 adds comparators reading mods' blocks (`native_analog_output_signal`,
 //! `Block.getAnalogOutputSignal`, for content blocks with `properties.analog_output`) and the
 //! helper `native_update_neighbour_for_output_signal`.
@@ -196,6 +200,7 @@ use horizon_client::{
     chunk::Chunk,
     containers::{BlockEntity, MOD_MENUS, ModBlockEntity, ModContainer},
     crafting::{CustomRecipe, Ingredient, recipe_result},
+    debug_keys::KeyAction,
     extras::Corner,
     extras_hud::Corners,
     fast_hash::FxHashMap,
@@ -223,7 +228,10 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-use winit::{event::MouseButton, keyboard::KeyCode};
+use winit::{
+    event::MouseButton,
+    keyboard::{KeyCode, ModifiersState},
+};
 
 /// `Level.setBlock`'s flags, for the `native_set_block_property` helpers:
 /// `flags::UPDATE_CLIENTS` as a vanilla crop grows, `flags::UPDATE_ALL` as a
@@ -236,10 +244,48 @@ pub(super) use horizon_world::level::flags;
 /// a compound with one entry per mod, by mod id.
 pub(super) const MOD_DATA: &str = "horizon:mod_data";
 
+/// GLFW's modifier bits in `native_input_key`'s `modifiers` (`InputEvent.Key.getModifiers`).
+pub(super) const KEY_SHIFT: u8 = 0x1;
+pub(super) const KEY_CONTROL: u8 = 0x2;
+pub(super) const KEY_ALT: u8 = 0x4;
+pub(super) const KEY_SUPER: u8 = 0x8;
+
+/// One key event for `native_input_key`: its vanilla name, GLFW action and modifier bits,
+/// handed to `hook`; whether it was consumed. Keys without a vanilla name aren't offered,
+/// and a release is never consumed.
+fn input_key(
+    key: KeyCode,
+    pressed: bool,
+    repeat: bool,
+    modifiers: ModifiersState,
+    hook: impl FnOnce(&str, KeyAction, u8, &mut bool),
+) -> bool {
+    let Some(name) = keybinds::key_name(key) else {
+        return false;
+    };
+    let action = match (pressed, repeat) {
+        (false, _) => KeyAction::Release,
+        (true, false) => KeyAction::Press,
+        (true, true) => KeyAction::Repeat,
+    };
+    let bits = [
+        (modifiers.shift_key(), KEY_SHIFT),
+        (modifiers.control_key(), KEY_CONTROL),
+        (modifiers.alt_key(), KEY_ALT),
+        (modifiers.super_key(), KEY_SUPER),
+    ]
+    .into_iter()
+    .filter(|(on, _)| *on)
+    .fold(0, |bits, (_, bit)| bits | bit);
+    let mut consumed = false;
+    hook(name, action, bits, &mut consumed);
+    consumed && action != KeyAction::Release
+}
+
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 56;
+pub(crate) const NATIVE_HOOKS_API: u32 = 57;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -843,6 +889,24 @@ impl Game<'_> {
     /// `native_playing`), mouse buttons while playing. Repeats are left out.
     pub(super) fn native_key(&mut self, key: &str, pressed: bool) {
         let _ = (key, pressed);
+    }
+    /// A key goes down, repeats or goes up in a world, by its vanilla name
+    /// (`key.keyboard.r`): NeoForge's `InputEvent.Key`, from `KeyboardHandler.keyPress`
+    /// after the debug keys and before a screen or a key mapping sees it. `modifiers`
+    /// holds GLFW's bits ([`KEY_SHIFT`], [`KEY_CONTROL`], [`KEY_ALT`], [`KEY_SUPER`]);
+    /// `screen` is true when a screen is open (chat, an inventory, a sign): stand back
+    /// there unless the key is meant for it. Set `consumed` on a press or a repeat to keep
+    /// it from the game (no screen, mapping or `native_key` hears it); a release always
+    /// reaches the game, so nothing stays held. Client-side (the window's `Game`). API 57.
+    pub(super) fn native_input_key(
+        &mut self,
+        key: &str,
+        action: KeyAction,
+        modifiers: u8,
+        screen: bool,
+        consumed: &mut bool,
+    ) {
+        let _ = (key, action, modifiers, screen, consumed);
     }
     /// Wheel steps while playing: set `claimed` to keep them from the hotbar.
     pub(super) fn native_wheel(&mut self, steps: f32, claimed: &mut bool) {
@@ -1828,6 +1892,17 @@ impl Game<'_> {
         };
         Some((down, label))
     }
+    /// Whether a key (`key.keyboard.r`) or mouse button (`key.mouse.left`) is held down
+    /// now, on the keyboard and mouse themselves, a consumed key's too:
+    /// `InputConstants.isKeyDown`, for a mod that polls in `native_tick` (NeoForge's
+    /// `ClientTickEvent`). False for a name the game doesn't know, and while the window
+    /// is unfocused. API 57.
+    pub(super) fn native_is_key_down(&self, key: &str) -> bool {
+        match keybinds::key_code(key) {
+            Some(code) => self.physical_keys.contains(&code),
+            None => keybinds::mouse_button(key).is_some_and(|b| self.physical_buttons.contains(&b)),
+        }
+    }
     /// The key the player chose for a mod's key `name`, else `default`
     /// (`key.keyboard.z`), as the WebAssembly mods' keys were kept
     /// (`key.<mod id>.<name>` in `horizon-mods.txt`).
@@ -2490,6 +2565,27 @@ impl Game<'_> {
             self.native_key(name, pressed);
         }
     }
+    /// A key event for `native_input_key`, in a world: whether a mod consumed it.
+    pub(super) fn native_input_key_event(
+        &mut self,
+        key: KeyCode,
+        pressed: bool,
+        repeat: bool,
+    ) -> bool {
+        if self.player.is_none() {
+            return false;
+        }
+        let (modifiers, screen) = (self.modifiers, !self.native_playing());
+        input_key(
+            key,
+            pressed,
+            repeat,
+            modifiers,
+            |name, action, bits, consumed| {
+                self.native_input_key(name, action, bits, screen, consumed)
+            },
+        )
+    }
     /// A mouse button while playing, for `native_key`.
     pub(super) fn native_mouse_event(&mut self, button: MouseButton, pressed: bool) {
         let name = keybinds::mouse_name(button);
@@ -2653,6 +2749,66 @@ mod tests {
         assert!(take < gate, "the queue is emptied before the server check");
         assert!(events.contains("self.native_chunk_load(dimension, &chunk)"));
         assert!(events.contains("self.native_chunk_unload(dimension, chunk)"));
+    }
+
+    /// `native_input_key` hears a key by its vanilla name, action and modifiers; a consumed
+    /// press or repeat is kept from the game, a release never is.
+    #[test]
+    fn key_input_reaches_mods_and_presses_can_be_consumed() {
+        use super::{KEY_CONTROL, KEY_SHIFT, KeyAction, input_key};
+        use winit::keyboard::{KeyCode, ModifiersState};
+        let mods = ModifiersState::SHIFT | ModifiersState::CONTROL;
+        let heard = std::cell::RefCell::new(Vec::new());
+        let log = &heard;
+        let hear = move |consume: bool| {
+            move |key: &str, action, bits, consumed: &mut bool| {
+                log.borrow_mut().push((key.to_owned(), action, bits));
+                *consumed = consume;
+            }
+        };
+        assert!(input_key(KeyCode::KeyR, true, false, mods, hear(true)));
+        assert!(input_key(KeyCode::KeyR, true, true, mods, hear(true)));
+        assert!(!input_key(KeyCode::KeyR, false, false, mods, hear(true)));
+        assert!(!input_key(
+            KeyCode::KeyG,
+            true,
+            false,
+            ModifiersState::empty(),
+            hear(false)
+        ));
+        assert!(
+            !input_key(KeyCode::Fn, true, false, mods, hear(true)),
+            "no vanilla name"
+        );
+        let r = |action| ("key.keyboard.r".to_owned(), action, KEY_SHIFT | KEY_CONTROL);
+        assert_eq!(
+            heard.into_inner(),
+            [
+                r(KeyAction::Press),
+                r(KeyAction::Repeat),
+                r(KeyAction::Release),
+                ("key.keyboard.g".to_owned(), KeyAction::Press, 0),
+            ]
+        );
+        // The window asks the mods in a world, after the window shortcuts and loading
+        // screens, and a consumed key goes no further.
+        let game = include_str!("../game.rs");
+        let event = &game[game.find("fn window_event(&mut self").unwrap()..];
+        let call = event.find("&& self.native_input_key_event(").unwrap();
+        assert!(event.find("if self.debug_key(key, action)").unwrap() < call);
+        assert!(event.find("if self.pending_save.is_some()").unwrap() < call);
+        assert!(
+            event[call..]
+                .trim_start()
+                .starts_with("&& self.native_input_key_event(")
+        );
+        let after = &event[call..];
+        assert!(after.find("return;").unwrap() < after.find("let result: Result<()>").unwrap());
+        let hooks = include_str!("native_hooks.rs");
+        let wrapper = &hooks[hooks.find("fn native_input_key_event").unwrap()..];
+        let wrapper = &wrapper[..wrapper.find("\n    }").unwrap()];
+        assert!(wrapper.contains("if self.player.is_none() {"));
+        assert!(wrapper.contains("self.native_input_key(name, action, bits, screen, consumed)"));
     }
 
     #[test]

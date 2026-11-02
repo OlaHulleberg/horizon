@@ -90,6 +90,14 @@
       "target": "horizon_client::game::native_hooks::Game<'_>::native_key"
     },
     {
+      "name": "input_key",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_input_key",
+      "neoforge": "InputEvent.Key",
+      "side": "client",
+      "cancellable": true
+    },
+    {
       "name": "wheel",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_wheel"

@@ -316,6 +316,17 @@ When the answer changes, `native_update_neighbour_for_output_signal(dimension, p
 makes the comparators beside the block, or behind a conductor there, read it again; it acts on the level in place and
 is refused for another dimension. Server-side. Bundles that use them need `"hooks": 56`.
 
+API 57 adds key input for client mods, NeoForge's `InputEvent.Key`: `native_input_key(key, action, modifiers, screen,
+consumed)` hears every key that goes down, repeats or goes up in a world, by its vanilla name (`key.keyboard.r`), with
+its action (`KeyAction::Press`, `Repeat`, `Release`) and GLFW's modifier bits (`KEY_SHIFT`, `KEY_CONTROL`, `KEY_ALT`,
+`KEY_SUPER`). It fires where `KeyboardHandler.keyPress` takes the key, after the window's shortcuts (fullscreen, a
+screenshot, the F3 debug keys) and before a screen or a key mapping sees it. `screen` is true when a screen is open
+(chat, an inventory, a sign): stand back there unless the key is meant for it. A mod that sets `consumed` on a press or
+a repeat keeps it from the game (no screen, mapping or `native_key` hears it); a release always reaches the game, so
+nothing stays held. `native_is_key_down(key)` (`InputConstants.isKeyDown`) says whether a key, or a mouse button
+(`key.mouse.left`), is held on the keyboard and mouse themselves, a consumed key's too, for a mod that polls in
+`native_tick` (NeoForge's `ClientTickEvent`). Client-side (the window's `Game`). Bundles that use them need `"hooks": 57`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

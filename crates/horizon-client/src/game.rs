@@ -14758,6 +14758,19 @@ impl ApplicationHandler for Game<'_> {
             }
             return;
         }
+        // InputEvent.Key: a native mod may consume a key before screens and mappings see it.
+        if let WindowEvent::KeyboardInput {
+            event: key_event, ..
+        } = &event
+            && let PhysicalKey::Code(key) = key_event.physical_key
+            && self.native_input_key_event(
+                key,
+                key_event.state == ElementState::Pressed,
+                key_event.repeat,
+            )
+        {
+            return;
+        }
         let result: Result<()> = (|| {
             match event {
                 WindowEvent::CloseRequested => {
