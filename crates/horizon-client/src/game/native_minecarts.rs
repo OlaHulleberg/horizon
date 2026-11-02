@@ -2,8 +2,11 @@
 //! API 62): content blocks with `properties.rail` are plain rails to the carts, along their
 //! `shape`, and `native_minecart_pass` hears each cart on one every tick
 //! (NeoForge's `IBlockExtension.onMinecartPass`) and may change its motion; and the carts
-//! of the level in place, with their riders, read by id.
-use super::{Game, minecarts::Minecart};
+//! of the level in place, with their riders, read by id. API 65 spawns and removes them.
+use super::{
+    Game,
+    minecarts::{CartKind, Minecart},
+};
 use horizon_core::{geometry::Vec3, position::BlockPos};
 use horizon_world::registry::BlockStateId;
 
@@ -85,6 +88,58 @@ impl Game<'_> {
         carts.iter().map(|c| self.native_minecart_of(c)).collect()
     }
 
+    /// `EntityType.create` and `Level.addFreshEntity`: a minecart of `kind`
+    /// (`minecraft:minecart`, `minecraft:chest_minecart`...) at `pos`, facing `yaw`, moving at
+    /// `velocity` (blocks a tick); its entity id. Clients see it through the tracker and it
+    /// saves with its chunk. None for another kind, another dimension, off a server, an
+    /// unloaded chunk or a value that isn't finite. API 65.
+    pub(super) fn native_spawn_minecart(
+        &mut self,
+        dimension: &str,
+        kind: &str,
+        pos: [f64; 3],
+        yaw: f32,
+        velocity: [f64; 3],
+    ) -> Option<u32> {
+        let (x, z) = (pos[0].floor() as i32, pos[2].floor() as i32);
+        if !self.native_server_level(dimension)
+            || !pos.iter().chain(&velocity).all(|v| v.is_finite())
+            || !yaw.is_finite()
+            || !self.world.chunks.contains_key(&(x >> 4, z >> 4))
+        {
+            return None;
+        }
+        let kind = CartKind::from_id(kind)?;
+        self.next_entity += 1;
+        let mut cart = Minecart::new(self.next_entity, kind, Vec3::new(pos[0], pos[1], pos[2]));
+        cart.yaw = yaw;
+        cart.velocity = Vec3::new(velocity[0], velocity[1], velocity[2]);
+        self.world.modified.insert((x >> 4, z >> 4));
+        self.carts.push(cart);
+        Some(self.next_entity)
+    }
+
+    /// `Entity.discard`: minecart `id` goes, dropping nothing (not even what it holds), its
+    /// riders getting off first. False for no such cart, another dimension or off a server.
+    /// API 65.
+    pub(super) fn native_remove_minecart(&mut self, dimension: &str, id: u32) -> bool {
+        if !self.native_server_level(dimension) {
+            return false;
+        }
+        let Some(i) = self.carts.iter().position(|c| c.id == id) else {
+            return false;
+        };
+        for rider in self.native_riders(id) {
+            self.native_stop_riding(dimension, rider);
+        }
+        let c = self.carts.remove(i);
+        let p = c.position;
+        self.world
+            .modified
+            .insert((p.x.floor() as i32 >> 4, p.z.floor() as i32 >> 4));
+        true
+    }
+
     /// `IBlockExtension.onMinecartPass` for cart `c` on the mod rail `state` at `pos`, as the
     /// cart's tick starts to follow it (`OldMinecartBehavior.moveAlongTrack`): the hook may
     /// change its motion, which the track then turns along the rail.
@@ -133,5 +188,34 @@ mod tests {
             .unwrap();
         assert!(gate < hook);
         assert!(passes.contains("if cart.velocity.into_iter().all(f64::is_finite)"));
+    }
+
+    #[test]
+    fn mods_spawn_and_remove_carts_on_a_server_only() {
+        let source = include_str!("native_minecarts.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap();
+        for helper in ["fn native_spawn_minecart(", "fn native_remove_minecart("] {
+            let body = &code[code.find(helper).unwrap()..];
+            let body = &body[..body.find("\n    }\n").unwrap()];
+            assert!(
+                body.contains("self.native_server_level(dimension)"),
+                "{helper}"
+            );
+            // Saved with its chunk: the chunk is marked changed.
+            assert!(
+                body.contains("self.world") && body.contains(".modified"),
+                "{helper}"
+            );
+        }
+        let spawn = &code[code.find("fn native_spawn_minecart(").unwrap()..];
+        assert!(
+            spawn.contains("CartKind::from_id(kind)?") && spawn.contains("self.carts.push(cart)")
+        );
+        // Riders get off before the cart goes.
+        let remove = &code[code.find("fn native_remove_minecart(").unwrap()..];
+        let off = remove
+            .find("self.native_stop_riding(dimension, rider)")
+            .unwrap();
+        assert!(off < remove.find("self.carts.remove(i)").unwrap());
     }
 }

@@ -389,6 +389,9 @@ player gets on or sneaks off a vehicle. Bundles that use them need `"hooks": 63`
 API 64 adds `sneaking` and `flying` to `NativeEntity` (`Entity.isShiftKeyDown`, `Abilities.flying`): a fan pushes a
 sneaking player less and lets a flying one go. Bundles that read them need `"hooks": 64`.
 
+API 65 adds `native_spawn_minecart` and `native_remove_minecart` ([minecarts](#minecarts)). Bundles that use them
+need `"hooks": 65`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
@@ -665,6 +668,10 @@ API 62, `crates/horizon-client/src/game/native_minecarts.rs`, for server mods.
   UUID (kept in the save: key a mod's own saved data on it), kind, position, motion, yaw and riders (players and mobs, by
   entity id). Ids last while the world is open, so a mod may keep what it tracks about a cart in a map by id, and drop
   an entry once `native_minecart` gives nothing. API 60's `native_set_delta_movement` moves a cart from any hook.
+- `native_spawn_minecart(dimension, kind, pos, yaw, velocity)` (API 65): a new cart of a vanilla kind
+  (`minecraft:minecart`, `minecraft:chest_minecart`...) in a loaded chunk, as `EntityType.create` and
+  `Level.addFreshEntity`; its id. `native_remove_minecart(dimension, id)` (API 65): `Entity.discard`, nothing dropped,
+  its riders let off first. A mod that keeps something on a cart (a contraption riding it) spawns and picks it up so.
 
 ```rust
 // A powered-rail-like booster: carts on it speed up along their motion, to 0.4 blocks a tick.

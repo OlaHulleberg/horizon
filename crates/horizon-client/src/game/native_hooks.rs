@@ -6,6 +6,9 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 65 adds `native_spawn_minecart` and `native_remove_minecart` in `native_minecarts.rs`
+//! (`EntityType.create` with `Level.addFreshEntity`, `Entity.discard`).
+//!
 //! API 64 adds `sneaking` and `flying` to `NativeEntity` (`Entity.isShiftKeyDown`,
 //! `Abilities.flying`).
 //!
@@ -314,7 +317,7 @@ fn input_key(
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 64;
+pub(crate) const NATIVE_HOOKS_API: u32 = 65;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
