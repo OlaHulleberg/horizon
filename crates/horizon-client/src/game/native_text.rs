@@ -147,7 +147,11 @@ impl NativeParts {
                         }
                         None => {
                             self.owners.push(Vec::new());
-                            self.scene.add_model(vertices)
+                            let m = self.scene.add_model(vertices);
+                            // Vanilla's text render type culls back faces: a sign's or a
+                            // mirrored copy's text shows from its own side only.
+                            self.scene.set_culled(m, true);
+                            m
                         }
                     });
                 }
@@ -341,6 +345,8 @@ mod tests {
         assert_eq!(vertices[8].pos, at(&l, 18.0, 8.0));
         let instance = parts.scene.instances[m as usize][0];
         assert_eq!((instance.block, instance.light), (block, 0x30));
+        // Drawn with its back faces culled, as vanilla's text: a mirrored copy shows from behind.
+        assert!(parts.scene.culled[m as usize]);
 
         parts.text_clear(9);
         assert!(parts.scene.models[m as usize].is_empty());

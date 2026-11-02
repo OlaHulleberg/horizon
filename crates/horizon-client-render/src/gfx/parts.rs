@@ -43,6 +43,9 @@ pub struct PartScene {
     pub shapes: Vec<u64>,
     /// Seconds of the animation clock: it stops when the game pauses, as the ticks do.
     pub seconds: f32,
+    /// Models drawn with their back faces culled (text, as vanilla's text render type is); the
+    /// rest are drawn from both sides.
+    pub culled: Vec<bool>,
 }
 
 impl PartScene {
@@ -52,7 +55,14 @@ impl PartScene {
         self.instances.push(Vec::new());
         self.revision.push(0);
         self.shapes.push(0);
+        self.culled.push(false);
         (self.models.len() - 1) as u32
+    }
+    /// Draws a model with its back faces culled, or from both sides again.
+    pub fn set_culled(&mut self, model: u32, culled: bool) {
+        if let Some(c) = self.culled.get_mut(model as usize) {
+            *c = culled;
+        }
     }
     /// Replaces a model's vertices (a native mod's text that changed); its instances stay.
     pub fn set_model(&mut self, model: u32, vertices: Vec<Vertex>) {
@@ -108,6 +118,7 @@ impl PartFrame {
 
 struct Model {
     vertices: wgpu::Buffer,
+    culled: bool,
     shape: u64,
     quads: u32,
     instances: Option<wgpu::Buffer>,
@@ -175,6 +186,7 @@ impl Renderer {
             })
         };
         for (i, model) in self.models.iter_mut().enumerate() {
+            model.culled = scene.culled.get(i).copied().unwrap_or(false);
             if model.shape != scene.shapes[i] {
                 model.shape = scene.shapes[i];
                 model.vertices = buffer(&scene.models[i]);
@@ -184,6 +196,7 @@ impl Renderer {
         for (i, vertices) in scene.models.iter().enumerate().skip(self.models.len()) {
             self.models.push(Model {
                 vertices: buffer(vertices),
+                culled: scene.culled.get(i).copied().unwrap_or(false),
                 shape: scene.shapes[i],
                 quads: (vertices.len() / 4) as u32,
                 instances: None,
@@ -223,11 +236,12 @@ impl Renderer {
         }
     }
 
-    /// One instanced draw per model with instances. The pass holds the part pipeline, the
-    /// entity bind group at 0 and the quad index buffer.
-    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+    /// One instanced draw per model with instances, of the models culled or not as `culled`
+    /// says. The pass holds the matching part pipeline, the entity bind group at 0 and the quad
+    /// index buffer.
+    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, culled: bool) {
         pass.set_bind_group(1, &self.group, &[]);
-        for model in &self.models {
+        for model in self.models.iter().filter(|m| m.culled == culled) {
             let Some(instances) = &model.instances else {
                 continue;
             };
@@ -240,6 +254,13 @@ impl Renderer {
     /// Whether anything is drawn.
     pub(super) fn any(&self) -> bool {
         self.models.iter().any(|m| m.instances.is_some())
+    }
+
+    /// Whether any culled model is drawn.
+    pub(super) fn any_culled(&self) -> bool {
+        self.models
+            .iter()
+            .any(|m| m.culled && m.instances.is_some())
     }
 }
 

@@ -509,6 +509,8 @@ pub struct Renderer {
     lightning_pipeline: wgpu::RenderPipeline,
     lightning: lightning::Renderer,
     part_pipeline: wgpu::RenderPipeline,
+    /// The part pipeline with back faces culled, for culled part models (mods' text).
+    part_cull_pipeline: wgpu::RenderPipeline,
     parts: parts::Renderer,
     see_through_pipeline: wgpu::RenderPipeline,
     text_polygon_offset_pipeline: wgpu::RenderPipeline,
@@ -2405,40 +2407,44 @@ impl Renderer {
                 attributes: &part_attributes,
             }),
         ];
-        let part_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Parts"),
-            layout: Some(&part_layout),
-            vertex: wgpu::VertexState {
-                module: &entity_shader,
-                entry_point: Some("vs_part"),
-                compilation_options: Default::default(),
-                buffers: &part_vertex,
-            },
-            primitive: wgpu::PrimitiveState {
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &entity_shader,
-                entry_point: Some("fs_entity"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format.remove_srgb_suffix(),
-                    blend: Some(alpha_blend),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let part_pipeline_with = |cull_mode, label| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&part_layout),
+                vertex: wgpu::VertexState {
+                    module: &entity_shader,
+                    entry_point: Some("vs_part"),
+                    compilation_options: Default::default(),
+                    buffers: &part_vertex,
+                },
+                primitive: wgpu::PrimitiveState {
+                    cull_mode,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &entity_shader,
+                    entry_point: Some("fs_entity"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: config.format.remove_srgb_suffix(),
+                        blend: Some(alpha_blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let part_pipeline = part_pipeline_with(None, "Parts");
+        let part_cull_pipeline = part_pipeline_with(Some(wgpu::Face::Back), "Culled parts");
         let parts = parts::Renderer::new(&device, &part_bindings);
         let celestial_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Celestial bodies"),
@@ -2913,6 +2919,7 @@ impl Renderer {
             lightning_pipeline,
             lightning: lightning::Renderer::new(),
             part_pipeline,
+            part_cull_pipeline,
             parts,
             see_through_pipeline,
             text_polygon_offset_pipeline,
@@ -5465,7 +5472,11 @@ impl Renderer {
             if frame.parts.is_some() && self.parts.any() {
                 pass.set_pipeline(&self.part_pipeline);
                 pass.set_bind_group(0, &self.entity_group, &[]);
-                self.parts.draw(&mut pass);
+                self.parts.draw(&mut pass, false);
+                if self.parts.any_culled() {
+                    pass.set_pipeline(&self.part_cull_pipeline);
+                    self.parts.draw(&mut pass, true);
+                }
                 pass.set_bind_group(0, &self.group, &[]);
             }
             if text_quads > 0 && !oit_on {
