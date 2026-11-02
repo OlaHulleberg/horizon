@@ -2911,6 +2911,11 @@ mod tests {
         );
         let after = &event[call..];
         assert!(after.find("return;").unwrap() < after.find("let result: Result<()>").unwrap());
+        // horizon-ctl's `key` reaches the mods the same way, before the older `native_key`.
+        let control = include_str!("control.rs");
+        let key = &control[control.find("\"key\" => {").unwrap()..];
+        let hook = key.find("self.native_input_key_event(physical").unwrap();
+        assert!(hook < key.find("self.native_key_event(physical").unwrap());
         let hooks = include_str!("native_hooks.rs");
         let wrapper = &hooks[hooks.find("fn native_input_key_event").unwrap()..];
         let wrapper = &wrapper[..wrapper.find("\n    }").unwrap()];

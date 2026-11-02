@@ -339,8 +339,16 @@ impl Game<'_> {
                         self.debug_key(key, KeyAction::Release);
                     }
                 }
-                // Native mods see the key as the keyboard hook does.
+                // InputEvent.Key (API 57), as the window's key path: a mod may consume a press
+                // or repeat before screens and mappings see it; a release always goes on.
                 let action = arg(2)?;
+                if self.native_input_key_event(physical, action != "up", action == "repeat") {
+                    if action == "tap" {
+                        self.native_input_key_event(physical, false, false);
+                    }
+                    return ok();
+                }
+                // Native mods see the key as the keyboard hook does.
                 self.native_key_event(physical, action != "up", action == "repeat");
                 if action == "tap" {
                     self.native_key_event(physical, false, false);
