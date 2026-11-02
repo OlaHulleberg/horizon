@@ -15,11 +15,13 @@ use horizon_world::registry::BlockStateId;
 pub(super) struct NativeParts {
     pub(super) scene: PartScene,
     keys: FxHashMap<u64, (u32, u32)>,
-    owners: Vec<Vec<u64>>,
+    pub(super) owners: Vec<Vec<u64>>,
     by_state: FxHashMap<u32, u32>,
     by_posed_state: FxHashMap<(u32, [u32; 16], u32), u32>,
     by_item: FxHashMap<(String, [u32; 16]), u32>,
     sections: FxHashMap<(i32, i32, i32), Vec<u64>>,
+    /// Mods' text in the world, in part models of their own (`native_text.rs`).
+    pub(super) texts: super::native_text::NativeTexts,
 }
 
 fn section_of(block: [i32; 3]) -> (i32, i32, i32) {
@@ -34,7 +36,7 @@ fn vertex_light(packed: u8) -> u32 {
 /// A part's light: the brightest sky and block light of its block and the six beside it. A part
 /// usually reaches out of its block (a shaft's end, a wheel's paddles), and the light stored
 /// inside an opaque block is none.
-fn part_light(world: &horizon_client::world::World, b: [i32; 3]) -> u32 {
+pub(super) fn part_light(world: &horizon_client::world::World, b: [i32; 3]) -> u32 {
     let mut sky = 0u8;
     let mut block = 0u8;
     for o in [
@@ -340,6 +342,7 @@ impl Game<'_> {
         }
         parts.keys.clear();
         parts.sections.clear();
+        parts.texts_clear_all();
     }
 
     /// Before a frame: the parts' clock follows the game time and the frame's partial tick, so
@@ -352,10 +355,11 @@ impl Game<'_> {
     /// Sections whose mesh was rebuilt (their blocks or light changed): their parts take the
     /// light again, and only changed ones are uploaded.
     pub(super) fn native_parts_relight(&mut self, sections: impl Iterator<Item = (i32, i32, i32)>) {
-        if self.native_parts.keys.is_empty() {
+        if self.native_parts.keys.is_empty() && self.native_parts.texts.is_empty() {
             return;
         }
         for section in sections {
+            self.native_texts_relight(section);
             let Some(keys) = self.native_parts.sections.get(&section) else {
                 continue;
             };

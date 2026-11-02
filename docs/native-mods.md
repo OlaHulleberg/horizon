@@ -297,6 +297,16 @@ for a player (Create's deployer): the dispenser's behaviour for items that act o
 steel, bone meal, shears, glass bottles, glowstone, honeycomb, brushes), without its sound and smoke. What is left of the
 stack, or None for any other item. Server-side. Bundles that use it need `"hooks": 54`.
 
+API 55 adds text in the world, what a NeoForge `BlockEntityRenderer` draws with `Font.drawInBatch` (a machine's display):
+`native_text_set(key, pos, lines)` draws `TextLine`s at block `pos` under the mod's own key, in place of what the key
+showed, and `native_text_clear(key)` takes them away. A line has a `pose` from text space to the block (block units;
+text space is font pixels, as a sign's: x right, y down, a glyph 8 high, a string `native_text_width` wide, so a
+standing sign's front text is `translate(0.5, 0.5 + 1/3, 0.5 + 0.0467) * scale(1/96, -1/96, 1/96)`), its string, an
+ARGB colour, an outline colour (0 for none) and `full_bright` (else lit by the light at the block). The text uses sign
+text's font and stays on the GPU as a part model: it is laid out again only when the entry or the font changes, so a mod
+may set it every tick, and it shows within 64 blocks of the camera in a loaded chunk. Client-side (the window's `Game`).
+Bundles that use it need `"hooks": 55`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

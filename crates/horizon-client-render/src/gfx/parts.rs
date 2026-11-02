@@ -54,6 +54,14 @@ impl PartScene {
         self.shapes.push(0);
         (self.models.len() - 1) as u32
     }
+    /// Replaces a model's vertices (a native mod's text that changed); its instances stay.
+    pub fn set_model(&mut self, model: u32, vertices: Vec<Vertex>) {
+        let i = model as usize;
+        if i < self.models.len() {
+            self.models[i] = vertices.into();
+            self.shapes[i] += 1;
+        }
+    }
     /// Empties a model and its instances (a mod's structure that is gone); its handle stays
     /// taken.
     pub fn clear_model(&mut self, model: u32) {

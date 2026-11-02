@@ -180,6 +180,7 @@ mod native_parts;
 mod native_recipes;
 mod native_server;
 mod native_shaders;
+mod native_text;
 mod native_world_read;
 mod natural_spawning;
 mod nautili;
@@ -13436,6 +13437,7 @@ impl Game<'_> {
                 self.pitch,
             ),
         };
+        self.native_texts_frame(camera);
         self.audio
             .set_listener([camera.x, camera.y, camera.z], view_yaw, view_pitch);
         let block = [
