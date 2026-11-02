@@ -382,6 +382,10 @@ plain rails to the carts, and `native_minecart_pass` (NeoForge's `IBlockExtensio
 and may change its motion; `native_minecart` and `native_minecarts` read the carts with their riders. Bundles that use
 them need `"hooks": 62`.
 
+API 63 adds [riding](#riding): seats a mod spawns and moves, players and mobs put on a vehicle or taken off
+(`Entity.startRiding`, `stopRiding`), who rides what, and `native_entity_mount` (NeoForge's `EntityMountEvent`) when a
+player gets on or sneaks off a vehicle. Bundles that use them need `"hooks": 63`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
@@ -671,6 +675,38 @@ fn native_minecart_pass(&mut self, _dimension: &str, _pos: BlockPos, state: Bloc
         cart.velocity = [x * boost, y, z * boost];
     }
 }
+```
+
+### Riding
+
+API 63, `crates/horizon-client/src/game/native_riding.rs`, for server mods, on the level in place as the
+[entity helpers](#entities) are.
+
+- `native_spawn_seat(dimension, pos, yaw)`: a seat, an empty `minecraft:item_display` that every client (vanilla's
+  too) draws as nothing and seats its riders on itself; its id. A player on it stands 0.6 below `pos` (`Player`'s
+  vehicle attachment), a mob by its own attachment. Seats are never saved, nor is a player's ride on one: spawn them
+  again when the world opens (`native_chunk_load`, `native_level_load`).
+- `native_move_seat(dimension, id, pos, yaw)`: its riders go with it, and clients glide it over vanilla's 3
+  interpolation steps, so a move every tick is a smooth ride (a train, a contraption).
+  `native_remove_seat(dimension, id)` lets its riders off first.
+- `native_start_riding(dimension, rider, vehicle)` and `native_stop_riding(dimension, rider)`: a player rides a seat, a
+  boat or a minecart; a mob a seat, or a mob by vanilla's rules. Getting off puts a player where the seat is, teleported
+  there as vanilla's `dismountTo`; a minecart or boat lets them off as when they sneak.
+- `native_passengers(dimension, vehicle)`: who rides it, players then mobs, by entity id. `native_entity(..).vehicle`
+  says what an entity rides.
+- `native_entity_mount(dimension, rider, vehicle, mounting, canceled)`: a player gets on a vehicle by using it, or
+  sneaks to get off any vehicle; `canceled` keeps them as they were (a seat a player can't leave while the train moves).
+  The players are out of the helpers' reach inside it: act on it in `native_level_tick_post`.
+- A player turns on their own; `native_set_yaw` turns them with a turning seat.
+
+```rust
+// Seat a player on a chair block at `pos`, then carry them along x, one block a second.
+let seat = self.native_spawn_seat(dim, [x + 0.5, y + 0.5 + 0.6, z + 0.5], 0.0)?; // feet on the half slab
+self.native_start_riding(dim, player_id, seat);
+// Each tick, in native_level_tick_post:
+self.native_move_seat(dim, seat, [x + 0.5 + t as f64 * 0.05, y + 1.1, z + 0.5], 0.0);
+// Gone: the player stands where the seat was.
+self.native_remove_seat(dim, seat);
 ```
 
 ### Mod messages

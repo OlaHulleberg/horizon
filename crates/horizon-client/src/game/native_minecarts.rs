@@ -32,8 +32,8 @@ pub(crate) struct NativeMinecart {
 // Native mods use these; nothing in Horizon does.
 #[allow(dead_code)]
 impl Game<'_> {
-    /// Who rides cart `id`: the server's players in the level, then its mobs.
-    fn native_cart_riders(&self, id: u32) -> Vec<u32> {
+    /// Who rides vehicle `id`: the server's players in the level, then its mobs.
+    pub(super) fn native_riders(&self, id: u32) -> Vec<u32> {
         let players = self.lan.as_ref().into_iter().flat_map(|h| {
             h.hub
                 .guests
@@ -50,7 +50,7 @@ impl Game<'_> {
     }
 
     fn native_minecart_of(&mut self, c: &Minecart) -> NativeMinecart {
-        let riders = self.native_cart_riders(c.id);
+        let riders = self.native_riders(c.id);
         let ridden = !riders.is_empty() || self.riding == Some(c.id);
         let uuid = horizon_client::lan::playerdata::ints_uuid(self.uuid_for(c.id));
         let v = |v: Vec3| [v.x, v.y, v.z];

@@ -181,6 +181,7 @@ mod native_panel;
 mod native_panel_recipes;
 mod native_parts;
 mod native_recipes;
+mod native_riding;
 mod native_saved_data;
 mod native_server;
 mod native_shaders;

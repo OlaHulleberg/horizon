@@ -114,17 +114,25 @@ impl Game<'_> {
         let Some(vehicle) = g.vehicle else {
             return;
         };
-        let (keys, dead) = (input_keys(g.input), g.dead || g.health <= 0.0);
+        let (mut keys, dead) = (input_keys(g.input), g.dead || g.health <= 0.0);
+        let rider = g.entity_id as u32;
         let boat = self.boats.iter().position(|b| b.id == vehicle);
         let cart = self.carts.iter().any(|c| c.id == vehicle);
         let mount = self.mobs.iter().any(|m| m.id == vehicle);
         let cushion = self.cushions.iter().any(|c| c.id == vehicle);
+        let seat = self.native_seat(vehicle).is_some();
         // The vehicle is gone (broken, in another level) or the rider died:
         // its client drops it with the entity or the death screen.
-        if dead || (boat.is_none() && !cart && !mount && !cushion) {
+        if dead || (boat.is_none() && !cart && !mount && !cushion && !seat) {
             let g = &mut host.hub.guests[gi];
             (g.vehicle, g.vehicle_good) = (None, None);
             return;
+        }
+        // EntityMountEvent for a sneak out of any vehicle: a mod may keep the rider in.
+        if keys.shift {
+            let mut canceled = false;
+            self.native_entity_mount(self.dim.id(), rider, vehicle, false, &mut canceled);
+            keys.shift = !canceled;
         }
         if let Some(i) = boat {
             // AbstractBoat.tick on the server for a boat its rider drives:
@@ -149,6 +157,16 @@ impl Game<'_> {
         // Getting out goes through leave_guest, which tells the client and
         // teleports it (ServerPlayer.dismountTo).
         let seat = self.as_guest(host, conn, |game| {
+            // A native mod's seat: the rider sits where the mod moves it, and gets off
+            // where it is (`Entity.getDismountLocationForPassenger`).
+            if let Some(at) = game.riding.and_then(|id| game.native_seat(id)) {
+                if keys.shift {
+                    game.stop_riding();
+                    return None;
+                }
+                let p = super::native_riding::seated(at);
+                return Some([p.x, p.y, p.z]);
+            }
             // A cushion does not move: the rider sits on it until it sneaks
             // (`Cushion.removePassenger` plays the get-up sound).
             if game.cushions.iter().any(|c| Some(c.id) == game.riding) {
@@ -200,6 +218,14 @@ impl Game<'_> {
         }
         // The host in the window rides it already.
         if self.riding == Some(vehicle) {
+            host.hub.guests[gi].vehicle = before;
+            return;
+        }
+        // EntityMountEvent: a mod may keep the player out.
+        let mut canceled = false;
+        let rider = host.hub.guests[gi].entity_id as u32;
+        self.native_entity_mount(self.dim.id(), rider, vehicle, true, &mut canceled);
+        if canceled {
             host.hub.guests[gi].vehicle = before;
             return;
         }

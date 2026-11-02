@@ -626,6 +626,7 @@ impl Game<'_> {
             position,
             yaw: rotation[0],
             pitch: rotation[1],
+            seat: false,
         });
         Some(id)
     }
@@ -674,7 +675,9 @@ impl Game<'_> {
     }
     /// `RootVehicle.Attach` names the immediate mount, not the root of its tree.
     pub(super) fn root_vehicle_uuid(&mut self, id: Option<u32>) -> Option<[i32; 4]> {
-        Some(self.uuid_for(id?))
+        // A native mod's seat is not saved: the player loads standing.
+        let id = id.filter(|&id| self.native_seat(id).is_none())?;
+        Some(self.uuid_for(id))
     }
     /// The vehicle with this UUID, among the ones in the world.
     pub(super) fn vehicle_by_uuid(&self, uuid: [i32; 4]) -> Option<u32> {
@@ -1109,7 +1112,7 @@ impl Game<'_> {
                 out.entry(chunk_of(at)).or_default().push(tag);
             }
         }
-        for o in &self.others {
+        for o in self.others.iter().filter(|o| !o.seat) {
             if keys.contains(&chunk_of(o.position)) {
                 let uuid = self
                     .persist

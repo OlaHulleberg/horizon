@@ -55,6 +55,7 @@ impl Game<'_> {
             let valid = self.mobs[i].alive()
                 && !self.mobs[i].removed
                 && (boats.contains(&v)
+                    || self.native_seat(v).is_some()
                     || index
                         .get(&v)
                         .is_some_and(|&j| self.mobs[j].alive() && !self.mobs[j].removed));
@@ -96,7 +97,16 @@ impl Game<'_> {
                     // A mob on a text display: NPC plugins seat their sitting
                     // NPCs on one. The server's position for a passenger
                     // gives way to its seat, as `rideTick` places it.
-                    let Some((at, before)) = self.text_displays.get(&(v as i32)).map(|d| d.seat())
+                    // A native mod's seat on the server: an item display too.
+                    let seat = self.native_seat(v).map(|p| {
+                        let p = glam::DVec3::new(p.x, p.y, p.z);
+                        (p, p)
+                    });
+                    let Some((at, before)) = self
+                        .text_displays
+                        .get(&(v as i32))
+                        .map(|d| d.seat())
+                        .or(seat)
                     else {
                         continue;
                     };

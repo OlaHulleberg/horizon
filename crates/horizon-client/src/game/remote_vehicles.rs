@@ -207,6 +207,10 @@ impl Game<'_> {
         let seat = if let Some(c) = self.cushions.iter().find(|c| c.id == id) {
             // The seat does not move; the rider sits on the cushion.
             Some(c.seat())
+        } else if let Some(d) = self.text_displays.get(&(id as i32)) {
+            // A display (a native mod's seat): its passenger attachment is its feet.
+            let at = d.position();
+            Some(super::native_riding::seated(Vec3::new(at.x, at.y, at.z)))
         } else if let Some(i) = self.boats.iter().position(|b| b.id == id) {
             // AbstractBoat.tick on the controlling client: steer and move.
             // It steers with the input `LocalPlayer.rideTick` latched on the

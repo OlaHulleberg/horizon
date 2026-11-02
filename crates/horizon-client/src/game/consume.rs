@@ -229,6 +229,8 @@ impl Game<'_> {
             self.dismount_cart(i);
         } else if let Some(c) = self.cushions.iter().find(|c| c.id == id).cloned() {
             self.get_up_from_cushion(&c);
+        } else if let Some(at) = self.native_seat(id) {
+            self.get_off_seat(at);
         } else {
             self.dismount_mount();
         }

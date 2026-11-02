@@ -395,6 +395,14 @@
       "neoforge": "IBlockExtension.onMinecartPass",
       "side": "server",
       "cancellable": false
+    },
+    {
+      "name": "entity_mount",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_entity_mount",
+      "neoforge": "EntityMountEvent",
+      "side": "server",
+      "cancellable": true
     }
   ]
 }

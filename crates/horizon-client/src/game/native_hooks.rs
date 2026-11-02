@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 63 adds riding (`native_entity_mount`, NeoForge's `EntityMountEvent`, and in
+//! `native_riding.rs` mod seats, `native_start_riding`, `native_stop_riding` and
+//! `native_passengers`).
+//!
 //! API 62 adds minecarts on mods' rails (`native_minecart_pass`, NeoForge's
 //! `IBlockExtension.onMinecartPass`, for content blocks with `properties.rail`) and the helpers
 //! `native_minecart` and `native_minecarts` in `native_minecarts.rs`.
@@ -307,7 +311,7 @@ fn input_key(
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 62;
+pub(crate) const NATIVE_HOOKS_API: u32 = 63;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -929,6 +933,24 @@ impl Game<'_> {
         cart: &mut NativeMinecart,
     ) {
         let _ = (dimension, pos, state, cart);
+    }
+    /// NeoForge's `EntityMountEvent`: a server player, entity id `rider`, gets on `vehicle` by
+    /// using it (`mounting`), or sneaks to get off it (`Player.rideTick`), for any vehicle: a
+    /// boat, a minecart, a cushion, an animal, a mod's seat. Set `canceled` to keep things as
+    /// they were: the player doesn't get on, or stays seated (asked again each tick they
+    /// sneak). Not for `native_start_riding` and `native_stop_riding`, mobs, or a ride that
+    /// ends otherwise (the vehicle gone, a teleport, death). The players are out of the
+    /// helpers' reach inside it, as in a player's own hook: act on it in
+    /// `native_level_tick_post`. Server-side. API 63.
+    pub(super) fn native_entity_mount(
+        &mut self,
+        dimension: &str,
+        rider: u32,
+        vehicle: u32,
+        mounting: bool,
+        canceled: &mut bool,
+    ) {
+        let _ = (dimension, rider, vehicle, mounting, canceled);
     }
     /// A living player's server tick ends (`ServerPlayer.tick`): once a tick
     /// for every player in the world, after their digging, item use,

@@ -3,7 +3,7 @@
 //! stands, item frames, paintings and the entities Horizon keeps without
 //! simulating them, each as vanilla pairs it (`getAddEntityPacket` and the
 //! synched data that differs from the defaults), and who rides what.
-use super::Game;
+use super::{Game, native_riding::SEAT_GLIDE};
 use horizon_client::lan::{
     entity::{EntityState, Riding, States},
     hub::Hub,
@@ -336,6 +336,11 @@ impl Game<'_> {
             e.head_yaw = o.yaw;
             if let Some(tag) = self.persist.raw.get(&o.id) {
                 self.lan_display_data(tag, hub, &mut e);
+            }
+            if o.seat {
+                // Display.DATA_POS_ROT_INTERPOLATION_DURATION_ID: clients glide it
+                // over vanilla's 3 interpolation steps, and its riders with it.
+                e.meta.push((10, serializer::INT, Value::Int(SEAT_GLIDE)));
             }
             out.push(e);
         }
