@@ -48,6 +48,11 @@ enum Found {
     Stand(usize),
 }
 
+thread_local! {
+    /// Where `native_find` last found an entity.
+    static FIND_HINT: std::cell::Cell<Option<Found>> = const { std::cell::Cell::new(None) };
+}
+
 /// The blocks a box is in, less 1.0E-5 on each side (`Entity.checkInsideBlocks`).
 fn cells(min: [f64; 3], max: [f64; 3]) -> impl Iterator<Item = [i32; 3]> {
     let e = 1.0e-5;
@@ -86,7 +91,82 @@ impl Game<'_> {
         (self.serving.is_some() || self.options.dedicated.is_some()) && dimension == self.dim.id()
     }
 
+    /// Where entity `id` is: first where the last one was found and the slot after it (a mod
+    /// walking the entities in turn, as turntables do, finds each at once), else by a search.
     fn native_find(&self, id: u32) -> Option<Found> {
+        if let Some(found) = FIND_HINT
+            .get()
+            .and_then(|hint| self.native_find_near(hint, id))
+        {
+            FIND_HINT.set(Some(found));
+            return Some(found);
+        }
+        let found = self.native_find_all(id);
+        FIND_HINT.set(found);
+        found
+    }
+
+    /// `native_find`'s guess: the entity at `hint`, or the one after it, when it is `id`.
+    fn native_find_near(&self, hint: Found, id: u32) -> Option<Found> {
+        let player = |i: usize| {
+            let host = self.lan.as_ref()?;
+            let g = host.hub.guests.get(i)?;
+            (g.entity_id as u32 == id && host.hub.here(g) && g.loaded && !g.dead)
+                .then_some(Found::Player(i))
+        };
+        let at = |found: Found| match found {
+            Found::Player(i) => player(i),
+            Found::Mob(i) => self
+                .mobs
+                .get(i)
+                .is_some_and(|m| m.id == id && !m.removed)
+                .then_some(found),
+            Found::Item(i) => self
+                .dropped
+                .get(i)
+                .is_some_and(|e| e.id == id)
+                .then_some(found),
+            Found::Cart(i) => self
+                .carts
+                .get(i)
+                .is_some_and(|c| c.id == id)
+                .then_some(found),
+            Found::Boat(i) => self
+                .boats
+                .get(i)
+                .is_some_and(|b| b.id == id)
+                .then_some(found),
+            Found::Stand(i) => self
+                .armor_stands
+                .get(i)
+                .is_some_and(|a| a.id == id)
+                .then_some(found),
+        };
+        let next = match hint {
+            Found::Player(i) => Found::Player(i + 1),
+            Found::Mob(i) => Found::Mob(i + 1),
+            Found::Item(i) => Found::Item(i + 1),
+            Found::Cart(i) => Found::Cart(i + 1),
+            Found::Boat(i) => Found::Boat(i + 1),
+            Found::Stand(i) => Found::Stand(i + 1),
+        };
+        // A player shares no id with another entity, so a guess that is a player stands; any
+        // other guess stands only when no player has the id either, as the search would find.
+        let found = at(hint).or_else(|| at(next))?;
+        if !matches!(found, Found::Player(_))
+            && self.lan.as_ref().is_some_and(|host| {
+                host.hub
+                    .guests
+                    .iter()
+                    .any(|g| g.entity_id as u32 == id && host.hub.here(g) && g.loaded && !g.dead)
+            })
+        {
+            return None;
+        }
+        Some(found)
+    }
+
+    fn native_find_all(&self, id: u32) -> Option<Found> {
         if let Some(host) = self.lan.as_ref()
             && let Some(i) =
                 host.hub.guests.iter().position(|g| {
@@ -392,6 +472,31 @@ impl Game<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn finding_an_entity_tries_the_last_place_first_and_checks_its_id() {
+        let source = include_str!("native_entities.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap();
+        let find = &code[code.find("fn native_find(&self").unwrap()..];
+        let find = &find[..find.find("\n    }\n").unwrap()];
+        let near = find.find("self.native_find_near(hint, id)").unwrap();
+        assert!(near < find.find("self.native_find_all(id)").unwrap());
+        // Every guess is the entity with that id (a mob not removed), the one after it the
+        // second guess, and a player with the id wins as in the search.
+        let guess = &code[code.find("fn native_find_near(").unwrap()..];
+        let guess = &guess[..guess.find("\n    }\n").unwrap()];
+        for check in [
+            "m.id == id && !m.removed",
+            "e.id == id",
+            "c.id == id",
+            "b.id == id",
+            "a.id == id",
+        ] {
+            assert!(guess.contains(check), "{check}");
+        }
+        assert!(guess.contains("at(hint).or_else(|| at(next))?"));
+        assert!(guess.contains("if !matches!(found, Found::Player(_))"));
+    }
+
     use super::{cells, touches, turn};
 
     #[test]
