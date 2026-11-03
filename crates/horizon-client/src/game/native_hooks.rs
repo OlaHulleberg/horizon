@@ -6,6 +6,9 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 72 adds `native_move_minecart` in `native_minecarts.rs` (`Entity.move`: a cart moved as
+//! far as blocks let it).
+//!
 //! API 71 adds mod screens (`native_mod_screens.rs`): a client screen a mod opens by name
 //! and draws itself (`native_mod_screen_draw`), hearing its typed text, mouse and wheel and
 //! its closing, as NeoForge's `Minecraft.setScreen` with a mod's `Screen`; and the clipboard.
@@ -344,7 +347,7 @@ fn input_key(
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 71;
+pub(crate) const NATIVE_HOOKS_API: u32 = 72;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.

@@ -438,6 +438,10 @@ the mod, another screen, the world closing) `native_mod_screen_removed(name)` he
 `native_set_clipboard_text(text)` read and set the system clipboard. horizon-ctl names it `mod-screen`. Client-side
 (the window's `Game`). Bundles that use them need `"hooks": 71`.
 
+API 72 adds `native_move_minecart(dimension, id, delta)` (`Entity.move(MoverType.SELF, ..)`): a [minecart](#minecarts)
+moved by `delta` as far as blocks let it, its motion kept; it returns where the cart ended up. For a mod moving a cart off
+its rail (Create's coupled carts pulled back to their length). Server-side. Bundles that use it need `"hooks": 72`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

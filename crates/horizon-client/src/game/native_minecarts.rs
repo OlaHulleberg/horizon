@@ -3,7 +3,8 @@
 //! `shape`, and `native_minecart_pass` hears each cart on one every tick
 //! (NeoForge's `IBlockExtension.onMinecartPass`) and may change its motion; and the carts
 //! of the level in place, with their riders, read by id. API 65 spawns and removes them; API 68
-//! moves them, fuels furnace carts and marks a cart carrying something that isn't an entity.
+//! moves them, fuels furnace carts and marks a cart carrying something that isn't an entity;
+//! API 72 moves one as `Entity.move` does, stopped by blocks.
 use super::{
     Game,
     minecarts::{CartKind, Minecart},
@@ -172,6 +173,30 @@ impl Game<'_> {
         true
     }
 
+    /// `Entity.move(MoverType.SELF, delta)` for minecart `id`: moved by `delta` as far as blocks
+    /// let it (a blocked component stops at the block), its motion kept. Where it ended up;
+    /// None for no such cart, another dimension, off a server or a value that isn't finite.
+    /// API 72.
+    pub(super) fn native_move_minecart(
+        &mut self,
+        dimension: &str,
+        id: u32,
+        delta: [f64; 3],
+    ) -> Option<[f64; 3]> {
+        if !self.native_server_level(dimension) || !delta.iter().all(|v| v.is_finite()) {
+            return None;
+        }
+        let i = self.carts.iter().position(|c| c.id == id)?;
+        let mut c = self.carts.remove(i);
+        self.move_cart(&mut c, Vec3::new(delta[0], delta[1], delta[2]));
+        let p = c.position;
+        self.carts.insert(i, c);
+        self.world
+            .modified
+            .insert((p.x.floor() as i32 >> 4, p.z.floor() as i32 >> 4));
+        Some([p.x, p.y, p.z])
+    }
+
     /// A furnace minecart's `fuel` (ticks, `MinecartFurnace.fuel`) and `push` (its `push`,
     /// blocks a tick: the way it drives and, by its length, how hard), as a player's coal sets
     /// them. Fuel runs out as vanilla's does, and the push with it. False for no such cart,
@@ -295,6 +320,22 @@ mod tests {
             .find("self.native_stop_riding(dimension, rider)")
             .unwrap();
         assert!(off < remove.find("self.carts.remove(i)").unwrap());
+    }
+    #[test]
+    fn mods_move_carts_as_entity_move_does() {
+        let source = include_str!("native_minecarts.rs");
+        let code = source.split("#[cfg(test)]").next().unwrap();
+        let body = &code[code.find("fn native_move_minecart(").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        // On a server, finite: vanilla's cart move with its collisions, the chunk marked.
+        let gate = body.find("self.native_server_level(dimension)").unwrap();
+        let moved = body
+            .find("self.move_cart(&mut c, Vec3::new(delta[0], delta[1], delta[2]));")
+            .unwrap();
+        assert!(gate < moved && body.contains(".modified"));
+        let carts = include_str!("minecarts.rs");
+        let mv = &carts[carts.find("pub(super) fn move_cart(").unwrap()..];
+        assert!(mv[..mv.find("\n    }\n").unwrap()].contains("scene.resolve(c.bounds(), delta,"));
     }
     #[test]
     fn mods_move_fuel_and_load_carts_on_a_server_only() {
