@@ -23,6 +23,9 @@ impl Screen {
             | Self::ServerLinks
             | Self::ConfirmLink
             | Self::DialogWarning => true,
+            // Screen.renderBackground, which a mod's screen draws over (Catnip's
+            // `AbstractSimiScreen.renderWindowBackground`).
+            Self::Mod => true,
             Self::Playing
             | Self::GameModeSwitcher
             | Self::Chat

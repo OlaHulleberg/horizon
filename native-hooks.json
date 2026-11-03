@@ -190,6 +190,46 @@
       "cancellable": false
     },
     {
+      "name": "mod_screen_draw",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_mod_screen_draw",
+      "neoforge": "Screen.render",
+      "side": "client",
+      "cancellable": false
+    },
+    {
+      "name": "mod_screen_text",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_mod_screen_text",
+      "neoforge": "Screen.charTyped",
+      "side": "client",
+      "cancellable": false
+    },
+    {
+      "name": "mod_screen_mouse",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_mod_screen_mouse",
+      "neoforge": "Screen.mouseClicked",
+      "side": "client",
+      "cancellable": false
+    },
+    {
+      "name": "mod_screen_scroll",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_mod_screen_scroll",
+      "neoforge": "Screen.mouseScrolled",
+      "side": "client",
+      "cancellable": false
+    },
+    {
+      "name": "mod_screen_removed",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_mod_screen_removed",
+      "neoforge": "Screen.removed",
+      "side": "client",
+      "cancellable": false
+    },
+    {
       "name": "entity_collisions",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_entity_collisions",

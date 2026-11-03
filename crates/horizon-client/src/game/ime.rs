@@ -21,7 +21,7 @@ impl Game<'_> {
             return true;
         }
         match self.screen {
-            Screen::Chat | Screen::CommandBlock => true,
+            Screen::Chat | Screen::CommandBlock | Screen::Mod => true,
             Screen::WorldOptions => self.world_options_typing(),
             Screen::Creative => self.creative_screen.tab().search,
             Screen::Inventory => {
@@ -106,6 +106,7 @@ impl Game<'_> {
             match self.screen {
                 Screen::Chat => self.chat_type(&text),
                 Screen::CommandBlock => self.command_block_type(&text),
+                Screen::Mod => self.mod_screen_type(&text),
                 Screen::WorldOptions => self.world_options_text(Some(&text)),
                 Screen::Creative => self.creative_search_edit(Some(&text)),
                 Screen::Inventory if self.mod_browser_typing() => {

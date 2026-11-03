@@ -361,7 +361,11 @@ impl Game<'_> {
                 // Text screens consume raw presses; releases follow key binds.
                 let typing = matches!(
                     self.screen,
-                    Screen::Chat | Screen::Options | Screen::CommandBlock | Screen::BlockEditor
+                    Screen::Chat
+                        | Screen::Options
+                        | Screen::CommandBlock
+                        | Screen::BlockEditor
+                        | Screen::Mod
                 );
                 let key = if typing && arg(2)? != "up" {
                     key
@@ -643,6 +647,7 @@ impl Game<'_> {
                     Screen::Chat => self.chat_type(text),
                     Screen::CommandBlock => self.command_block_type(text),
                     Screen::BlockEditor => self.block_editor_type(text),
+                    Screen::Mod => self.mod_screen_type(text),
                     Screen::Options => self.ui.options.type_text(&self.gui.atlas, text),
                     // The port, or the game rules' search and number boxes.
                     Screen::WorldOptions if text == "\\b" => self.world_options_text(None),
@@ -886,6 +891,13 @@ impl Game<'_> {
             self.command_block_key_code(key, None, None);
             return Ok(());
         }
+        // A mod's screen heard the key through `native_input_key`; Escape closes it.
+        if self.screen == Screen::Mod {
+            if key == KeyCode::Escape {
+                self.native_close_mod_screen();
+            }
+            return Ok(());
+        }
         if self.screen == Screen::BlockEditor {
             self.block_editor_key_code(key, None, None);
             return Ok(());
@@ -922,6 +934,7 @@ impl Game<'_> {
             Screen::CommandBlock => "command-block",
             Screen::BlockEditor => "block-editor",
             Screen::Win => "win",
+            Screen::Mod => "mod-screen",
         }
     }
 

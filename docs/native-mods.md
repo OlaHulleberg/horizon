@@ -426,6 +426,18 @@ with it before its own move, so a player can stand and walk on a mod's moving st
 axis-aligned; a turned structure gives each block's bounds. Client-side (the window's player). Bundles that use it
 need `"hooks": 70`.
 
+API 71 adds mod screens: a screen a mod draws itself on the client, for what a container menu can't show (Create's
+clipboard pages), as NeoForge's `Minecraft.setScreen` with a mod's own `Screen`. `native_open_mod_screen(name, pause)`
+opens screen `name` over the world (`pause`: single player stops while it is open, `Screen.isPauseScreen`) and frees the
+pointer; `native_close_mod_screen()` closes it; `native_mod_screen()` names the one open. While it is open
+`native_mod_screen_draw(name, batch, cursor)` draws it each frame over the blurred world (`Screen.render`), keys reach
+`native_input_key` with `screen` set as on any screen, the text they type `native_mod_screen_text(name, text)` (input
+methods' commits and horizon-ctl's `type` too), and the mouse `native_mod_screen_mouse(name, at, button, pressed)` and
+`native_mod_screen_scroll(name, at, delta)`. Escape closes it unless a mod consumed the key; however it closes (Escape,
+the mod, another screen, the world closing) `native_mod_screen_removed(name)` hears it. `native_clipboard_text()` and
+`native_set_clipboard_text(text)` read and set the system clipboard. horizon-ctl names it `mod-screen`. Client-side
+(the window's `Game`). Bundles that use them need `"hooks": 71`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

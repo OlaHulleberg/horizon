@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 71 adds mod screens (`native_mod_screens.rs`): a client screen a mod opens by name
+//! and draws itself (`native_mod_screen_draw`), hearing its typed text, mouse and wheel and
+//! its closing, as NeoForge's `Minecraft.setScreen` with a mod's `Screen`; and the clipboard.
+//!
 //! API 70 adds `native_entity_collisions`: a mod's moving boxes (a train's carriages) that
 //! the window's player collides with, as with boats and shulkers, and is carried by while
 //! standing on one.
@@ -340,7 +344,7 @@ fn input_key(
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 70;
+pub(crate) const NATIVE_HOOKS_API: u32 = 71;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -1153,6 +1157,44 @@ impl Game<'_> {
     /// changes. Server-side. API 46.
     pub(super) fn native_contents_changed(&mut self, pos: [i32; 3]) {
         let _ = pos;
+    }
+    /// Draw mod screen `name` (`native_open_mod_screen`) into `batch` over the world, the
+    /// cursor at `cursor` (GUI pixels): `Screen.render`, each frame while it is open. Draw with
+    /// `native_sprite`, `native_fill`, `native_text` and `native_item`. Client-side. API 71.
+    pub(super) fn native_mod_screen_draw(
+        &mut self,
+        name: &str,
+        batch: &mut HudBatch,
+        cursor: [f32; 2],
+    ) {
+        let _ = (name, batch, cursor);
+    }
+    /// Text typed on mod screen `name` (`Screen.charTyped`: a key's characters, an input
+    /// method's commit, an agent's `type`). Keys themselves reach `native_input_key` with
+    /// `screen` set first; one consumed there types nothing. Client-side. API 71.
+    pub(super) fn native_mod_screen_text(&mut self, name: &str, text: &str) {
+        let _ = (name, text);
+    }
+    /// A mouse button down or up on mod screen `name` at `at` (GUI pixels): `button` 0 left,
+    /// 1 right, 2 middle (`Screen.mouseClicked`, `mouseReleased`). Client-side. API 71.
+    pub(super) fn native_mod_screen_mouse(
+        &mut self,
+        name: &str,
+        at: [f32; 2],
+        button: u8,
+        pressed: bool,
+    ) {
+        let _ = (name, at, button, pressed);
+    }
+    /// Wheel steps on mod screen `name` at `at` (`Screen.mouseScrolled`), positive away from
+    /// the player. Client-side. API 71.
+    pub(super) fn native_mod_screen_scroll(&mut self, name: &str, at: [f32; 2], delta: f32) {
+        let _ = (name, at, delta);
+    }
+    /// Mod screen `name` closed (`Screen.removed`): by Escape, `native_close_mod_screen`,
+    /// another screen opening or the world closing. Client-side. API 71.
+    pub(super) fn native_mod_screen_removed(&mut self, name: &str) {
+        let _ = name;
     }
     /// The boxes of a mod's moving things near `around` (the window's player's box, grown by
     /// its motion) that the player collides with: `Level.getEntityCollisions`, which gives it
@@ -3034,6 +3076,33 @@ mod tests {
         let wrapper = &wrapper[..wrapper.find("\n    }").unwrap()];
         assert!(wrapper.contains("if self.player.is_none() {"));
         assert!(wrapper.contains("self.native_input_key(name, action, bits, screen, consumed)"));
+    }
+
+    #[test]
+    fn a_mod_screen_hears_its_input_and_its_closing() {
+        let game = include_str!("../game.rs");
+        // Drawn in the screen match; Escape, the wheel, the mouse and the keys reach it.
+        assert!(game.contains("Screen::Mod => self.draw_mod_screen(&mut batch),"));
+        assert!(game.contains("Screen::Mod => self.native_close_mod_screen(),"));
+        assert!(game.contains("self.mod_screen_scroll(d);"));
+        assert!(game.contains("self.mod_screen_mouse(index, pressed);"));
+        assert!(game.contains("self.mod_screen_key(&event)"));
+        // Closed with the world, and when another screen took its place.
+        let close = &game[game.find("fn close_world(&mut self)").unwrap()..];
+        assert!(close[..200].contains("self.native_close_mod_screen();"));
+        assert!(game.contains("if self.screen != Screen::Mod && self.own_screen.is_some() {"));
+        // Typed text from keys, input methods and agents; closing tells the mod.
+        let screens = include_str!("native_mod_screens.rs");
+        let key = &screens[screens.find("fn mod_screen_key(").unwrap()..];
+        let escape = key.find("self.native_close_mod_screen();").unwrap();
+        assert!(escape < key.find("self.mod_screen_type(&printable);").unwrap());
+        let closing = &screens[screens.find("fn native_close_mod_screen(").unwrap()..];
+        assert!(
+            closing[..closing.find("\n    }\n").unwrap()]
+                .contains("self.native_mod_screen_removed(&open.name);")
+        );
+        assert!(include_str!("ime.rs").contains("Screen::Mod => self.mod_screen_type(&text),"));
+        assert!(include_str!("control.rs").contains("Screen::Mod => self.mod_screen_type(text),"));
     }
 
     #[test]

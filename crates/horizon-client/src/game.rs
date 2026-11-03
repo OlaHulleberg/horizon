@@ -175,6 +175,7 @@ mod native_lifecycle;
 mod native_menus;
 mod native_minecarts;
 mod native_mobs;
+mod native_mod_screens;
 mod native_models;
 mod native_net;
 mod native_panel;
@@ -715,6 +716,8 @@ enum Screen {
     DialogWarning,
     /// WinScreen: the end poem and the credits (game/win.rs).
     Win,
+    /// A native mod's own screen (game/native_mod_screens.rs).
+    Mod,
 }
 struct Mining {
     pos: [i32; 3],
@@ -2404,6 +2407,8 @@ struct Game<'a> {
     /// HDR's settings opened with their key from the game: Done returns to the game.
     options_to_game: bool,
     command_block_screen: Option<command_blocks::CommandBlockScreen>,
+    /// The native mod's own screen open (`native_open_mod_screen`).
+    own_screen: Option<native_mod_screens::ModScreen>,
     block_editor: Option<block_editor::BlockEditScreen>,
     /// `StructureTemplateManager.structureRepository`: the templates in memory
     /// by id, a miss included (game/structure_blocks.rs).
@@ -6902,6 +6907,7 @@ impl Game<'_> {
                     | Screen::DialogWarning
                     | Screen::CommandBlock
             ) || self.book.is_some()
+                || (self.screen == Screen::Mod && self.mod_screen_pauses())
                 || self.win_screen_pauses())
     }
     /// A screen open over gameplay while `screen` stays `Playing`: a book or
@@ -7527,6 +7533,11 @@ impl Game<'_> {
         // Screen.extractBlurredBackground blurs the world and HUD, while the
         // screen's background, widgets, toasts and debug overlay stay sharp.
         batch.blur_at = batch.vertices.len() as u32;
+        // Another screen took a mod screen's place (death, a menu the server opened): it
+        // closed, and its mod hears it (`native_mod_screen_removed`).
+        if self.screen != Screen::Mod && self.own_screen.is_some() {
+            self.native_close_mod_screen();
+        }
         // PackConfirmScreen takes the open screen's place (it comes back once
         // the prompt is answered): the screen under the prompt isn't drawn.
         let screen = if self.server_packs.prompt.is_some() {
@@ -7559,6 +7570,7 @@ impl Game<'_> {
             Screen::ConfirmLink => self.draw_confirm_link(&mut batch),
             Screen::DialogWarning => self.draw_dialog_warning(&mut batch),
             Screen::CommandBlock => self.draw_command_block(&mut batch),
+            Screen::Mod => self.draw_mod_screen(&mut batch),
             Screen::BlockEditor => self.draw_block_editor(&mut batch),
             Screen::Inventory => {
                 self.draw_inventory(&mut batch);
@@ -10997,6 +11009,7 @@ impl Game<'_> {
         Ok(())
     }
     fn close_world(&mut self) -> Result<()> {
+        self.native_close_mod_screen();
         self.clear_waypoints();
         self.post_effects.clear();
         self.spectated_post_effect = None;
@@ -14076,6 +14089,7 @@ impl Game<'_> {
                 Screen::Advancements => self.close_advancements(),
                 Screen::WorldOptions => self.world_options_escape(),
                 Screen::CommandBlock => self.close_command_block(),
+                Screen::Mod => self.native_close_mod_screen(),
                 Screen::BlockEditor => self.close_block_editor(),
                 Screen::Chat => self.close_chat(chat::ChatExit::Intentional),
                 Screen::Win => self.close_win_screen()?,
@@ -14942,6 +14956,9 @@ impl ApplicationHandler for Game<'_> {
                     if self.screen == Screen::CommandBlock && d != 0.0 {
                         self.command_block_scroll(d);
                     }
+                    if self.screen == Screen::Mod && d != 0.0 {
+                        self.mod_screen_scroll(d);
+                    }
                     if self.screen == Screen::Options && d != 0.0 {
                         self.options_scroll(d)?;
                     }
@@ -15181,6 +15198,17 @@ impl ApplicationHandler for Game<'_> {
                         Screen::CommandBlock if pressed && button == MouseButton::Left => {
                             self.command_block_click()
                         }
+                        Screen::Mod => {
+                            let index = match button {
+                                MouseButton::Left => Some(0),
+                                MouseButton::Right => Some(1),
+                                MouseButton::Middle => Some(2),
+                                _ => None,
+                            };
+                            if let Some(index) = index {
+                                self.mod_screen_mouse(index, pressed);
+                            }
+                        }
                         Screen::BlockEditor if pressed && button == MouseButton::Left => {
                             self.block_editor_click()
                         }
@@ -15335,6 +15363,9 @@ impl ApplicationHandler for Game<'_> {
                 }
                 WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::CommandBlock => {
                     self.command_block_key(&event)
+                }
+                WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::Mod => {
+                    self.mod_screen_key(&event)
                 }
                 WindowEvent::KeyboardInput { event, .. } if self.screen == Screen::BlockEditor => {
                     self.block_editor_key(&event)
@@ -16165,6 +16196,7 @@ impl<'a> Game<'a> {
             options_to_world_options: false,
             options_to_game: false,
             command_block_screen: None,
+            own_screen: None,
             block_editor: None,
             structure_templates: HashMap::new(),
             test_defs: std::cell::RefCell::new(HashMap::new()),
