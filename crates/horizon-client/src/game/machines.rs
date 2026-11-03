@@ -749,6 +749,9 @@ impl Game<'_> {
         if let Some(target) = c.view(front, false) {
             return self.eject_into(pos, hopper, &target, face);
         }
+        if let Some(moved) = self.eject_into_handler(hopper, front, face) {
+            return moved;
+        }
         let Some(id) = self.entity_container_at([
             f64::from(front.0) + 0.5,
             f64::from(front.1) + 0.5,
@@ -826,6 +829,9 @@ impl Game<'_> {
     fn suck_from_container(&mut self, above: Pos, at: [f64; 3], hopper: &View) -> Option<bool> {
         let c = self.containers();
         let Some(source) = c.view(above, false) else {
+            if let Some(took) = self.suck_from_handler(above, hopper) {
+                return Some(took);
+            }
             let id = self.entity_container_at(at)?;
             return self
                 .with_entity_container(id, |g, source| g.suck_from_slots(None, source, hopper));
@@ -849,6 +855,60 @@ impl Game<'_> {
         }
         let source_hopper = (source.kind == Kind::Hopper).then_some(above);
         Some(self.suck_from_slots(source_hopper, &source, hopper))
+    }
+    /// `VanillaInventoryCodeHooks.insertHook`: one item of the first hopper slot that the mod
+    /// block at `front` takes whole through `face` (`native_item_handler_insert`). None when no
+    /// mod handles that block.
+    fn eject_into_handler(&mut self, hopper: &View, front: Pos, face: Direction) -> Option<bool> {
+        let at = [front.0, front.1, front.2];
+        let mut handled = false;
+        for slot in 0..hopper.len() {
+            let Some(one) = self.take_one(hopper, slot) else {
+                continue;
+            };
+            let mut rest = Some(one.clone());
+            self.native_item_handler_insert(at, face, &mut rest, false, &mut handled);
+            if !handled {
+                self.put_back(hopper, slot, one);
+                return None;
+            }
+            match rest {
+                None => return Some(true),
+                Some(rest) => self.put_back(hopper, slot, rest),
+            }
+        }
+        handled.then_some(false)
+    }
+    /// `VanillaInventoryCodeHooks.extractHook`: one item from the mod block at `above` through
+    /// its bottom, if the hopper has room for it (`native_item_handler_extract`). None when no mod
+    /// handles that block.
+    fn suck_from_handler(&mut self, above: Pos, hopper: &View) -> Option<bool> {
+        let at = [above.0, above.1, above.2];
+        let (mut one, mut handled) = (None, false);
+        self.native_item_handler_extract(at, Direction::Down, 1, true, &mut one, &mut handled);
+        if !handled {
+            return None;
+        }
+        let Some(one) = one else {
+            return Some(false);
+        };
+        if !self.hopper_has_room(hopper, &one) {
+            return Some(false);
+        }
+        let mut taken = None;
+        self.native_item_handler_extract(at, Direction::Down, 1, false, &mut taken, &mut handled);
+        let Some(taken) = taken else {
+            return Some(false);
+        };
+        Some(self.add_item(None, hopper, taken, None).is_none())
+    }
+    /// Whether a slot of `hopper` takes one of `item`: empty, or the same item below its limit.
+    fn hopper_has_room(&self, hopper: &View, item: &ItemStack) -> bool {
+        let c = self.containers();
+        (0..hopper.len()).any(|slot| match c.get(hopper, slot) {
+            None => true,
+            Some(s) => s.count < c.max_stack(s) && s.same_item_same_components(item),
+        })
     }
     /// `HopperBlockEntity.tryTakeInItemFromSlot` over the `DOWN` face of `source`.
     fn suck_from_slots(

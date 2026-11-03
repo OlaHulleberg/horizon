@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 69 adds `native_item_handler_insert` and `native_item_handler_extract` (NeoForge's
+//! `Capabilities.ItemHandler.BLOCK`, `IItemHandler.insertItem` / `extractItem`): a hopper reaches
+//! a mod block that has no container.
+//!
 //! API 68 adds `native_set_minecart_position`, `native_set_furnace_fuel` and
 //! `native_set_minecart_carrying` in `native_minecarts.rs` (`Entity.setPos`, `MinecartFurnace`'s
 //! fuel and push, a cart counted as ridden: `isVehicle`), and a cart's fuel, push and carrying
@@ -332,7 +336,7 @@ fn input_key(
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 68;
+pub(crate) const NATIVE_HOOKS_API: u32 = 69;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -1145,6 +1149,37 @@ impl Game<'_> {
     /// changes. Server-side. API 46.
     pub(super) fn native_contents_changed(&mut self, pos: [i32; 3]) {
         let _ = pos;
+    }
+    /// A hopper gives `stack` to the block at `pos` through its side `side`, and that block has
+    /// no container: NeoForge's `Capabilities.ItemHandler.BLOCK` and `IItemHandler.insertItem`
+    /// (`VanillaInventoryCodeHooks.insertHook`). A mod whose block takes items there sets
+    /// `handled` and leaves in `stack` what it didn't take (None: all of it); with `simulate`
+    /// it takes nothing and only says what it would leave. Server-side. API 69.
+    pub(super) fn native_item_handler_insert(
+        &mut self,
+        pos: [i32; 3],
+        side: Direction,
+        stack: &mut Option<ItemStack>,
+        simulate: bool,
+        handled: &mut bool,
+    ) {
+        let _ = (pos, side, stack, simulate, handled);
+    }
+    /// A hopper takes up to `amount` items from the block at `pos` through its side `side`, and
+    /// that block has no container: NeoForge's `IItemHandler.extractItem`
+    /// (`VanillaInventoryCodeHooks.extractHook`). A mod whose block gives items there sets
+    /// `handled` and puts what it gives in `taken`, of one kind; with `simulate` it gives the same
+    /// without removing it. Server-side. API 69.
+    pub(super) fn native_item_handler_extract(
+        &mut self,
+        pos: [i32; 3],
+        side: Direction,
+        amount: u32,
+        simulate: bool,
+        taken: &mut Option<ItemStack>,
+        handled: &mut bool,
+    ) {
+        let _ = (pos, side, amount, simulate, taken, handled);
     }
     /// A server tick of the block entity at `pos`, in vanilla's order among
     /// the others (`Level.tickBlockEntities`), when its `id` is yours: read
@@ -2986,6 +3021,49 @@ mod tests {
         let wrapper = &wrapper[..wrapper.find("\n    }").unwrap()];
         assert!(wrapper.contains("if self.player.is_none() {"));
         assert!(wrapper.contains("self.native_input_key(name, action, bits, screen, consumed)"));
+    }
+
+    #[test]
+    fn hoppers_ask_the_mods_for_blocks_without_a_container() {
+        let machines = include_str!("machines.rs");
+        let body = |name: &str| {
+            let f = &machines[machines.find(name).unwrap()..];
+            f[..f.find("\n    }\n").unwrap()].to_owned()
+        };
+        // `ejectItems`: after the block container in front, before a container entity there.
+        let eject = body("fn hopper_eject(");
+        let hook = eject
+            .find("if let Some(moved) = self.eject_into_handler(hopper, front, face) {")
+            .unwrap();
+        assert!(eject.find("c.view(front, false)").unwrap() < hook);
+        assert!(hook < eject.find("self.entity_container_at(").unwrap());
+        // `suckInItems`: with no block container above, before a container entity there.
+        let suck = body("fn suck_from_container(");
+        let hook = suck
+            .find("if let Some(took) = self.suck_from_handler(above, hopper) {")
+            .unwrap();
+        assert!(suck.find("c.view(above, false) else {").unwrap() < hook);
+        assert!(hook < suck.find("self.entity_container_at(at)?").unwrap());
+        // insertHook: one item offered for real, the hopper's slot given back what is left;
+        // a handler that took nothing still stands for the container there.
+        let insert = body("fn eject_into_handler(");
+        assert!(insert.contains(
+            "self.native_item_handler_insert(at, face, &mut rest, false, &mut handled);"
+        ));
+        assert!(insert.contains("Some(rest) => self.put_back(hopper, slot, rest),"));
+        assert!(insert.trim_end().ends_with("handled.then_some(false)"));
+        // extractHook: through the bottom, simulated first, taken only when the hopper has room.
+        let extract = body("fn suck_from_handler(");
+        let simulated = extract
+            .find("self.native_item_handler_extract(at, Direction::Down, 1, true,")
+            .unwrap();
+        let room = extract
+            .find("if !self.hopper_has_room(hopper, &one) {")
+            .unwrap();
+        let real = extract
+            .find("self.native_item_handler_extract(at, Direction::Down, 1, false,")
+            .unwrap();
+        assert!(simulated < room && room < real);
     }
 
     #[test]

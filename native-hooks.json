@@ -190,6 +190,22 @@
       "cancellable": false
     },
     {
+      "name": "item_handler_insert",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_item_handler_insert",
+      "neoforge": "IItemHandler.insertItem",
+      "side": "server",
+      "cancellable": false
+    },
+    {
+      "name": "item_handler_extract",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_item_handler_extract",
+      "neoforge": "IItemHandler.extractItem",
+      "side": "server",
+      "cancellable": false
+    },
+    {
       "name": "block_entity_container",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_block_entity_container"

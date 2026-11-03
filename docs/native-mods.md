@@ -410,6 +410,15 @@ API 68 adds three [minecart](#minecarts) helpers for a mod that carries somethin
 `native_set_minecart_position`, `native_set_furnace_fuel` and `native_set_minecart_carrying`, and
 `fuel`, `push` and `carrying` in `NativeMinecart`. Bundles that use them need `"hooks": 68`.
 
+API 69 adds `native_item_handler_insert(pos, side, stack, simulate, handled)` and
+`native_item_handler_extract(pos, side, amount, simulate, taken, handled)` (NeoForge's
+`Capabilities.ItemHandler.BLOCK`, `IItemHandler.insertItem` / `extractItem`): a hopper facing a mod block with no
+container offers it one item at a time, and a hopper below one takes one item a transfer, if it has room
+(`VanillaInventoryCodeHooks.insertHook` / `extractHook`). A mod sets `handled` for its blocks, leaves in `stack` what it
+didn't take, and gives in `taken` what it gives; `simulate` asks without changing anything. For a block whose items
+aren't slots, such as Create's creative crate (an endless supply that voids what it is given), where a
+`ModContainer` would hold copies. Server-side. Bundles that use them need `"hooks": 69`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads
