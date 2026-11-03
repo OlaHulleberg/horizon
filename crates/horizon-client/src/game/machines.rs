@@ -736,8 +736,9 @@ impl Game<'_> {
             self.container_changed(pos);
         }
     }
-    /// `HopperBlockEntity.ejectItems`: into the block container in front, else
-    /// a container entity there (`getContainerAt`).
+    /// `HopperBlockEntity.ejectItems`: into a mod block's item handler in front
+    /// (NeoForge's `insertHook` comes first), else the block container there,
+    /// else a container entity there (`getContainerAt`).
     fn hopper_eject(&mut self, pos: Pos, hopper: &View) -> bool {
         let state = self.world.block(pos.0, pos.1, pos.2);
         let c = self.containers();
@@ -746,11 +747,12 @@ impl Game<'_> {
         };
         let front = offset(pos, facing);
         let face = facing.opposite();
-        if let Some(target) = c.view(front, false) {
-            return self.eject_into(pos, hopper, &target, face);
-        }
         if let Some(moved) = self.eject_into_handler(hopper, front, face) {
             return moved;
+        }
+        let c = self.containers();
+        if let Some(target) = c.view(front, false) {
+            return self.eject_into(pos, hopper, &target, face);
         }
         let Some(id) = self.entity_container_at([
             f64::from(front.0) + 0.5,
@@ -827,11 +829,12 @@ impl Game<'_> {
     /// there, from a container entity whose box meets the one around `at`
     /// (`getSourceContainerOrHandler`). `None` when there is no container.
     fn suck_from_container(&mut self, above: Pos, at: [f64; 3], hopper: &View) -> Option<bool> {
+        // NeoForge's `extractHook` comes first: a mod block's item handler above.
+        if let Some(took) = self.suck_from_handler(above, hopper) {
+            return Some(took);
+        }
         let c = self.containers();
         let Some(source) = c.view(above, false) else {
-            if let Some(took) = self.suck_from_handler(above, hopper) {
-                return Some(took);
-            }
             let id = self.entity_container_at(at)?;
             return self
                 .with_entity_container(id, |g, source| g.suck_from_slots(None, source, hopper));

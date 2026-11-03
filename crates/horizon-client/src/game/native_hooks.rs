@@ -3139,20 +3139,18 @@ mod tests {
             let f = &machines[machines.find(name).unwrap()..];
             f[..f.find("\n    }\n").unwrap()].to_owned()
         };
-        // `ejectItems`: after the block container in front, before a container entity there.
+        // `ejectItems` and `suckInItems`: NeoForge's hooks come before the block container
+        // (and so before a container entity there).
         let eject = body("fn hopper_eject(");
         let hook = eject
             .find("if let Some(moved) = self.eject_into_handler(hopper, front, face) {")
             .unwrap();
-        assert!(eject.find("c.view(front, false)").unwrap() < hook);
-        assert!(hook < eject.find("self.entity_container_at(").unwrap());
-        // `suckInItems`: with no block container above, before a container entity there.
+        assert!(hook < eject.find("c.view(front, false)").unwrap());
         let suck = body("fn suck_from_container(");
         let hook = suck
             .find("if let Some(took) = self.suck_from_handler(above, hopper) {")
             .unwrap();
-        assert!(suck.find("c.view(above, false) else {").unwrap() < hook);
-        assert!(hook < suck.find("self.entity_container_at(at)?").unwrap());
+        assert!(hook < suck.find("c.view(above, false) else {").unwrap());
         // insertHook: one item offered for real, the hopper's slot given back what is left;
         // a handler that took nothing still stands for the container there.
         let insert = body("fn eject_into_handler(");
