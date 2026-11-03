@@ -2282,11 +2282,11 @@ impl Game<'_> {
         recipe_result(&json).filter(|s| self.items().get(&s.item).is_some())
     }
     /// Every item and recipe the game knows, made once (the same for every
-    /// call); none outside a world. They are the window's own: the world's
-    /// in single player, vanilla's on a server, which sends a client no
-    /// others.
+    /// call); none outside a world. They are this `Game`'s own: the world's
+    /// in single player and on its server's tick, vanilla's on a client of a
+    /// server, which sends a client no others.
     pub(super) fn native_recipes(&mut self) -> Option<Arc<NativeRecipes>> {
-        self.player.as_ref()?;
+        self.native_in_world().then_some(())?;
         self.made_recipes()
     }
     /// The `book_id`s of the recipes the player's recipe book holds now
@@ -3320,6 +3320,7 @@ mod tests {
         // `native_in_world`, which counts the server's own Game as in its world.
         let hooks = include_str!("native_hooks.rs");
         for helper in [
+            "fn native_recipes(",
             "fn native_recipes_of_type",
             "fn native_recipe_ingredient",
             "fn native_recipe_result",
