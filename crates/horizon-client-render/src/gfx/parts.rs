@@ -127,10 +127,12 @@ struct Model {
     capacity: usize,
     count: u32,
     revision: Option<u64>,
-    /// The uploaded instances: first the moving ones (drawn always: they glide out of their
-    /// section), then the still ones sorted by chunk section, each section one run.
+    /// The uploaded instances: first the moving ones, then the still ones, each sorted by the
+    /// chunk section they start in, each section one run (`moving` of them move).
     moving: u32,
     sections: Vec<([i32; 3], u32, u32)>,
+    /// The moving instances as uploaded, to find each frame how far they have glided.
+    gliding: Vec<PartInstance>,
     /// This frame's instance ranges: the moving ones and the sections in view.
     draws: Vec<std::ops::Range<u32>>,
 }
@@ -148,24 +150,36 @@ fn extent_of(vertices: &[Vertex]) -> f32 {
     })
 }
 
-/// The instances in the order they're uploaded (moving first, then still ones by section),
-/// how many move, and each section's run.
+/// The instances in the order they're uploaded (moving first, then still ones, each by the
+/// section they start in), how many move, and each section's run.
 fn sort_by_section(list: &[PartInstance]) -> (Vec<PartInstance>, u32, Vec<([i32; 3], u32, u32)>) {
     let moves = |i: &PartInstance| i.velocity[..3].iter().any(|v| *v != 0.0);
     let mut sorted: Vec<PartInstance> = list.iter().filter(|i| moves(i)).copied().collect();
     let moving = sorted.len() as u32;
+    sorted.sort_by_key(section_of);
     let mut still: Vec<PartInstance> = list.iter().filter(|i| !moves(i)).copied().collect();
     still.sort_by_key(section_of);
+    sorted.extend(still);
     let mut sections: Vec<([i32; 3], u32, u32)> = Vec::new();
-    for (n, i) in still.iter().enumerate() {
+    for (n, i) in sorted.iter().enumerate() {
         let at = section_of(i);
+        // A run never spans the moving and the still ones.
         match sections.last_mut() {
-            Some((s, _, count)) if *s == at => *count += 1,
-            _ => sections.push((at, moving + n as u32, 1)),
+            Some((s, start, count)) if *s == at && (*start < moving) == ((n as u32) < moving) => {
+                *count += 1
+            }
+            _ => sections.push((at, n as u32, 1)),
         }
     }
-    sorted.extend(still);
     (sorted, moving, sections)
+}
+
+/// How far a gliding instance has gone from where it started, in blocks, at clock `seconds`
+/// (`vs_part`: `offset` at time `offset.w`, then `velocity` blocks a second). None once the
+/// clock has wrapped past its start: then it may be anywhere along its line.
+fn glided(i: &PartInstance, seconds: f32) -> Option<glam::Vec3> {
+    let dt = seconds - i.offset[3];
+    (dt >= 0.0).then(|| glam::Vec3::new(i.velocity[0], i.velocity[1], i.velocity[2]) * dt)
 }
 
 pub(super) struct Renderer {
@@ -249,6 +263,7 @@ impl Renderer {
                 revision: None,
                 moving: 0,
                 sections: Vec::new(),
+                gliding: Vec::new(),
                 draws: Vec::new(),
             });
         }
@@ -262,6 +277,7 @@ impl Renderer {
             model.count = list.len() as u32;
             model.moving = moving;
             model.sections = sections;
+            model.gliding = list[..moving as usize].to_vec();
             if list.is_empty() {
                 model.instances = None;
                 model.capacity = 0;
@@ -289,15 +305,27 @@ impl Renderer {
             if model.instances.is_none() {
                 continue;
             }
-            if model.moving > 0 {
-                model.draws.push(0..model.moving);
-            }
             let reach = model.extent;
             for &(at, start, count) in &model.sections {
                 let corner = DVec3::new(at[0] as f64, at[1] as f64, at[2] as f64) * 16.0 - camera;
-                let min = corner.as_vec3() - glam::Vec3::splat(reach);
-                let max = corner.as_vec3() + glam::Vec3::splat(16.0 + reach);
-                if !view.intersects(min, max) {
+                let mut min = corner.as_vec3() - glam::Vec3::splat(reach);
+                let mut max = corner.as_vec3() + glam::Vec3::splat(16.0 + reach);
+                // A moving run's box also reaches as far as its instances have glided.
+                let mut anywhere = false;
+                let (mut back, mut ahead) = (glam::Vec3::ZERO, glam::Vec3::ZERO);
+                let run = model.gliding.get(start as usize..(start + count) as usize);
+                for i in run.unwrap_or(&[]) {
+                    match glided(i, scene.seconds) {
+                        Some(d) => {
+                            back = back.min(d);
+                            ahead = ahead.max(d);
+                        }
+                        None => anywhere = true,
+                    }
+                }
+                min += back;
+                max += ahead;
+                if !anywhere && !view.intersects(min, max) {
                     continue;
                 }
                 match model.draws.last_mut() {
@@ -375,16 +403,35 @@ mod tests {
         let list = [at(20, 0), at(1, 1), gliding, shifted, at(2, 2), at(40, 0)];
         let (sorted, moving, sections) = sort_by_section(&list);
         assert_eq!(moving, 1);
-        assert_eq!(
-            sorted[0].velocity[0], 0.5,
-            "moving ones first, drawn in any view"
-        );
+        assert_eq!(sorted[0].velocity[0], 0.5, "moving ones first");
         assert_eq!(
             sections,
-            vec![([0, 4, 0], 1, 2), ([1, 4, 0], 3, 2), ([2, 4, 0], 5, 1)],
-            "(0..16) holds two, (16..32) holds 20 and the shifted 15, 40 is alone"
+            vec![
+                ([0, 4, 0], 0, 1),
+                ([0, 4, 0], 1, 2),
+                ([1, 4, 0], 3, 2),
+                ([2, 4, 0], 5, 1)
+            ],
+            "the moving one is its own run though it shares a section; (0..16) holds two still \
+             ones, (16..32) holds 20 and the shifted 15, 40 is alone"
         );
         assert_eq!(sorted.len(), list.len());
+    }
+
+    #[test]
+    fn a_gliding_instance_is_found_where_it_has_got_to() {
+        let i = PartInstance {
+            offset: [0.0, 0.0, 0.0, 10.0],
+            velocity: [2.0, 0.0, -1.0, 0.0],
+            ..Default::default()
+        };
+        assert_eq!(glided(&i, 13.0), Some(glam::Vec3::new(6.0, 0.0, -3.0)));
+        assert_eq!(glided(&i, 10.0), Some(glam::Vec3::ZERO));
+        assert_eq!(
+            glided(&i, 4.0),
+            None,
+            "the clock wrapped: it may be anywhere on its line"
+        );
     }
 
     #[test]
