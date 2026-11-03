@@ -4924,8 +4924,14 @@ impl Renderer {
             camera,
         );
         if let Some(scene) = frame.parts {
-            self.parts
-                .prepare(&self.device, &mut self.uploads, &mut encoder, scene, camera);
+            self.parts.prepare(
+                &self.device,
+                &mut self.uploads,
+                &mut encoder,
+                scene,
+                camera,
+                &view,
+            );
         }
         let all_entities = &self.entity_batch.combined;
         let hand_quads = (frame.hand.len() / 4) as u32;

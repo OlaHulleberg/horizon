@@ -121,10 +121,51 @@ struct Model {
     culled: bool,
     shape: u64,
     quads: u32,
+    /// How far the model reaches from its block's corner, so a section's box grows by it.
+    extent: f32,
     instances: Option<wgpu::Buffer>,
     capacity: usize,
     count: u32,
     revision: Option<u64>,
+    /// The uploaded instances: first the moving ones (drawn always: they glide out of their
+    /// section), then the still ones sorted by chunk section, each section one run.
+    moving: u32,
+    sections: Vec<([i32; 3], u32, u32)>,
+    /// This frame's instance ranges: the moving ones and the sections in view.
+    draws: Vec<std::ops::Range<u32>>,
+}
+
+/// The chunk section a still instance stands in: its block plus its fixed offset.
+fn section_of(i: &PartInstance) -> [i32; 3] {
+    let at = |a: usize| (i.block[a] as f32 + i.offset[a]).floor() as i32 >> 4;
+    [at(0), at(1), at(2)]
+}
+
+/// How far a model's vertices reach outside its block, in blocks.
+fn extent_of(vertices: &[Vertex]) -> f32 {
+    vertices.iter().fold(0.0, |e: f32, v| {
+        v.pos.iter().fold(e, |e, &c| e.max(-c).max(c - 1.0))
+    })
+}
+
+/// The instances in the order they're uploaded (moving first, then still ones by section),
+/// how many move, and each section's run.
+fn sort_by_section(list: &[PartInstance]) -> (Vec<PartInstance>, u32, Vec<([i32; 3], u32, u32)>) {
+    let moves = |i: &PartInstance| i.velocity[..3].iter().any(|v| *v != 0.0);
+    let mut sorted: Vec<PartInstance> = list.iter().filter(|i| moves(i)).copied().collect();
+    let moving = sorted.len() as u32;
+    let mut still: Vec<PartInstance> = list.iter().filter(|i| !moves(i)).copied().collect();
+    still.sort_by_key(section_of);
+    let mut sections: Vec<([i32; 3], u32, u32)> = Vec::new();
+    for (n, i) in still.iter().enumerate() {
+        let at = section_of(i);
+        match sections.last_mut() {
+            Some((s, _, count)) if *s == at => *count += 1,
+            _ => sections.push((at, moving + n as u32, 1)),
+        }
+    }
+    sorted.extend(still);
+    (sorted, moving, sections)
 }
 
 pub(super) struct Renderer {
@@ -164,6 +205,7 @@ impl Renderer {
         encoder: &mut wgpu::CommandEncoder,
         scene: &PartScene,
         camera: DVec3,
+        view: &super::Frustum,
     ) {
         uploads.buffer(
             encoder,
@@ -191,6 +233,7 @@ impl Renderer {
                 model.shape = scene.shapes[i];
                 model.vertices = buffer(&scene.models[i]);
                 model.quads = (scene.models[i].len() / 4) as u32;
+                model.extent = extent_of(&scene.models[i]);
             }
         }
         for (i, vertices) in scene.models.iter().enumerate().skip(self.models.len()) {
@@ -199,10 +242,14 @@ impl Renderer {
                 culled: scene.culled.get(i).copied().unwrap_or(false),
                 shape: scene.shapes[i],
                 quads: (vertices.len() / 4) as u32,
+                extent: extent_of(vertices),
                 instances: None,
                 capacity: 0,
                 count: 0,
                 revision: None,
+                moving: 0,
+                sections: Vec::new(),
+                draws: Vec::new(),
             });
         }
         for (i, model) in self.models.iter_mut().enumerate() {
@@ -211,8 +258,10 @@ impl Renderer {
                 continue;
             }
             model.revision = Some(revision);
-            let list = &scene.instances[i];
+            let (list, moving, sections) = sort_by_section(&scene.instances[i]);
             model.count = list.len() as u32;
+            model.moving = moving;
+            model.sections = sections;
             if list.is_empty() {
                 model.instances = None;
                 model.capacity = 0;
@@ -231,8 +280,31 @@ impl Renderer {
                 encoder,
                 model.instances.as_ref().expect("made above"),
                 0,
-                bytemuck::cast_slice(list),
+                bytemuck::cast_slice(&list),
             );
+        }
+        // The sections in view, each grown by its model's reach, joined into runs.
+        for model in &mut self.models {
+            model.draws.clear();
+            if model.instances.is_none() {
+                continue;
+            }
+            if model.moving > 0 {
+                model.draws.push(0..model.moving);
+            }
+            let reach = model.extent;
+            for &(at, start, count) in &model.sections {
+                let corner = DVec3::new(at[0] as f64, at[1] as f64, at[2] as f64) * 16.0 - camera;
+                let min = corner.as_vec3() - glam::Vec3::splat(reach);
+                let max = corner.as_vec3() + glam::Vec3::splat(16.0 + reach);
+                if !view.intersects(min, max) {
+                    continue;
+                }
+                match model.draws.last_mut() {
+                    Some(run) if run.end == start => run.end = start + count,
+                    _ => model.draws.push(start..start + count),
+                }
+            }
         }
     }
 
@@ -245,9 +317,14 @@ impl Renderer {
             let Some(instances) = &model.instances else {
                 continue;
             };
+            if model.draws.is_empty() {
+                continue;
+            }
             pass.set_vertex_buffer(0, model.vertices.slice(..));
             pass.set_vertex_buffer(1, instances.slice(..));
-            pass.draw_indexed(0..model.quads * 6, 0, 0..model.count);
+            for run in &model.draws {
+                pass.draw_indexed(0..model.quads * 6, 0, run.clone());
+            }
         }
     }
 
@@ -282,6 +359,42 @@ mod tests {
             1,
             "its handle stays taken"
         );
+    }
+
+    #[test]
+    fn instances_sort_moving_first_then_one_run_per_section() {
+        let at = |x: i32, z: i32| PartInstance {
+            block: [x, 64, z],
+            ..Default::default()
+        };
+        let mut gliding = at(0, 0);
+        gliding.velocity = [0.5, 0.0, 0.0, 0.0];
+        // A fixed offset moves an instance into the next section along x.
+        let mut shifted = at(15, 0);
+        shifted.offset = [1.5, 0.0, 0.0, 0.0];
+        let list = [at(20, 0), at(1, 1), gliding, shifted, at(2, 2), at(40, 0)];
+        let (sorted, moving, sections) = sort_by_section(&list);
+        assert_eq!(moving, 1);
+        assert_eq!(
+            sorted[0].velocity[0], 0.5,
+            "moving ones first, drawn in any view"
+        );
+        assert_eq!(
+            sections,
+            vec![([0, 4, 0], 1, 2), ([1, 4, 0], 3, 2), ([2, 4, 0], 5, 1)],
+            "(0..16) holds two, (16..32) holds 20 and the shifted 15, 40 is alone"
+        );
+        assert_eq!(sorted.len(), list.len());
+    }
+
+    #[test]
+    fn a_model_reaches_as_far_as_its_vertices_leave_the_block() {
+        let v = |x: f32, y: f32, z: f32| Vertex {
+            pos: [x, y, z],
+            ..bytemuck::Zeroable::zeroed()
+        };
+        assert_eq!(extent_of(&[v(0.0, 0.0, 0.0), v(1.0, 1.0, 1.0)]), 0.0);
+        assert_eq!(extent_of(&[v(-2.5, 0.5, 0.5), v(0.5, 4.0, 0.5)]), 3.0);
     }
 
     #[test]
