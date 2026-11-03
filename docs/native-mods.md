@@ -419,6 +419,13 @@ didn't take, and gives in `taken` what it gives; `simulate` asks without changin
 aren't slots, such as Create's creative crate (an endless supply that voids what it is given), where a
 `ModContainer` would hold copies. Server-side. Bundles that use them need `"hooks": 69`.
 
+API 70 adds `native_entity_collisions(around, out)` (`Level.getEntityCollisions`): a mod adds the boxes of its moving
+things near the window's player (`around`: the player's box grown by its motion and a block), each with how far it moved
+since the last tick. The player collides with them as with boats and shulkers, and one standing on a box moves that far
+with it before its own move, so a player can stand and walk on a mod's moving structure (Create's train carriages). Boxes are
+axis-aligned; a turned structure gives each block's bounds. Client-side (the window's player). Bundles that use it
+need `"hooks": 70`.
+
 ## What the launcher does
 
 In the window: install a native mod from the Mods page. The first one shows a notice once (the first build downloads

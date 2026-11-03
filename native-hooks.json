@@ -190,6 +190,14 @@
       "cancellable": false
     },
     {
+      "name": "entity_collisions",
+      "version": 1,
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_entity_collisions",
+      "neoforge": "EntityGetter.getEntityCollisions",
+      "side": "client",
+      "cancellable": false
+    },
+    {
       "name": "item_handler_insert",
       "version": 1,
       "target": "horizon_client::game::native_hooks::Game<'_>::native_item_handler_insert",

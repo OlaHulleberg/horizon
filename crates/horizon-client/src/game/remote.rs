@@ -4872,7 +4872,9 @@ impl Game<'_> {
         self.tick_hud();
         self.tick_subtitles();
         self.tick_client_load();
-        let entity_collisions = self.player_entity_collisions();
+        let platforms = self.native_platforms();
+        let entity_collisions = self.player_entity_collisions_with(&platforms);
+        let carried = self.platform_carry(&platforms);
         let pushed = self.remote_pushes();
         let sprint_window = self.settings.sprint_window;
         let Some(player) = self.player.as_mut() else {
@@ -4977,6 +4979,11 @@ impl Game<'_> {
             player.velocity = Vec3::ZERO;
         } else if !dead && !riding {
             player.client_side = true;
+            // Standing on a mod's moving box: carried with it before moving
+            // (`native_entity_collisions`).
+            if let Some(carried) = carried {
+                player.position = player.position.add_vector(carried);
+            }
             player.velocity = player.velocity.add_vector(pushed);
             MotionWorld {
                 entities: &entity_collisions,

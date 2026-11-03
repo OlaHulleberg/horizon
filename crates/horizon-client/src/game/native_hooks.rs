@@ -6,6 +6,10 @@
 //! Horizon's own HUD extras do, and keep a mod's settings where the
 //! WebAssembly mod of the same id kept them.
 //!
+//! API 70 adds `native_entity_collisions`: a mod's moving boxes (a train's carriages) that
+//! the window's player collides with, as with boats and shulkers, and is carried by while
+//! standing on one.
+//!
 //! API 69 adds `native_item_handler_insert` and `native_item_handler_extract` (NeoForge's
 //! `Capabilities.ItemHandler.BLOCK`, `IItemHandler.insertItem` / `extractItem`): a hopper reaches
 //! a mod block that has no container.
@@ -263,7 +267,7 @@ use horizon_client::{
     text::Text,
 };
 use horizon_core::{
-    geometry::Direction,
+    geometry::{Aabb, Direction, Vec3},
     position::BlockPos,
     ticks::{ScheduleResult, TickPriority},
 };
@@ -336,7 +340,7 @@ fn input_key(
 /// The hook points' API version. The launcher reads this line from the
 /// source it builds; keep its form.
 #[allow(dead_code)]
-pub(crate) const NATIVE_HOOKS_API: u32 = 69;
+pub(crate) const NATIVE_HOOKS_API: u32 = 70;
 
 impl GameLevel<'_> {
     /// An authoritative server committed a changed state through `Level.setBlock`.
@@ -1149,6 +1153,15 @@ impl Game<'_> {
     /// changes. Server-side. API 46.
     pub(super) fn native_contents_changed(&mut self, pos: [i32; 3]) {
         let _ = pos;
+    }
+    /// The boxes of a mod's moving things near `around` (the window's player's box, grown by
+    /// its motion) that the player collides with: `Level.getEntityCollisions`, which gives it
+    /// boats and shulkers, for a mod's (Create's carriages, whose `ContraptionCollider` lets
+    /// players stand and walk on them). Each box comes with how far it moved since the last
+    /// tick; a player standing on one moves that far with it first. Client-side (the window's
+    /// player). API 70.
+    pub(super) fn native_entity_collisions(&self, around: Aabb, out: &mut Vec<(Aabb, Vec3)>) {
+        let _ = (around, out);
     }
     /// A hopper gives `stack` to the block at `pos` through its side `side`, and that block has
     /// no container: NeoForge's `Capabilities.ItemHandler.BLOCK` and `IItemHandler.insertItem`
@@ -3021,6 +3034,30 @@ mod tests {
         let wrapper = &wrapper[..wrapper.find("\n    }").unwrap()];
         assert!(wrapper.contains("if self.player.is_none() {"));
         assert!(wrapper.contains("self.native_input_key(name, action, bits, screen, consumed)"));
+    }
+
+    #[test]
+    fn the_player_collides_with_and_rides_the_mods_moving_boxes() {
+        let remote = include_str!("remote.rs");
+        let tick = &remote[remote
+            .find("let platforms = self.native_platforms();")
+            .unwrap()..];
+        // Asked once a tick, before the player moves: its boxes join the entity collisions and
+        // a player standing on one is carried before its own move.
+        let collisions = tick
+            .find("self.player_entity_collisions_with(&platforms);")
+            .unwrap();
+        let carry = tick.find("self.platform_carry(&platforms);").unwrap();
+        let moved = tick
+            .find("player.position = player.position.add_vector(carried);")
+            .unwrap();
+        let simulated = tick
+            .find(".controlled_simulation_tick_with_sprint_window(keys, sprint_window)?;")
+            .unwrap();
+        assert!(collisions < carry && carry < moved && moved < simulated);
+        let ghasts = include_str!("ghasts.rs");
+        assert!(ghasts.contains("self.native_entity_collisions(around, &mut out);"));
+        assert!(ghasts.contains(".chain(platforms.iter().map(|(b, _)| *b))"));
     }
 
     #[test]
