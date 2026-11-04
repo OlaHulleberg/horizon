@@ -1,0 +1,9 @@
+[package]
+name = "mod-craftproof"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# The launcher points this at the Horizon source it builds the game from. Any other
+# dependency must be a crate and version in Horizon's Cargo.lock.
+horizon-mod-api = { git = "https://github.com/arismoko/horizon", rev = "362adef02a09c5e2827ccfdfaff23e395c2d41f7" }
