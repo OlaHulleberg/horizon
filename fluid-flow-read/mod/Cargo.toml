@@ -1,0 +1,9 @@
+[package]
+name = "mod-flowproof"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# The launcher points this at the Horizon source it builds the game from. Any other
+# dependency must be a crate and version in Horizon's Cargo.lock.
+horizon-mod-api = { git = "https://github.com/arismoko/horizon", rev = "d69d08ff6735fc0d8ae9a8f5a638dd61e874421b" }
