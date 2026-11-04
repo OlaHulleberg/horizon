@@ -1,0 +1,9 @@
+[package]
+name = "mod-nuproof"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# The launcher points this at the Horizon source it builds the game from. Any other
+# dependency must be a crate and version in Horizon's Cargo.lock.
+horizon-mod-api = { git = "https://github.com/arismoko/horizon", rev = "7d7a0b263539a1f0f8e37ea7e2bf63051e5c0aa0" }

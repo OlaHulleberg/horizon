@@ -1,0 +1,15 @@
+id = "nuproof"
+name = "nuproof"
+version = "0.1.0"
+description = ""
+authors = []
+# A content mod: blocks, items and mob effects from data/ and assets/, no code (API 0.2).
+api = "0.2"
+side = "both"
+# registries: "May add blocks, items, mob effects and entity types to your worlds".
+capabilities = ["registries"]
+
+[native]
+game = "26.3"
+horizon = "7d7a0b263539a1f0f8e37ea7e2bf63051e5c0aa0"
+mixins = "e8cd0aa38cffef49cb2e088ef716baa107148c02"
