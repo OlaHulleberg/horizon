@@ -1,0 +1,9 @@
+[package]
+name = "mod-readproof"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# The launcher points this at the Horizon source it builds the game from. Any other
+# dependency must be a crate and version in Horizon's Cargo.lock.
+horizon-mod-api = { git = "https://github.com/arismoko/horizon", rev = "f6b64934e572b589d656dbbdf7250d3e2b03d99f" }

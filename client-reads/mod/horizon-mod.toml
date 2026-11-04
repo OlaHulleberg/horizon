@@ -1,0 +1,15 @@
+id = "readproof"
+name = "readproof"
+version = "0.1.0"
+description = ""
+authors = []
+# A content mod: blocks, items and mob effects from data/ and assets/, no code (API 0.2).
+api = "0.2"
+side = "both"
+# registries: "May add blocks, items, mob effects and entity types to your worlds".
+capabilities = ["registries"]
+
+[native]
+game = "26.3"
+horizon = "f6b64934e572b589d656dbbdf7250d3e2b03d99f"
+mixins = "e8cd0aa38cffef49cb2e088ef716baa107148c02"
