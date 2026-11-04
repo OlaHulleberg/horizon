@@ -1,0 +1,9 @@
+[package]
+name = "mod-fakeproof"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# The launcher points this at the Horizon source it builds the game from. Any other
+# dependency must be a crate and version in Horizon's Cargo.lock.
+horizon-mod-api = { git = "https://github.com/arismoko/horizon", rev = "29a6b3e28c4fabade5217857156b90ae93f91e9e" }
