@@ -1,0 +1,9 @@
+At f1ecace18 (the PR's head), Linux, Intel Arc BMG G21 (Vulkan), single player on its server thread.
+The game was driven by horizon-ctl; `debug.clipboard` in `horizon-ctl status` is the text the game last copied.
+
+step                                   debug.clipboard
+playing, after 5 s of client ticks     None
+key e tap (creative inventory), 3 s    None
+key c tap, then 4 s of ticks           'copied by clipproof'
+key v tap                              'clipproof read Some("copied by clipproof")'
+key t tap                              '274 ticks: 0 reads and 0 writes got through'
