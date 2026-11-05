@@ -1,0 +1,9 @@
+At 602c61af0 (the PR's head), Linux, Intel Arc BMG G21 (Vulkan), single player on its server thread, driven by horizon-ctl.
+The mod plays from screen_key_pressed_pre (a &dyn ClientHost). `heard` and `sounds.queued` are from `horizon-ctl status`.
+
+step                       heard (click, cow)                                   sounds.queued
+inventory open             {}                                                   0
+key u (ui click, after 0)  {'minecraft:ui.button.click': 1}                     0
+key p (cow at, after 40)   {... 'minecraft:entity.cow.ambient': 1}, 0.5 s later 1
+  3.5 s after p            unchanged                                            0
+key x (volume -1)          unchanged (the mod asserts play_local_sound == false) 0
