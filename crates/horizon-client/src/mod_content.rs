@@ -1271,6 +1271,22 @@ pub const MAX_STATES: u32 = 1 << 20;
 const TAG_BUNDLES: [&str; 2] = ["block-tags.json", "worldgen/block_tags.json"];
 /// The worldgen loader's bundle of biome tags.
 const BIOME_TAGS: &str = "worldgen/biome_tags.json";
+/// The worldgen loader's bundle of biomes (id → the biome file's text).
+const BIOMES: &str = "worldgen/biomes.json";
+/// `GenerationStep.Decoration` in order: a biome's `features` has one list per step.
+const DECORATION_STEPS: [&str; 11] = [
+    "raw_generation",
+    "lakes",
+    "local_modifications",
+    "underground_structures",
+    "surface_structures",
+    "strongholds",
+    "underground_ores",
+    "underground_decoration",
+    "fluid_springs",
+    "vegetal_decoration",
+    "top_layer_modification",
+];
 /// Worldgen registries a content mod may add to, and the bundle the
 /// worldgen loader reads each from (id → the file's text): what structure
 /// mods hold. Biomes, noise and density functions change the terrain and
@@ -1324,6 +1340,146 @@ const ADDABLE: [(&str, &str); 2] = [
     ("worldgen/structure_sets.json", "structures"),
     ("worldgen/template_pools.json", "elements"),
 ];
+
+/// A NeoForge `neoforge:add_features` biome modifier
+/// (`data/<ns>/neoforge/biome_modifier/<path>.json`): its placed features join one step of
+/// each biome it names, as NeoForge adds them to the biome's generation settings. `biomes` is a
+/// biome, a list of them or a `#` tag; `features` a placed feature or a list.
+struct AddFeatures {
+    biomes: Vec<String>,
+    features: Vec<String>,
+    step: usize,
+}
+impl AddFeatures {
+    /// The modifier in a mod's biome modifier file, if it adds features: other kinds
+    /// (`remove_features`, `add_spawns`...) are not carried.
+    fn read(file: &str, text: &str) -> Result<Option<Self>> {
+        if !file.contains("/neoforge/biome_modifier/") || !file.ends_with(".json") {
+            return Ok(None);
+        }
+        let doc: J = serde_json::from_str(text)?;
+        if doc.get("type") != Some(&J::Str("neoforge:add_features".into())) {
+            return Ok(None);
+        }
+        let ids = |key: &str| -> Result<Vec<String>> {
+            match doc.get(key) {
+                Some(J::Str(s)) => Ok(vec![s.clone()]),
+                Some(J::Arr(a)) => Ok(a
+                    .iter()
+                    .filter_map(|v| match v {
+                        J::Str(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect()),
+                _ => Err(format!("no {key}").into()),
+            }
+        };
+        let step = match doc.get("step") {
+            Some(J::Str(s)) => DECORATION_STEPS
+                .iter()
+                .position(|d| d == s)
+                .ok_or_else(|| format!("no decoration step {s:?}"))?,
+            _ => return Err("no step".into()),
+        };
+        Ok(Some(Self {
+            biomes: ids("biomes")?,
+            features: ids("features")?,
+            step,
+        }))
+    }
+}
+
+/// The biomes a biome id or `#tag` names, through `tags` (the biome tag bundle: id → the tag
+/// file's text), nested tags included; an id or tag nobody defines names none.
+fn biomes_named(name: &str, tags: &J, biomes: &J, out: &mut Vec<String>, seen: &mut Vec<String>) {
+    let Some(tag) = name.strip_prefix('#') else {
+        if biomes.get(name).is_some() && !out.iter().any(|b| b == name) {
+            out.push(name.to_owned());
+        }
+        return;
+    };
+    if seen.iter().any(|t| t == tag) {
+        return;
+    }
+    seen.push(tag.to_owned());
+    let Some(J::Str(text)) = tags.get(tag) else {
+        return;
+    };
+    let Ok(doc) = serde_json::from_str::<J>(text) else {
+        return;
+    };
+    for value in match doc.get("values") {
+        Some(J::Arr(a)) => a.as_slice(),
+        _ => &[],
+    } {
+        // An entry is an id, or `{"id": .., "required": ..}`.
+        let id = match value {
+            J::Str(s) => Some(s.as_str()),
+            v => match v.get("id") {
+                Some(J::Str(s)) => Some(s.as_str()),
+                _ => None,
+            },
+        };
+        if let Some(id) = id {
+            biomes_named(id, tags, biomes, out, seen);
+        }
+    }
+}
+
+/// Applies `modifiers` to the biome bundle `biomes`, in order: each feature goes at the end of
+/// its step's list in each biome named, once. A placed feature `placed` doesn't hold is left
+/// out, with a warning, as a tag's unknown ids are.
+fn add_biome_features(
+    biomes: &mut J,
+    tags: &J,
+    placed: &J,
+    modifiers: &[(String, AddFeatures)],
+    warnings: &mut Vec<String>,
+) -> Result<()> {
+    for (file, m) in modifiers {
+        let mut named = Vec::new();
+        for b in &m.biomes {
+            biomes_named(b, tags, biomes, &mut named, &mut Vec::new());
+        }
+        let features: Vec<&String> = m
+            .features
+            .iter()
+            .filter(|f| {
+                let known = placed.get(f).is_some();
+                if !known {
+                    warnings.push(format!("{file}: no placed feature {f}: left out"));
+                }
+                known
+            })
+            .collect();
+        if features.is_empty() {
+            continue;
+        }
+        for id in named {
+            let Some(J::Str(text)) = biomes.get(&id) else {
+                continue;
+            };
+            let mut biome: J = serde_json::from_str(text)?;
+            let Some(J::Arr(steps)) = biome.get_mut("features") else {
+                return Err(format!("{BIOMES}: {id}: no features").into());
+            };
+            while steps.len() <= m.step {
+                steps.push(J::Arr(Vec::new()));
+            }
+            let J::Arr(list) = &mut steps[m.step] else {
+                return Err(format!("{BIOMES}: {id}: a step is no list").into());
+            };
+            for f in &features {
+                let f = J::Str((*f).clone());
+                if !list.contains(&f) {
+                    list.push(f);
+                }
+            }
+            biomes.set(&id, J::Str(serde_json::to_string(&biome)?));
+        }
+    }
+    Ok(())
+}
 
 /// A mod file's additions (`horizon:add_to`): its entries appended to the
 /// list of each set or pool it names, as lithostitched's
@@ -1711,6 +1867,7 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
     let mut warnings = Vec::new();
     let mut worldgen: BTreeMap<&str, Vec<(String, String)>> = BTreeMap::new();
     let mut additions: BTreeMap<&str, Vec<Addition>> = BTreeMap::new();
+    let mut modifiers: Vec<(String, AddFeatures)> = Vec::new();
     for m in mods {
         let declarations = format!("data/{}/horizon/", m.id);
         let mut reader = m.content.reader()?;
@@ -1729,6 +1886,14 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
                 warnings.extend(merge.add(&m.id, file, replace, shared, values));
             } else if !file.starts_with(&declarations) {
                 overlay.write(file, &bytes)?;
+                if file.contains("/neoforge/biome_modifier/") {
+                    let text = std::str::from_utf8(&bytes).map_err(|e| format!("{file}: {e}"))?;
+                    if let Some(m) =
+                        AddFeatures::read(file, text).map_err(|e| format!("{file}: {e}"))?
+                    {
+                        modifiers.push((file.clone(), m));
+                    }
+                }
                 if let Some((bundle, id)) = worldgen_entry(file) {
                     let text = String::from_utf8(bytes).map_err(|e| format!("{file}: {e}"))?;
                     let entries = worldgen.entry(bundle).or_default();
@@ -1828,6 +1993,15 @@ pub fn build(base: &Path, mods: &[ContentMod], out: &Path) -> Result<Vec<String>
                 .map_err(|e| format!("{bundle}: {e}"))?;
         }
         overlay.write(bundle, &serde_json::to_vec(&doc)?)?;
+    }
+    // Biome modifiers, after the features they name joined their bundle.
+    if !modifiers.is_empty() && base.join(BIOMES).exists() {
+        // The overlay's bundles: the mods' merged ones, or links to the base's.
+        let mut biomes = read_json(&out_path(&overlay, BIOMES))?;
+        let tags = read_json(&out_path(&overlay, BIOME_TAGS))?;
+        let placed = read_json(&out_path(&overlay, "worldgen/placed_features.json"))?;
+        add_biome_features(&mut biomes, &tags, &placed, &modifiers, &mut warnings)?;
+        overlay.write(BIOMES, &serde_json::to_vec(&biomes)?)?;
     }
     // The commands suggest ids from `command-registries.json`: add the
     // structures, pools, sets and features the mods bring.

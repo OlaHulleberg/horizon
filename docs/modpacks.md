@@ -278,8 +278,11 @@ How the game loads them, without touching vanilla's path:
 - **Worldgen.** Mods' structures, structure sets, template pools, processor lists, configured and
   placed features join the `worldgen/*.json` bundles. Their structure templates go under
   `worldgen/structure/<ns>/`. Their biome tags are merged into `worldgen/biome_tags.json`, minus
-  the biomes and tags Horizon does not have. Mod biomes, noise and density functions are not
-  carried yet.
+  the biomes and tags Horizon does not have. NeoForge `neoforge:add_features` biome modifiers
+  (`data/<ns>/neoforge/biome_modifier/`) add their placed features to their step of each biome
+  they name (an id, a list or a tag), after the biome's own; a feature no bundle holds is left out
+  with a warning, and other modifier kinds are not carried. Mod biomes, noise and density
+  functions are not carried yet.
 - **Limits.** Chunk sections size their global palette to the registry: 16 bits for vanilla's
   35,723 states (the same chunks, saves and packets as before), one more bit each time content
   mods double it, up to 2^20 states (1,048,576). Past that the content root is refused with the

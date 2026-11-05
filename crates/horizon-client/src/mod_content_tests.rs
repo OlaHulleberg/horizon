@@ -1841,3 +1841,120 @@ fn analog_output_makes_comparators_read_a_block() {
     assert_eq!(flags, [5, 21, 5, 21, 21].map(Some));
     fs::remove_dir_all(scratch).unwrap();
 }
+
+/// NeoForge's `neoforge:add_features`: the features join the named step of each biome a tag
+/// names (nested tags too), after the biome's own and once; an unknown feature is left out.
+#[test]
+fn biome_modifiers_add_features_to_the_biomes_they_name() {
+    let j = |v: serde_json::Value| serde_json::from_value::<J>(v).unwrap();
+    let biome = |ores: &[&str]| {
+        let mut steps = vec![serde_json::json!([]); 11];
+        steps[6] = serde_json::json!(ores);
+        serde_json::json!({"features": steps}).to_string()
+    };
+    let mut biomes = j(serde_json::json!({
+        "minecraft:plains": biome(&["minecraft:ore_iron"]),
+        "minecraft:desert": biome(&[]),
+        "minecraft:nether_wastes": biome(&[]),
+    }));
+    let tags = j(serde_json::json!({
+        "minecraft:is_overworld": r##"{"values": ["minecraft:plains", "#c:is_desert"]}"##,
+        "c:is_desert": r#"{"values": [{"id": "minecraft:desert", "required": false}, "othermod:dunes"]}"#,
+    }));
+    let placed = j(serde_json::json!({"create:zinc_ore": "{}", "minecraft:ore_iron": "{}"}));
+    let file = "data/create/neoforge/biome_modifier/zinc_ore.json";
+    let text = r##"{"type": "neoforge:add_features", "biomes": "#minecraft:is_overworld",
+        "features": ["create:zinc_ore", "create:gone"], "step": "underground_ores"}"##;
+    let m = AddFeatures::read(file, text).unwrap().unwrap();
+    let mut warnings = Vec::new();
+    let twice = [
+        (file.to_owned(), m),
+        (
+            file.to_owned(),
+            AddFeatures::read(file, text).unwrap().unwrap(),
+        ),
+    ];
+    add_biome_features(&mut biomes, &tags, &placed, &twice, &mut warnings).unwrap();
+    let ores = |id: &str| {
+        let J::Str(text) = biomes.get(id).unwrap() else {
+            panic!()
+        };
+        let v: serde_json::Value = serde_json::from_str(text).unwrap();
+        v["features"][6].clone()
+    };
+    assert_eq!(
+        ores("minecraft:plains"),
+        serde_json::json!(["minecraft:ore_iron", "create:zinc_ore"])
+    );
+    assert_eq!(
+        ores("minecraft:desert"),
+        serde_json::json!(["create:zinc_ore"])
+    );
+    assert_eq!(ores("minecraft:nether_wastes"), serde_json::json!([]));
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    // Other modifier kinds aren't carried.
+    let spawns = r#"{"type": "neoforge:add_spawns", "biomes": "minecraft:plains", "spawners": []}"#;
+    assert!(AddFeatures::read(file, spawns).unwrap().is_none());
+}
+
+/// An ore mod's biome modifier reaches the worldgen loader: its placed feature joins vanilla's
+/// underground ores in the overworld's biomes, not the nether's.
+#[test]
+#[ignore = "full content root: CI and pr_ready run it"]
+fn content_root_carries_a_biome_modifier() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-ores-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let dir = scratch.join("ores");
+    let files = [
+        (
+            "horizon-mod.toml",
+            "id = \"ores\"\nname = \"Ores\"\nversion = \"1.0\"\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
+        ),
+        (
+            "data/ores/worldgen/configured_feature/ore_gold_more.json",
+            r#"{"type": "minecraft:ore", "config": {"discard_chance_on_air_exposure": 0.0, "size": 9,
+                "targets": [{"state": {"Name": "minecraft:gold_ore"}, "target": {
+                "predicate_type": "minecraft:tag_match", "tag": "minecraft:stone_ore_replaceables"}}]}}"#,
+        ),
+        (
+            "data/ores/worldgen/placed_feature/ore_gold_more.json",
+            r#"{"feature": "ores:ore_gold_more", "placement": [{"type": "minecraft:count", "count": 4},
+                {"type": "minecraft:in_square"}, {"type": "minecraft:height_range", "height": {
+                "type": "minecraft:uniform", "min_inclusive": {"absolute": -32},
+                "max_inclusive": {"absolute": 32}}}]}"#,
+        ),
+        (
+            "data/ores/neoforge/biome_modifier/ore_gold_more.json",
+            r##"{"type": "neoforge:add_features", "biomes": "#minecraft:is_overworld",
+                "features": "ores:ore_gold_more", "step": "underground_ores"}"##,
+        ),
+    ];
+    for (name, text) in files {
+        let path = dir.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    let package = horizon_mods::Package::read(&dir).unwrap();
+    let m = ContentMod {
+        id: "ores".into(),
+        content: Content::read(&dir, &package.manifest).unwrap(),
+    };
+    let root = resource_root(&base, &[m], &scratch.join("cache")).unwrap();
+    let biomes: BTreeMap<String, String> =
+        serde_json::from_slice(&fs::read(root.join("worldgen/biomes.json")).unwrap()).unwrap();
+    let ores = |id: &str| -> Vec<String> {
+        let v: serde_json::Value = serde_json::from_str(&biomes[id]).unwrap();
+        serde_json::from_value(v["features"][6].clone()).unwrap()
+    };
+    let plains = ores("minecraft:plains");
+    assert_eq!(
+        plains.last().map(String::as_str),
+        Some("ores:ore_gold_more")
+    );
+    assert!(plains.contains(&"minecraft:ore_gold".to_owned()));
+    assert!(!ores("minecraft:nether_wastes").contains(&"ores:ore_gold_more".to_owned()));
+    let _ = fs::remove_dir_all(&scratch);
+}
