@@ -1520,31 +1520,15 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let block = b.table.block_by_name(&format!("minecraft:{next}"))?;
         Some(b.table.with_properties_of(block, state))
     }
-    /// `WeatheringCopper.getPrevious` (and `getFirst` by repeating it) by
-    /// registry naming: the block one oxidation step back.
-    fn copper_previous_name(path: &str) -> Option<String> {
-        if let Some(rest) = path.strip_prefix("oxidized_") {
-            Some(format!("weathered_{rest}"))
-        } else if let Some(rest) = path.strip_prefix("weathered_") {
-            Some(format!("exposed_{rest}"))
-        } else {
-            path.strip_prefix("exposed_").map(|rest| {
-                if rest == "copper" {
-                    "copper_block".to_owned()
-                } else {
-                    rest.to_owned()
-                }
-            })
-        }
-    }
+    /// The block one oxidation step back (or, `all_the_way`, unoxidized), by registry naming in
+    /// the block's own namespace: a content mod's weathering copper (its template's class)
+    /// named as vanilla names its ages steps back to its own blocks.
     fn copper_stepped(&self, state: BlockStateId, all_the_way: bool) -> Option<BlockStateId> {
         let b = self.b;
         let name = &*b.table.info(b.block(state)).name;
-        let mut path = Self::copper_previous_name(name.strip_prefix("minecraft:")?)?;
-        while all_the_way && let Some(earlier) = Self::copper_previous_name(&path) {
-            path = earlier;
-        }
-        let block = b.table.block_by_name(&format!("minecraft:{path}"))?;
+        let block = b
+            .table
+            .block_by_name(&copper_stepped_name(name, all_the_way)?)?;
         Some(b.table.with_properties_of(block, state))
     }
     /// `LightningBolt.clearCopperOnLightningStrike`: the struck copper goes
@@ -1557,7 +1541,11 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
         let weathering = b
             .data(state)
             .implements(super::classes::Interface::WeatheringCopper);
-        let waxed = b.table.name(state).starts_with("minecraft:waxed_");
+        let waxed = b
+            .table
+            .name(state)
+            .split_once(':')
+            .is_some_and(|(_, path)| path.starts_with("waxed_"));
         if !(weathering || waxed) {
             return;
         }
@@ -1594,6 +1582,34 @@ impl<L: LevelAccess + ?Sized> Sim<'_, L> {
             }
         }
     }
+}
+
+/// `WeatheringCopper.getPrevious` (and `getFirst` by repeating it) by
+/// registry naming: the block one oxidation step back.
+fn copper_previous_name(path: &str) -> Option<String> {
+    if let Some(rest) = path.strip_prefix("oxidized_") {
+        Some(format!("weathered_{rest}"))
+    } else if let Some(rest) = path.strip_prefix("weathered_") {
+        Some(format!("exposed_{rest}"))
+    } else {
+        path.strip_prefix("exposed_").map(|rest| {
+            if rest == "copper" {
+                "copper_block".to_owned()
+            } else {
+                rest.to_owned()
+            }
+        })
+    }
+}
+
+/// [`Sim::copper_stepped`]'s name: `ns:path` one oxidation step back, or unoxidized.
+fn copper_stepped_name(name: &str, all_the_way: bool) -> Option<String> {
+    let (ns, path) = name.split_once(':')?;
+    let mut path = copper_previous_name(path)?;
+    while all_the_way && let Some(earlier) = copper_previous_name(&path) {
+        path = earlier;
+    }
+    Some(format!("{ns}:{path}"))
 }
 
 /// `Biome.Precipitation` at a position.
@@ -1805,5 +1821,31 @@ impl Behaviours {
         pos: BlockPos,
     ) {
         self.sim(level, ticks).fluid_tick(pos);
+    }
+}
+
+#[cfg(test)]
+mod copper_name_tests {
+    use super::copper_stepped_name;
+
+    #[test]
+    fn copper_steps_back_in_its_own_namespace() {
+        assert_eq!(
+            copper_stepped_name("minecraft:exposed_copper", false).as_deref(),
+            Some("minecraft:copper_block")
+        );
+        assert_eq!(
+            copper_stepped_name("minecraft:oxidized_cut_copper_stairs", true).as_deref(),
+            Some("minecraft:cut_copper_stairs")
+        );
+        assert_eq!(
+            copper_stepped_name("create:weathered_copper_shingles", false).as_deref(),
+            Some("create:exposed_copper_shingles")
+        );
+        assert_eq!(
+            copper_stepped_name("create:oxidized_copper_tile_slab", true).as_deref(),
+            Some("create:copper_tile_slab")
+        );
+        assert_eq!(copper_stepped_name("create:copper_shingles", false), None);
     }
 }
