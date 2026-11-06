@@ -4,6 +4,8 @@
 /// The game window's boot screen, before wgpu's first frame paints over it.
 #[cfg(target_os = "windows")]
 pub mod boot_paint;
+#[cfg(feature = "alloc-count")]
+pub mod alloc_count;
 pub mod heap_census;
 pub mod jobs;
 pub mod process_memory;

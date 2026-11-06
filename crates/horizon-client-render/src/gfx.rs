@@ -191,6 +191,9 @@ fn static_entity_shader() -> String {
 #[cfg(test)]
 mod crumbling_tests;
 mod entity_batch;
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod entity_bench;
 mod entity_outline;
 #[cfg(feature = "test-support")]
 #[doc(hidden)]

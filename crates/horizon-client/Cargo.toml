@@ -130,6 +130,8 @@ system-allocator = []
 # mimalloc with a tag on each block: `horizon-ctl memory` lists the live heap by startup step and
 # thread (`heap_by_tag_mb`). For measuring only: each block costs 16 bytes more.
 alloc-census = ["horizon-threads/alloc-census"]
+# Counts allocation calls per thread, for the model-copies bench only.
+alloc-count = ["horizon-threads/alloc-count"]
 # Compatibility with earlier experiment commands: main already uses mimalloc.
 windows-mimalloc = []
 # Opt-in Windows heap experiment; see docs/windows-allocators.md.

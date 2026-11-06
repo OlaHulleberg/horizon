@@ -678,6 +678,17 @@ pub(super) mod tests {
         );
     }
 
+    pub(in crate::game) fn with_client_game_at(
+        root: std::path::PathBuf,
+        test: impl FnOnce(&mut super::Game<'_>),
+    ) {
+        with_game_role(
+            root,
+            super::super::execution_role::ExecutionRole::Client,
+            test,
+        );
+    }
+
     pub(in crate::game) fn with_client_game(test: impl FnOnce(&mut super::Game<'_>)) {
         let root = std::path::PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
         with_game_role(
