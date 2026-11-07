@@ -686,9 +686,7 @@ impl Game<'_> {
             prepared: prepared_route(
                 self.pack_ids.is_some(),
                 !self.native_shaders.picked.is_empty(),
-                self.renderer
-                    .as_ref()
-                    .and_then(|renderer| renderer.prepared_generation()),
+                self.uploaded_prepared_generation(),
                 self.standalone_geometry.generation(),
             ),
             records: Vec::new(),
@@ -797,6 +795,27 @@ impl Game<'_> {
         *out = draw.vertices;
     }
 
+    /// The generation of the prepared buffer on the GPU. The #808 bench has no `Renderer`.
+    fn uploaded_prepared_generation(&self) -> Option<u64> {
+        #[cfg(test)]
+        if let Some(bench) = super::model_copies_bench_tests::renderer_stand_in() {
+            return bench.prepared_generation();
+        }
+        self.renderer
+            .as_ref()
+            .and_then(|renderer| renderer.prepared_generation())
+    }
+
+    fn prepared_instances_fit(&self, count: u64) -> bool {
+        #[cfg(test)]
+        if let Some(bench) = super::model_copies_bench_tests::renderer_stand_in() {
+            return bench.prepared_instances_fit(count);
+        }
+        self.renderer
+            .as_ref()
+            .is_some_and(|renderer| renderer.prepared_instances_fit(count))
+    }
+
     /// Keep, spin, or a missing upload bakes the model into the vertex span.
     /// Otherwise the copy is drawn from the prepared buffer at the same cut.
     fn finish_prepared_draw(&self, draw: &mut BlockEntityDraw, origin: DVec3, camera: DVec3) {
@@ -804,10 +823,7 @@ impl Game<'_> {
             return;
         }
         let count = self.prepared_model_draws.borrow().len() as u64 + draw.records.len() as u64;
-        let fits = self
-            .renderer
-            .as_ref()
-            .is_some_and(|renderer| renderer.prepared_instances_fit(count));
+        let fits = self.prepared_instances_fit(count);
         if draw.kept || !draw.spins.is_empty() || !fits {
             draw.bake_recorded(&self.standalone_geometry.slots);
         } else {

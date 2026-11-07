@@ -147,6 +147,29 @@ pub(super) struct PackIds {
     pub(super) separate_ao: bool,
 }
 
+#[cfg(test)]
+impl PackIds {
+    /// A loaded pack with no property files, for the #808 bench: the game routes and marks
+    /// entities as it does under any `shaders/` pack, and nothing here reaches a renderer.
+    pub(super) fn without_properties() -> Self {
+        Self {
+            entities: HashMap::new(),
+            blocks: BlockIds::default(),
+            block_states: RefCell::default(),
+            missing_entity: 0,
+            missing_block: 0,
+            items: HashMap::new(),
+            missing_item: 0,
+            block_items: HashMap::new(),
+            item_file: false,
+            old_hand_light: true,
+            vignette: true,
+            old_lighting: false,
+            separate_ao: false,
+        }
+    }
+}
+
 impl Game<'_> {
     /// Loads the pack for the current dimension when it changed, and returns this frame's
     /// inputs to the pack's uniforms.
