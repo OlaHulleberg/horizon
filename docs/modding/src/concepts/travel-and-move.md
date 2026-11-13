@@ -27,7 +27,9 @@ hook adds multipliers or a parallel attribute system.
 Move fires once per physical Entity.move invocation, including external pushes,
 before no-physics handling, piston limiting, stuck multipliers, edge backoff and
 collision. Snapshot includes entity handle, starting position/AABB, requested delta,
-velocity, typed cause (Self, Piston, ShulkerBox, Shulker or Vehicle), epoch and
+velocity, typed cause (Self, Player, Piston, ShulkerBox or Shulker — vanilla's
+five `MoverType` names; boats and minecarts move as Self, `Player` is the
+server packet sites), epoch and
 identity `(connection epoch, tick, action sequence, invocation ordinal)`. Output is
 `Continue`, `Cancel`, or `ReplaceDelta(Vec3)`. Cancel skips that invocation without
 changing position, velocity, collision flags or fall state and emits no displacement
