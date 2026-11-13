@@ -140,3 +140,9 @@ host.transaction(|host, tx| {
     if took == 4 && slot.insert(host, tx, &emerald, 4) == 4 { Ok(()) } else { Err(()) }
 })
 ```
+
+Inside `menu_clicked`, `ItemPlace::MenuSlot` can take from and give to the clicking
+player's inventory and hotbar slots as well as the menu's own storage. Inserts fill
+only the named slot and return the amount that fits. Abort the transaction if a
+partial move should leave both places unchanged. Stale menu or player identities
+refuse writes. The same storage path is used by native and wasm listeners.
