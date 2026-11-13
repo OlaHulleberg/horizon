@@ -33,6 +33,13 @@ pub(crate) struct Installed {
     pub(crate) mods: Mods,
     pub(crate) subscribers: horizon_mod_runtime::subscribers::Subscribers,
     pub(crate) disabled: Box<[std::sync::atomic::AtomicBool]>,
+    /// The poison sets of the hooks whose dispatch isolates every listener
+    /// (#2414 ruling): a listener that unwound is skipped by that one hook
+    /// for the rest of the session. One set per hook, filled only on a panic;
+    /// `poison_free` answers through one atomic load, so a dispatch with no
+    /// poison pays nothing.
+    poisons: std::sync::Mutex<Option<Box<[Option<std::collections::HashSet<&'static str>>]>>>,
+    poison_free: std::sync::atomic::AtomicBool,
 }
 
 impl Installed {
@@ -68,6 +75,8 @@ impl Installed {
             mods,
             subscribers,
             disabled,
+            poisons: std::sync::Mutex::new(None),
+            poison_free: std::sync::atomic::AtomicBool::new(true),
         }
     }
 }
@@ -104,97 +113,38 @@ pub(crate) fn install(mods: Mods) -> &'static Installed {
     }
 }
 
-/// The `entity_move` poison (#2414 ruling): a listener that unwinds is skipped
-/// by that one hook for the rest of the session — its other hooks and Parts
-/// are untouched, unlike a whole-mod disable. The set is written only on a
-/// panic; an empty set answers through one atomic load, so a move with no
-/// poison pays nothing.
-static ENTITY_MOVE_POISONED: std::sync::Mutex<Option<std::collections::HashSet<&'static str>>> =
-    std::sync::Mutex::new(None);
-static ENTITY_MOVE_POISON_EMPTY: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(true);
-
-/// Mark `id`'s `entity_move` listener as poisoned for the session.
-pub(crate) fn poison_entity_move(id: &'static str) {
-    let mut poisoned = ENTITY_MOVE_POISONED.lock().unwrap();
-    poisoned
+/// Mark `id`'s listener of `hook` poisoned for the session (#2414 ruling):
+/// it is skipped by that one hook alone — its other hooks and Parts are
+/// untouched, unlike a whole-mod disable. Called only from a listener's
+/// `catch_unwind` handler, so an installation is always in place.
+pub(crate) fn poison(hook: generated::HookId, id: &'static str) {
+    let installed = installed().expect("a poison lands inside a dispatch");
+    let mut poisons = installed.poisons.lock().unwrap();
+    let sets =
+        poisons.get_or_insert_with(|| std::vec![None; generated::HOOK_COUNT].into_boxed_slice());
+    sets[hook as usize]
         .get_or_insert_with(std::collections::HashSet::new)
         .insert(id);
-    ENTITY_MOVE_POISON_EMPTY.store(false, std::sync::atomic::Ordering::Release);
+    installed
+        .poison_free
+        .store(false, std::sync::atomic::Ordering::Release);
 }
 
-/// Whether `id`'s `entity_move` listener is poisoned for the session.
-pub(crate) fn entity_move_poisoned(id: &str) -> bool {
-    // One atomic load on the usual path: the set only fills on a panic.
-    !ENTITY_MOVE_POISON_EMPTY.load(std::sync::atomic::Ordering::Acquire)
-        && ENTITY_MOVE_POISONED
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|poisoned| poisoned.contains(id))
-}
-
-/// The `entity_move` dispatch with its own panic ruling (#2414): the same
-/// walk the generated `dispatch_entity_move` gives — order,
-/// `receive_cancelled`, crash marks, `Flow::Cancel` terminal — with one
-/// listener per `catch_unwind`. A listener that unwinds is poisoned for
-/// **this hook alone** (its other hooks and Parts are untouched), its writes
-/// roll back to the proposal it inherited, and the next listener continues
-/// from there. Hand-written because the generator emits one
-/// `catch_unwind`-free loop for every hook; when it grows per-listener
-/// isolation, delete this and point the move gate at the generated dispatch
-/// (the parity tests in `native_entity_move_tests` are the seam).
-pub fn dispatch_entity_move_poisoning(
-    context: &dyn crate::LoopContext,
-    entity: u32,
-    kind: &str,
-    cause: crate::MoveCause,
-    delta: &mut [f64; 3],
-    canceled: &mut bool,
-) {
-    use crate::generated::HookId;
-    if !listened(HookId::EntityMove) {
-        return;
-    }
-    if *canceled && !receives_cancelled(HookId::EntityMove) {
-        return;
-    }
-    let mut event = crate::EntityMoveEvent {
-        entity,
-        kind,
-        cause,
-        delta,
-        cancelled: *canceled,
-    };
-    // #2414 ruling: a panic keeps the **requested** delta — not one an
-    // earlier listener had proposed — so the walk carries the floor it
-    // started from, and no listener after the panic runs on this invocation.
-    let (requested_delta, requested_cancelled) = (*event.delta, event.cancelled);
-    let mut scope = ListenerScope::new();
-    for (receives_cancelled, entry) in listening(HookId::EntityMove) {
-        if entity_move_poisoned(entry.id) {
-            continue;
-        }
-        if event.cancelled && !receives_cancelled {
-            continue;
-        }
-        let mod_hook = scope.enter(entry, "entity_move");
-        let heard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            mod_hook.entity_move(context, &mut event)
-        }));
-        match heard {
-            Ok(crate::Flow::Cancel) => event.cancelled = true,
-            Ok(_) => {}
-            Err(_payload) => {
-                *event.delta = requested_delta;
-                event.cancelled = requested_cancelled;
-                poison_entity_move(entry.id);
-                *canceled = event.cancelled;
-                return;
-            }
-        }
-    }
-    *canceled = event.cancelled;
+/// Whether `id`'s listener of `hook` is poisoned for the session.
+pub(crate) fn poisoned(hook: generated::HookId, id: &str) -> bool {
+    // One atomic load on the usual path: the sets only fill on a panic.
+    installed().is_some_and(|installed| {
+        !installed
+            .poison_free
+            .load(std::sync::atomic::Ordering::Acquire)
+            && installed
+                .poisons
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|poisons| poisons[hook as usize].as_ref())
+                .is_some_and(|poisoned| poisoned.contains(id))
+    })
 }
 
 /// The process-wide list in dispatch order, or an empty list before installation.
