@@ -93,6 +93,12 @@ impl Hub {
             horizon_world::entity_move::MoverType::Player,
             movement,
         );
+        // The gate decides what actually moves: the requested delta, a
+        // listener's replacement, or nothing (a cancel). «Moved wrongly»
+        // still measures the **requested** move against what happened, as
+        // vanilla measures the packet's target - a cancelled move that went
+        // nowhere is the full discrepancy.
+        let requested = movement;
         let movement = gate.delta();
         let done = crate::move_gate::scene_resolve_with_context(
             &mut gate,
@@ -108,7 +114,7 @@ impl Hub {
         .ok();
         let fail = !g.creative()
             && done.is_some_and(|done| {
-                let (dx, dz) = (movement.x - done.x, movement.z - done.z);
+                let (dx, dz) = (requested.x - done.x, requested.z - done.z);
                 dx * dx + dz * dz > 0.0625
             });
         // Entity.move: verticalCollisionBelow, the player "stands on something".
