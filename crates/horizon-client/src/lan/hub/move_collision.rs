@@ -49,9 +49,14 @@ impl Hub {
             requested,
         );
         let movement = gate.delta();
+        // A listener's decision that is not the request (#2414, ruling 5): the
+        // flag comes from the gate, not from comparing deltas here — a walk's
+        // step is below «moved wrongly»'s threshold, and its cancel must
+        // correct the guest all the same.
+        let overridden = gate.overridden();
         // A move with no exclusions pays this one check.
         if g.collision_exclusions.is_empty() {
-            return check_move(g, to, requested, movement, &mut scene);
+            return check_move(g, to, requested, movement, overridden, &mut scene);
         }
         let boxes = g.collision_exclusions.boxes();
         check_move(
@@ -59,6 +64,7 @@ impl Hub {
             to,
             requested,
             movement,
+            overridden,
             &mut Excluding {
                 world: &mut scene,
                 boxes,
@@ -73,6 +79,7 @@ fn check_move<W>(
     to: [f64; 3],
     requested: Vec3,
     movement: Vec3,
+    overridden: bool,
     world: &mut W,
 ) -> (bool, bool, bool)
 where
@@ -111,12 +118,16 @@ where
     // replacement, or nothing (a cancel). «Moved wrongly» still measures the
     // **requested** move against what happened, as vanilla measures the
     // packet's target - a cancelled move that went nowhere is the full
-    // discrepancy.
+    // discrepancy. A decision that is not the request fails whatever the
+    // distance (#2414, ruling 5): a cancel or a replacement always sends the
+    // guest a correction, so a walk's small step cannot slip under the
+    // threshold and keep going.
     let fail = !g.creative()
-        && done.is_some_and(|done| {
-            let (dx, dz) = (requested.x - done.x, requested.z - done.z);
-            dx * dx + dz * dz > 0.0625
-        });
+        && (overridden
+            || done.is_some_and(|done| {
+                let (dx, dz) = (requested.x - done.x, requested.z - done.z);
+                dx * dx + dz * dz > 0.0625
+            }));
     // Entity.move: verticalCollisionBelow, the player "stands on something".
     let stands = done.is_some_and(|done| movement.y < 0.0 && done.y != movement.y);
     if fail {
