@@ -2841,7 +2841,7 @@ impl Game<'_> {
             // The dragon's Entity.move is this physics-less step (#2414): it
             // goes through the move gate like every other move, self cause,
             // before the position is written.
-            let mut gate = horizon_client::move_gate::armed(
+            let gate = horizon_client::move_gate::armed(
                 &self.loop_context,
                 d.id,
                 "minecraft:ender_dragon",

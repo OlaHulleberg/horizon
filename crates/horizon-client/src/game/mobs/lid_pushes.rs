@@ -25,9 +25,8 @@ impl Game<'_> {
                 .iter()
                 .find(|m| m.id == id)
                 .map_or((0, "minecraft:zombie"), |m| (m.id, m.kind.id.as_str())),
-            _ => return,
         };
-        let mut gate = horizon_client::move_gate::armed(
+        let gate = horizon_client::move_gate::armed(
             &self.loop_context,
             entity,
             kind,
@@ -49,7 +48,6 @@ impl Game<'_> {
                     m.position = m.position.add_vector(moved);
                 }
             }
-            _ => {}
         }
     }
 }

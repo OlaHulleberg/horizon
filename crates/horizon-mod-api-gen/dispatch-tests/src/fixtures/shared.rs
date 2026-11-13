@@ -573,6 +573,16 @@ mod stubs {
         pub(super) damage_type: &'a str,
         pub(super) position: Option<[f64; 3]>,
     }
+    /// The `entity_move` hook's cause (#2414), as the fixture's stand-in for
+    /// the mod API's own `MoveCause`: vanilla's five mover names.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(super) enum MoveCause {
+        SelfMovement,
+        Player,
+        Piston,
+        ShulkerBox,
+        Shulker,
+    }
     pub(super) struct Victim {
         pub(super) position: [f64; 3],
         pub(super) view: [f64; 3],
