@@ -20,12 +20,11 @@ use mod_api::MoveCause;
 use std::borrow::Cow;
 use std::io;
 
-/// The `entity_move` hook's target (#2414): the plain generated dispatch the
+/// The `entity_move` hook's target (#2414): the generated dispatch the
 /// catalog's generator requires of a target, with the loop's own reader as
-/// the context. The move gate itself dispatches through the poisoning twin
-/// (`mod_api::runtime::dispatch_entity_move_poisoning`), which carries the
-/// hook's own panic ruling; this one stays for the generator's contract and
-/// any caller that wants the plain walk.
+/// the context. Its declaration carries `isolate`, so the same generated
+/// walk is the one the move gate dispatches through — no alias, no second
+/// route.
 pub fn native_entity_move(
     context: &LoopContext,
     entity: u32,
@@ -58,10 +57,9 @@ fn cause_of(cause: MoverType) -> MoveCause {
 /// A listener that cancels skips the invocation; a replacement outside ±64
 /// blocks per axis, or not a finite number, is refused whole — the movement
 /// stands as the requested delta would. A listener that unwinds keeps the
-/// **requested** delta — the poisoning dispatch (mod_vocab's `runtime`)
-/// rolls its writes back, skips it from this hook's next dispatch for the
-/// session and leaves its other hooks and Parts alone — and the move carries
-/// on.
+/// **requested** delta — the generated isolated dispatch rolls its writes
+/// back, skips it from this hook's next dispatch for the session and leaves
+/// its other hooks and Parts alone — and the move carries on.
 ///
 /// `kind` names the entity's type (`minecraft:zombie`) only when called: a
 /// listener needs it, a move nobody listens to must not pay for it. It runs
@@ -89,7 +87,7 @@ pub fn arm_with<'k>(
     let mut replaced = [delta.x, delta.y, delta.z];
     let mut canceled = false;
     let reader = horizon_client_render::api_context::LoopReader(context);
-    mod_api::runtime::dispatch_entity_move_poisoning(
+    mod_api::dispatch_entity_move(
         &reader.context(),
         entity,
         &kind,
