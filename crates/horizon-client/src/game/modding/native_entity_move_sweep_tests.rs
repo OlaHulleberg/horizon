@@ -48,7 +48,7 @@ fn every_walk_kind_fires_entity_move_once_per_round() {
         Box::new(Counter(log.clone())),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
             game.build_registries();
             game.set_allow_commands(true);
@@ -108,7 +108,7 @@ fn an_arrow_in_flight_fires_nothing_and_a_piston_push_fires_once() {
         Box::new(Counter(log.clone())),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
             game.build_registries();
             game.set_allow_commands(true);
@@ -149,7 +149,7 @@ fn the_off_walk_movers_fire_too() {
         Box::new(Counter(log.clone())),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
             game.build_registries();
             game.set_allow_commands(true);
@@ -258,7 +258,7 @@ fn a_drowning_dolphins_goal_move_fires_too() {
         Box::new(Counter(log.clone())),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
             game.build_registries();
             game.set_allow_commands(true);

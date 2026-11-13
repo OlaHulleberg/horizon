@@ -63,7 +63,7 @@ impl Hooks for Probe {
 fn armed_with(answer: Answer) -> (MoveGate, Heard) {
     let mut gate = MoveGate::new();
     let (log, mods) = install(answer);
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         horizon_client::move_gate::arm(
             &mut gate,
             &server_context(),
@@ -144,7 +144,7 @@ fn a_malformed_replacement_is_refused_whole() {
 #[test]
 fn a_panicking_listener_keeps_the_requested_move_and_is_disabled() {
     let (log, mods) = install(Answer::Panic);
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         let mut gate = MoveGate::new();
         horizon_client::move_gate::arm(
             &mut gate,
@@ -197,7 +197,7 @@ fn a_panic_after_a_replacement_keeps_the_requested_delta() {
         ),
     ]
     .into();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         let mut gate = MoveGate::new();
         horizon_client::move_gate::arm(
             &mut gate,
@@ -221,7 +221,7 @@ fn a_panic_after_a_replacement_keeps_the_requested_delta() {
 #[test]
 fn without_listeners_the_move_stands() {
     let mut gate = MoveGate::new();
-    mod_api::testing::with_mods(
+    mod_platform::testing::with_mods(
         Vec::<mod_api::ModEntry>::new().into_iter().collect(),
         || {
             horizon_client::move_gate::arm(
@@ -268,7 +268,7 @@ fn a_poisoned_move_listener_keeps_its_other_hooks() {
         }),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         let context = server_context();
         let mut gate = MoveGate::new();
         horizon_client::move_gate::arm(
@@ -329,7 +329,7 @@ fn a_panic_elsewhere_does_not_poison_the_move_listener() {
         }),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         let context = server_context();
         // The other hook unwinds; its caller catches it, as the game catches
         // a Part's panic (#3685).

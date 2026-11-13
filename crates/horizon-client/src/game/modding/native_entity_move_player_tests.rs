@@ -35,7 +35,7 @@ fn a_cancelled_player_packet_sends_the_guest_a_correction() {
         Box::new(CancelAll(causes.clone())),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         let mut resources = None;
         let mut game = server_game(&mut resources);
         game.build_registries();
@@ -170,7 +170,7 @@ fn a_cancelled_vehicle_packet_sends_the_guest_a_correction() {
         Box::new(CancelAll(causes.clone())),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         let mut resources = None;
         let mut game = server_game(&mut resources);
         game.build_registries();

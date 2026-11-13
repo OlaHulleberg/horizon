@@ -1556,7 +1556,7 @@ mod order_tests {
             death_ticks: 0,
             id,
         };
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             let mut travelled = Vec::new();
             for cancelled in [true, false] {
                 cancel.store(cancelled, std::sync::atomic::Ordering::Relaxed);
