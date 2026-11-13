@@ -89,7 +89,6 @@ pub(crate) fn installed() -> Option<&'static Installed> {
 
 /// Install the process-wide ordered list of mods.
 pub(crate) fn install(mods: Mods) -> &'static Installed {
-    poison_panicking_mods_once();
     let installed = Installed::new(mods);
     #[cfg(any(test, feature = "testing"))]
     {
@@ -105,27 +104,97 @@ pub(crate) fn install(mods: Mods) -> &'static Installed {
     }
 }
 
-/// The panic poison of the design notes (#2414, travel-and-move.md `:49-50`): a
-/// listener that unwinds is disabled for the rest of the session, and the
-/// caller carries on from the preceding proposal. The hook runs while the
-/// panicking mod's crash mark is still in place, so `current_native_mod()`
-/// names it; it switches the mod off and hands the panic to the previous hook.
-/// One hook per process, chained once.
-static PANIC_POISON: std::sync::Once = std::sync::Once::new();
+/// The `entity_move` poison (#2414 ruling): a listener that unwinds is skipped
+/// by that one hook for the rest of the session — its other hooks and Parts
+/// are untouched, unlike a whole-mod disable. The set is written only on a
+/// panic; an empty set answers through one atomic load, so a move with no
+/// poison pays nothing.
+static ENTITY_MOVE_POISONED: std::sync::Mutex<Option<std::collections::HashSet<&'static str>>> =
+    std::sync::Mutex::new(None);
+static ENTITY_MOVE_POISON_EMPTY: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
 
-pub(crate) fn poison_panicking_mods_once() {
-    PANIC_POISON.call_once(|| {
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            if let Some(id) = crate::content::crash::current_native_mod()
-                && !set_mod_enabled(id, false)
-            {
-                // A scoped test list may not carry the id; the mark still
-                // names it for the crash report.
-            }
-            previous(info);
+/// Mark `id`'s `entity_move` listener as poisoned for the session.
+pub(crate) fn poison_entity_move(id: &'static str) {
+    let mut poisoned = ENTITY_MOVE_POISONED.lock().unwrap();
+    poisoned
+        .get_or_insert_with(std::collections::HashSet::new)
+        .insert(id);
+    ENTITY_MOVE_POISON_EMPTY.store(false, std::sync::atomic::Ordering::Release);
+}
+
+/// Whether `id`'s `entity_move` listener is poisoned for the session.
+pub(crate) fn entity_move_poisoned(id: &str) -> bool {
+    // One atomic load on the usual path: the set only fills on a panic.
+    !ENTITY_MOVE_POISON_EMPTY.load(std::sync::atomic::Ordering::Acquire)
+        && ENTITY_MOVE_POISONED
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|poisoned| poisoned.contains(id))
+}
+
+/// The `entity_move` dispatch with its own panic ruling (#2414): the same
+/// walk the generated `dispatch_entity_move` gives — order,
+/// `receive_cancelled`, crash marks, `Flow::Cancel` terminal — with one
+/// listener per `catch_unwind`. A listener that unwinds is poisoned for
+/// **this hook alone** (its other hooks and Parts are untouched), its writes
+/// roll back to the proposal it inherited, and the next listener continues
+/// from there. Hand-written because the generator emits one
+/// `catch_unwind`-free loop for every hook; when it grows per-listener
+/// isolation, delete this and point the move gate at the generated dispatch
+/// (the parity tests in `native_entity_move_tests` are the seam).
+pub fn dispatch_entity_move_poisoning(
+    context: &dyn crate::LoopContext,
+    entity: u32,
+    kind: &str,
+    cause: crate::MoveCause,
+    delta: &mut [f64; 3],
+    canceled: &mut bool,
+) {
+    use crate::generated::HookId;
+    if !listened(HookId::EntityMove) {
+        return;
+    }
+    if *canceled && !receives_cancelled(HookId::EntityMove) {
+        return;
+    }
+    let mut event = crate::EntityMoveEvent {
+        entity,
+        kind,
+        cause,
+        delta,
+        cancelled: *canceled,
+    };
+    // #2414 ruling: a panic keeps the **requested** delta — not one an
+    // earlier listener had proposed — so the walk carries the floor it
+    // started from, and no listener after the panic runs on this invocation.
+    let (requested_delta, requested_cancelled) = (*event.delta, event.cancelled);
+    let mut scope = ListenerScope::new();
+    for (receives_cancelled, entry) in listening(HookId::EntityMove) {
+        if entity_move_poisoned(entry.id) {
+            continue;
+        }
+        if event.cancelled && !receives_cancelled {
+            continue;
+        }
+        let mod_hook = scope.enter(entry, "entity_move");
+        let heard = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            mod_hook.entity_move(context, &mut event)
         }));
-    });
+        match heard {
+            Ok(crate::Flow::Cancel) => event.cancelled = true,
+            Ok(_) => {}
+            Err(_payload) => {
+                *event.delta = requested_delta;
+                event.cancelled = requested_cancelled;
+                poison_entity_move(entry.id);
+                *canceled = event.cancelled;
+                return;
+            }
+        }
+    }
+    *canceled = event.cancelled;
 }
 
 /// The process-wide list in dispatch order, or an empty list before installation.

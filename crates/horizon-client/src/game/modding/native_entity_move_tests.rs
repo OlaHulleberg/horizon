@@ -137,9 +137,10 @@ fn a_malformed_replacement_is_refused_whole() {
 }
 
 /// A listener that unwinds keeps the **requested** delta — its writes die
-/// with it — and the panic poison has disabled its mod for the session: the
-/// next move of the same session runs without it, and neither move panics
-/// out of the gate (#2414 maintainer ruling).
+/// with it — and the poison skips **this hook** of its mod for the session:
+/// the next move runs without it, and neither move panics out of the gate
+/// (#2414 maintainer ruling). The same mod's other hooks still run, and a
+/// panic anywhere else does not poison anyone — the two tests below.
 #[test]
 fn a_panicking_listener_keeps_the_requested_move_and_is_disabled() {
     let (log, mods) = install(Answer::Panic);
@@ -155,7 +156,7 @@ fn a_panicking_listener_keeps_the_requested_move_and_is_disabled() {
         );
         assert!(!gate.skipped());
         assert_eq!(gate.delta(), Vec3::new(1.0, 0.0, 0.0));
-        // The poison switched the mod off: this arm hears nobody.
+        // The poison skips this hook of the mod: this arm hears nobody.
         let mut gate = MoveGate::new();
         horizon_client::move_gate::arm(
             &mut gate,
@@ -170,7 +171,7 @@ fn a_panicking_listener_keeps_the_requested_move_and_is_disabled() {
     assert_eq!(
         log.lock().unwrap().len(),
         1,
-        "the disabled mod is not dispatched again"
+        "the poisoned listener is not dispatched again"
     );
 }
 
@@ -235,4 +236,134 @@ fn without_listeners_the_move_stands() {
     );
     assert!(!gate.skipped());
     assert_eq!(gate.delta(), Vec3::new(0.5, 0.0, 0.0));
+}
+
+/// A mod whose `entity_move` listener panicked keeps every other hook: the
+/// poison skips this hook alone (#2414 ruling), so its `entity_tick_pre`
+/// still hears the same entity on the same session.
+#[test]
+fn a_poisoned_move_listener_keeps_its_other_hooks() {
+    use mod_api::{EntityTickPreEvent, ServerHost};
+    struct Both {
+        moves: Arc<Mutex<Heard>>,
+        ticks: Arc<Mutex<usize>>,
+    }
+    #[mod_api::__subscriptions]
+    impl Hooks for Both {
+        fn entity_move(&self, _: &dyn LoopContext, _: &mut EntityMoveEvent<'_>) -> Flow {
+            self.moves.lock().unwrap().clear();
+            panic!("the move listener unwinds")
+        }
+        fn entity_tick_pre(&self, _: &mut dyn ServerHost, _: &mut EntityTickPreEvent<'_>) -> Flow {
+            *self.ticks.lock().unwrap() += 1;
+            Flow::Continue
+        }
+    }
+    let ticks = Arc::new(Mutex::new(0usize));
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "both",
+        Box::new(Both {
+            moves: Arc::new(Mutex::new(Vec::new())),
+            ticks: ticks.clone(),
+        }),
+    )]
+    .into();
+    mod_api::testing::with_mods(mods, || {
+        let context = server_context();
+        let mut gate = MoveGate::new();
+        horizon_client::move_gate::arm(
+            &mut gate,
+            &context,
+            7,
+            "minecraft:zombie",
+            MoverType::SelfMovement,
+            Vec3::new(1.0, 0.0, 0.0),
+        );
+        assert_eq!(gate.delta(), Vec3::new(1.0, 0.0, 0.0));
+        // The other hook of the same mod still runs, on the same session.
+        struct World;
+        impl mod_api::Host for World {}
+        mod_api::impl_host_areas!(World);
+        impl ServerHost for World {}
+        mod_api::impl_server_host_areas!(World);
+        let mut world = World;
+        let mut canceled = false;
+        mod_api::dispatch_entity_tick_pre(
+            &mut world,
+            "minecraft:overworld",
+            7,
+            "minecraft:zombie",
+            &mut canceled,
+        );
+        assert_eq!(*ticks.lock().unwrap(), 1, "the other hook still runs");
+    });
+}
+
+/// A panic outside `entity_move` — another hook of the same mod, unwound by
+/// its own caller, as Parts' panics are (#3685) — poisons nobody: the next
+/// move still reaches the mod's listener.
+#[test]
+fn a_panic_elsewhere_does_not_poison_the_move_listener() {
+    use mod_api::{EntityTickPreEvent, ServerHost};
+    struct Ticking {
+        moves: Arc<Mutex<Heard>>,
+    }
+    #[mod_api::__subscriptions]
+    impl Hooks for Ticking {
+        fn entity_move(&self, _: &dyn LoopContext, event: &mut EntityMoveEvent<'_>) -> Flow {
+            self.moves
+                .lock()
+                .unwrap()
+                .push((event.entity, event.cause, *event.delta));
+            Flow::Continue
+        }
+        fn entity_tick_pre(&self, _: &mut dyn ServerHost, _: &mut EntityTickPreEvent<'_>) -> Flow {
+            panic!("a panic outside entity_move")
+        }
+    }
+    let moves = Arc::new(Mutex::new(Vec::new()));
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "ticking",
+        Box::new(Ticking {
+            moves: moves.clone(),
+        }),
+    )]
+    .into();
+    mod_api::testing::with_mods(mods, || {
+        let context = server_context();
+        // The other hook unwinds; its caller catches it, as the game catches
+        // a Part's panic (#3685).
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            struct World;
+            impl mod_api::Host for World {}
+            mod_api::impl_host_areas!(World);
+            impl ServerHost for World {}
+            mod_api::impl_server_host_areas!(World);
+            let mut world = World;
+            let mut canceled = false;
+            mod_api::dispatch_entity_tick_pre(
+                &mut world,
+                "minecraft:overworld",
+                7,
+                "minecraft:zombie",
+                &mut canceled,
+            );
+        }));
+        assert!(caught.is_err(), "the other hook unwound");
+        // The move listener is not poisoned by that panic.
+        let mut gate = MoveGate::new();
+        horizon_client::move_gate::arm(
+            &mut gate,
+            &context,
+            7,
+            "minecraft:zombie",
+            MoverType::SelfMovement,
+            Vec3::new(1.0, 0.0, 0.0),
+        );
+        assert_eq!(
+            moves.lock().unwrap().len(),
+            1,
+            "the move listener still runs after a panic elsewhere"
+        );
+    });
 }

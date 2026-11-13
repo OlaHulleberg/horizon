@@ -20,10 +20,12 @@ use mod_api::MoveCause;
 use std::borrow::Cow;
 use std::io;
 
-/// The `entity_move` hook's target (#2414): dispatch to the installed trait
-/// mods, straight through the mod API (the client library links it), with the
-/// loop's own reader as the context. Fires only from [`arm_with`], the one
-/// function.
+/// The `entity_move` hook's target (#2414): the plain generated dispatch the
+/// catalog's generator requires of a target, with the loop's own reader as
+/// the context. The move gate itself dispatches through the poisoning twin
+/// (`mod_api::runtime::dispatch_entity_move_poisoning`), which carries the
+/// hook's own panic ruling; this one stays for the generator's contract and
+/// any caller that wants the plain walk.
 pub fn native_entity_move(
     context: &LoopContext,
     entity: u32,
@@ -56,9 +58,10 @@ fn cause_of(cause: MoverType) -> MoveCause {
 /// A listener that cancels skips the invocation; a replacement outside ±64
 /// blocks per axis, or not a finite number, is refused whole — the movement
 /// stands as the requested delta would. A listener that unwinds keeps the
-/// **requested** delta, not one an earlier listener had proposed, and the
-/// panic poison (mod_vocab's `runtime::poison_panicking_mods_once`) has
-/// already switched that mod off for the session; the move carries on.
+/// **requested** delta — the poisoning dispatch (mod_vocab's `runtime`)
+/// rolls its writes back, skips it from this hook's next dispatch for the
+/// session and leaves its other hooks and Parts alone — and the move carries
+/// on.
 ///
 /// `kind` names the entity's type (`minecraft:zombie`) only when called: a
 /// listener needs it, a move nobody listens to must not pay for it. It runs
@@ -85,23 +88,15 @@ pub fn arm_with<'k>(
     let kind = kind();
     let mut replaced = [delta.x, delta.y, delta.z];
     let mut canceled = false;
-    let fired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        native_entity_move(
-            context,
-            entity,
-            &kind,
-            cause_of(cause),
-            &mut replaced,
-            &mut canceled,
-        );
-    }));
-    if fired.is_err() {
-        // #2414 maintainer ruling: a panicking listener keeps the requested
-        // delta — `replaced` and `canceled` die here even if an earlier
-        // listener had proposed a replacement — and the panic poison has
-        // already disabled the mod for the session. The move carries on.
-        return;
-    }
+    let reader = horizon_client_render::api_context::LoopReader(context);
+    mod_api::runtime::dispatch_entity_move_poisoning(
+        &reader.context(),
+        entity,
+        &kind,
+        cause_of(cause),
+        &mut replaced,
+        &mut canceled,
+    );
     if canceled {
         gate.skip();
         return;
