@@ -17,11 +17,12 @@ use horizon_world::move_gate::MoveGate;
 use horizon_world::native_load_context::{LoopContext, LoopSide};
 use horizon_world::world_movement::EntityMovementWorld;
 use mod_api::MoveCause;
+use std::borrow::Cow;
 use std::io;
 
 /// The `entity_move` hook's target (#2414): dispatch to the installed trait
 /// mods, straight through the mod API (the client library links it), with the
-/// loop's own reader as the context. Fires only from [`arm`], the one
+/// loop's own reader as the context. Fires only from [`arm_with`], the one
 /// function.
 pub fn native_entity_move(
     context: &LoopContext,
@@ -47,22 +48,27 @@ fn cause_of(cause: MoverType) -> MoveCause {
     }
 }
 
-/// Arm one physical `Entity.move` invocation (#2414): the entity `entity` of
-/// `kind` (`minecraft:zombie`) is about to move by `delta` for `cause`'s
-/// sake. The `entity_move` hook fires here — in this one function — on the
-/// authoritative side, and only when a listener subscribes; with none, or on
-/// a client's own prediction, the movement is recorded unchanged and the tick
-/// cost is the subscriber branch. A listener that cancels skips the
-/// invocation; a replacement outside ±64 blocks per axis, or not a finite
-/// number, is refused whole and the movement stands as it was. A listener
-/// that unwinds leaves the recorded movement as it was, and the panic
-/// carries the mod's crash mark (`item_fall_on`'s rule, game.rs).
+/// Arm one physical `Entity.move` invocation (#2414): the entity `entity` is
+/// about to move by `delta` for `cause`'s sake. The `entity_move` hook fires
+/// here — in this one function — on the authoritative side, and only when a
+/// listener subscribes; with none, or on a client's own prediction, the
+/// movement is recorded unchanged and the tick cost is the subscriber branch.
+/// A listener that cancels skips the invocation; a replacement outside ±64
+/// blocks per axis, or not a finite number, is refused whole and the movement
+/// stands as it was. A listener that unwinds leaves the recorded movement as
+/// it was, and the panic carries the mod's crash mark (`item_fall_on`'s rule,
+/// game.rs).
+///
+/// `kind` names the entity's type (`minecraft:zombie`) only when called: a
+/// listener needs it, a move nobody listens to must not pay for it. It runs
+/// after the subscriber check, so with no listener a move costs one branch
+/// and builds no string.
 #[inline(never)]
-pub fn arm(
+pub fn arm_with<'k>(
     gate: &mut MoveGate,
     context: &LoopContext,
     entity: u32,
-    kind: &str,
+    kind: impl FnOnce() -> Cow<'k, str>,
     cause: MoverType,
     delta: Vec3,
 ) {
@@ -73,13 +79,14 @@ pub fn arm(
     if !mod_api::__private::listened(mod_api::HookId::EntityMove) {
         return;
     }
+    let kind = kind();
     let mut replaced = [delta.x, delta.y, delta.z];
     let mut canceled = false;
     let fired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         native_entity_move(
             context,
             entity,
-            kind,
+            &kind,
             cause_of(cause),
             &mut replaced,
             &mut canceled,
@@ -101,6 +108,34 @@ pub fn arm(
     }
 }
 
+/// [`arm_with`] for a mover whose type name is already a borrowed `&str`.
+#[inline]
+pub fn arm(
+    gate: &mut MoveGate,
+    context: &LoopContext,
+    entity: u32,
+    kind: &str,
+    cause: MoverType,
+    delta: Vec3,
+) {
+    arm_with(gate, context, entity, || Cow::Borrowed(kind), cause, delta);
+}
+
+/// [`arm_with`] for a fresh gate, in one line at a move site whose type name
+/// would cost a string to build (a boat's, a ridden vehicle's).
+#[inline]
+pub fn armed_with<'k>(
+    context: &LoopContext,
+    entity: u32,
+    kind: impl FnOnce() -> Cow<'k, str>,
+    cause: MoverType,
+    delta: Vec3,
+) -> MoveGate {
+    let mut gate = MoveGate::new();
+    arm_with(&mut gate, context, entity, kind, cause, delta);
+    gate
+}
+
 /// [`arm`] for a fresh gate, in one line at a move site.
 #[inline]
 pub fn armed(
@@ -110,9 +145,7 @@ pub fn armed(
     cause: MoverType,
     delta: Vec3,
 ) -> MoveGate {
-    let mut gate = MoveGate::new();
-    arm(&mut gate, context, entity, kind, cause, delta);
-    gate
+    armed_with(context, entity, || Cow::Borrowed(kind), cause, delta)
 }
 
 /// The collide entries: the move gate's own (#2414). The `clippy.toml` ban

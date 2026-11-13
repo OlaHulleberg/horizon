@@ -8,6 +8,7 @@ use super::entity::{Entity, EntityHandle, with_entity};
 use horizon_core::geometry::Vec3;
 use horizon_world::entity_move::MoverType;
 use horizon_world::move_gate::MoveGate;
+use std::borrow::Cow;
 
 /// Which body a move is for: the local player window, a LAN guest, or a listed
 /// entity. The piston and shulker-box pushes and the family ticks name their
@@ -31,26 +32,34 @@ impl Game<'_> {
         cause: MoverType,
         delta: Vec3,
     ) -> MoveGate {
-        let (entity, kind) = self.move_who_identity(who);
-        horizon_client::move_gate::armed(&self.loop_context, entity, &kind, cause, delta)
+        let entity = self.move_who_id(who);
+        // The type name is built only if a listener asks for it (#2414: a
+        // move nobody listens to costs one branch and no string).
+        horizon_client::move_gate::armed_with(
+            &self.loop_context,
+            entity,
+            || self.move_who_kind(who),
+            cause,
+            delta,
+        )
     }
 
-    /// The entity id and kind name (`minecraft:zombie`) a move is for; the
-    /// player window's own id and name for it.
-    fn move_who_identity(&self, who: MoveWho) -> (u32, String) {
+    /// The entity id a move is for; the player window's own id for it.
+    fn move_who_id(&self, who: MoveWho) -> u32 {
         match who {
-            MoveWho::Player => (
-                self.player.as_ref().map_or(0, |p| p.entity_id as u32),
-                "minecraft:player".to_owned(),
-            ),
-            MoveWho::Guest(conn) => self.lan.as_ref().map_or((0, String::new()), |host| {
-                host.hub.guest(conn).map_or((0, String::new()), |g| {
-                    (g.entity_id as u32, "minecraft:player".to_owned())
-                })
+            MoveWho::Player => self.player.as_ref().map_or(0, |p| p.entity_id as u32),
+            MoveWho::Guest(conn) => self.lan.as_ref().map_or(0, |host| {
+                host.hub.guest(conn).map_or(0, |g| g.entity_id as u32)
             }),
-            MoveWho::Entity(handle) => with_entity!(self, handle, entity => {
-                (entity.id(), entity.native_type().into_owned())
-            }),
+            MoveWho::Entity(handle) => with_entity!(self, handle, entity => entity.id()),
+        }
+    }
+
+    /// The kind name (`minecraft:zombie`) a move is for, built on demand.
+    fn move_who_kind(&self, who: MoveWho) -> Cow<'static, str> {
+        match who {
+            MoveWho::Player | MoveWho::Guest(_) => Cow::Borrowed("minecraft:player"),
+            MoveWho::Entity(handle) => with_entity!(self, handle, entity => entity.native_type()),
         }
     }
 }

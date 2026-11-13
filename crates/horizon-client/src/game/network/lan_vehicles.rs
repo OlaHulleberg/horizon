@@ -452,11 +452,10 @@ impl Game<'_> {
         });
         // The vehicle's id, kind, position, rotation, motion, box, step height
         // and ground.
-        let (id, kind, old, yaw, velocity, bounds, step, on_ground) = if let Some(i) = boat {
+        let (id, old, yaw, velocity, bounds, step, on_ground) = if let Some(i) = boat {
             let b = &self.boats[i];
             (
                 b.id,
-                b.entity_type(),
                 b.position,
                 b.yaw,
                 b.velocity,
@@ -469,7 +468,6 @@ impl Game<'_> {
             let step = m.kind.step_height as f32;
             (
                 m.id,
-                m.kind.id.clone(),
                 m.position,
                 m.yaw,
                 m.velocity,
@@ -515,10 +513,18 @@ impl Game<'_> {
             subject: None,
         };
         let wanted = target.subtract(good);
-        let mut gate = horizon_client::move_gate::armed(
+        // The vehicle's type name only if a listener asks for it (#2414: no
+        // string on a move nobody listens to).
+        let kind = || match (boat, mount) {
+            (Some(i), _) => std::borrow::Cow::Owned(self.boats[i].entity_type()),
+            (None, Some(i)) => std::borrow::Cow::Borrowed(&*self.mobs[i].kind.id),
+            // Unreachable: the vehicle was a boat or a mount, or it returned.
+            (None, None) => std::borrow::Cow::Borrowed(""),
+        };
+        let mut gate = horizon_client::move_gate::armed_with(
             &self.loop_context,
             id,
-            &kind,
+            kind,
             MoverType::Player,
             wanted,
         );

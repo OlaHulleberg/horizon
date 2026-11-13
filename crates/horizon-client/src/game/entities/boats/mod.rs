@@ -874,10 +874,10 @@ impl Game<'_> {
             border: Some((self.border.geometry(), [b.position.x, b.position.z])),
         };
         let movement = b.take_movement();
-        let mut gate = horizon_client::move_gate::armed(
+        let mut gate = horizon_client::move_gate::armed_with(
             &self.loop_context,
             b.id,
-            &b.entity_type(),
+            || std::borrow::Cow::Owned(b.entity_type()),
             horizon_world::entity_move::MoverType::SelfMovement,
             movement,
         );
