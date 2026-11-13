@@ -2836,11 +2836,28 @@ impl Game<'_> {
             d.velocity.x += f64::from(speed) * f64::from(trig::sin(r));
             d.velocity.z += -f64::from(speed) * f64::from(trig::cos(r));
             let step = if d.in_wall { 0.800000011920929 } else { 1.0 };
-            d.position = Vec3::new(
-                d.position.x + d.velocity.x * step,
-                d.position.y + d.velocity.y * step,
-                d.position.z + d.velocity.z * step,
+            // The dragon's Entity.move is this physics-less step (#2414): it
+            // goes through the move gate like every other move, self cause,
+            // before the position is written.
+            let mut gate = horizon_client::move_gate::armed(
+                &self.loop_context,
+                d.id,
+                "minecraft:ender_dragon",
+                horizon_world::entity_move::MoverType::SelfMovement,
+                Vec3::new(
+                    d.velocity.x * step,
+                    d.velocity.y * step,
+                    d.velocity.z * step,
+                ),
             );
+            if !gate.skipped() {
+                let moved = gate.delta();
+                d.position = Vec3::new(
+                    d.position.x + moved.x,
+                    d.position.y + moved.y,
+                    d.position.z + moved.z,
+                );
+            }
             let actual =
                 vanilla_normalize(glam::DVec3::new(d.velocity.x, d.velocity.y, d.velocity.z));
             let slide = 0.8 + 0.15 * (actual.dot(dir) + 1.0) / 2.0;
