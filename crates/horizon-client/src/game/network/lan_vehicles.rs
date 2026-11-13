@@ -529,12 +529,17 @@ impl Game<'_> {
             wanted,
         );
         let wanted = gate.delta();
+        // A listener's decision that is not the request (#2414, ruling 5):
+        // the driver is put back whatever the distance - the flag comes from
+        // the gate, not from the numbers.
+        let overridden = gate.overridden();
         let resolved = horizon_client::move_gate::scene_resolve(
             &mut gate, &mut scene, bounds, wanted, step, on_ground,
         )
         .unwrap_or(wanted);
         let reached = old.add_vector(resolved);
-        let wrongly = (target.x - reached.x).powi(2) + (target.z - reached.z).powi(2) > 0.0625;
+        let wrongly = overridden
+            || (target.x - reached.x).powi(2) + (target.z - reached.z).powi(2) > 0.0625;
         let free_before = scene.unobstructed(bounds).unwrap_or(true);
         // isEntityCollidingWithAnythingNew: a box that was free is not there.
         let moved_box = bounds.move_by(target.subtract(old));
