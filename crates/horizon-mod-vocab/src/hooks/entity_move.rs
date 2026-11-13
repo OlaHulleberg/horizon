@@ -26,6 +26,7 @@ pub trait Hooks {
         out = "canceled",
         context = "loop",
         cancellable = true,
+        isolate = true,
         neoforge = "none (fork addition; see travel-and-move.md, #2308)",
         target = "horizon_client_lib::move_gate::native_entity_move"
     )]

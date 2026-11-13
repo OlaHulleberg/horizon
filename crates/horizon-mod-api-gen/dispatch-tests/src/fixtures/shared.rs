@@ -154,6 +154,8 @@ fn install(mods: Arc<[ModEntry]>) {
     });
     let subscribers =
         horizon_mod_runtime::subscribers::Subscribers::new(HOOK_COUNT, mods.len(), subscriptions);
+    // A fresh installation starts poison-free, as the real runtime's does per session.
+    runtime::POISONED.with(|poisoned| poisoned.borrow_mut().clear());
     // Test dispatch needs the same static lifetime as the real installation.
     MODS.set(Some(Box::leak(Box::new(Installed { mods, subscribers }))));
 }
@@ -203,6 +205,25 @@ mod runtime {
         ) -> &'static dyn super::Hooks {
             super::enter_listener(entry, hook).1
         }
+    }
+    thread_local! {
+        /// The listeners the isolated dispatches poisoned, as (hook ordinal, id) pairs — the
+        /// stand-in for the real runtime's per-hook sets.
+        pub(super) static POISONED: std::cell::RefCell<std::collections::HashSet<(usize, &'static str)>> =
+            std::cell::RefCell::new(std::collections::HashSet::new());
+    }
+    pub(super) fn poison(hook: super::HookId, id: &'static str) {
+        POISONED.with(|poisoned| poisoned.borrow_mut().insert((hook as usize, id)));
+    }
+    pub(super) fn poisoned(hook: super::HookId, id: &str) -> bool {
+        POISONED.with(|poisoned| {
+            poisoned
+                .borrow()
+                .iter()
+                .any(|(poisoned_hook, poisoned_id)| {
+                    *poisoned_hook == hook as usize && *poisoned_id == id
+                })
+        })
     }
 }
 fn enter_listener(entry: &'static ModEntry, hook: &'static str) -> ((), &'static dyn Hooks) {
