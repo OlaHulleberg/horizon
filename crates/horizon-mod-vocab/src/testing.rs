@@ -72,6 +72,7 @@ pub fn with_dispatch<R>(mods: Mods, f: impl FnOnce() -> R) -> R {
     }
     let installed = Box::leak(Box::new(Installed::new(mods)));
     let _restore = Restore(TEST_MODS.replace(Some(installed)));
+    crate::runtime::poison_panicking_mods_once();
     f()
 }
 

@@ -136,37 +136,83 @@ fn a_malformed_replacement_is_refused_whole() {
     }
 }
 
-/// A listener that unwinds leaves the armed movement as it was — its writes
-/// die with it — and the panic carries out of the gate (the `item_fall_on`
-/// rule, game.rs).
+/// A listener that unwinds keeps the **requested** delta — its writes die
+/// with it — and the panic poison has disabled its mod for the session: the
+/// next move of the same session runs without it, and neither move panics
+/// out of the gate (#2414 maintainer ruling).
 #[test]
-fn a_panicking_listener_leaves_the_requested_move() {
+fn a_panicking_listener_keeps_the_requested_move_and_is_disabled() {
     let (log, mods) = install(Answer::Panic);
-    let mut gate = MoveGate::new();
     mod_api::testing::with_mods(mods, || {
-        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            horizon_client::move_gate::arm(
-                &mut gate,
-                &server_context(),
-                7,
-                "minecraft:zombie",
-                MoverType::SelfMovement,
-                Vec3::new(1.0, 0.0, 0.0),
-            );
-        }))
-        .expect_err("the listener must unwind");
-        assert!(
-            caught.downcast_ref::<&str>().is_some(),
-            "the payload carries"
+        let mut gate = MoveGate::new();
+        horizon_client::move_gate::arm(
+            &mut gate,
+            &server_context(),
+            7,
+            "minecraft:zombie",
+            MoverType::SelfMovement,
+            Vec3::new(1.0, 0.0, 0.0),
         );
+        assert!(!gate.skipped());
+        assert_eq!(gate.delta(), Vec3::new(1.0, 0.0, 0.0));
+        // The poison switched the mod off: this arm hears nobody.
+        let mut gate = MoveGate::new();
+        horizon_client::move_gate::arm(
+            &mut gate,
+            &server_context(),
+            7,
+            "minecraft:zombie",
+            MoverType::SelfMovement,
+            Vec3::new(2.0, 0.0, 0.0),
+        );
+        assert_eq!(gate.delta(), Vec3::new(2.0, 0.0, 0.0));
     });
-    assert!(!gate.skipped());
-    assert_eq!(gate.delta(), Vec3::new(1.0, 0.0, 0.0));
     assert_eq!(
         log.lock().unwrap().len(),
         1,
-        "the listener was reached once"
+        "the disabled mod is not dispatched again"
     );
+}
+
+/// The requested delta, not an earlier listener's replacement, is what a
+/// later panicking listener leaves behind (#2414 maintainer ruling: «A panic
+/// keeps the requested delta (not a replaced one)»).
+#[test]
+fn a_panic_after_a_replacement_keeps_the_requested_delta() {
+    let mods: mod_api::Mods = vec![
+        mod_api::ModEntry::new(
+            "replacer",
+            Box::new(Probe {
+                answer: Answer::Replace([0.0, 0.0, 9.0]),
+                heard: Arc::new(Mutex::new(Vec::new())),
+            }),
+        ),
+        mod_api::ModEntry::new(
+            "panicker",
+            Box::new(Probe {
+                answer: Answer::Panic,
+                heard: Arc::new(Mutex::new(Vec::new())),
+            }),
+        ),
+    ]
+    .into();
+    mod_api::testing::with_mods(mods, || {
+        let mut gate = MoveGate::new();
+        horizon_client::move_gate::arm(
+            &mut gate,
+            &server_context(),
+            7,
+            "minecraft:zombie",
+            MoverType::SelfMovement,
+            Vec3::new(1.0, 0.0, 0.0),
+        );
+        assert!(!gate.skipped());
+        assert_eq!(
+            gate.delta(),
+            Vec3::new(1.0, 0.0, 0.0),
+            "the requested delta, not the (0, 0, 9) replacement"
+        );
+    });
 }
 
 /// With no listener the movement is armed unchanged: the same decision a move

@@ -54,10 +54,11 @@ fn cause_of(cause: MoverType) -> MoveCause {
 /// listener subscribes; with none, or on a client's own prediction, the
 /// movement is recorded unchanged and the tick cost is the subscriber branch.
 /// A listener that cancels skips the invocation; a replacement outside ±64
-/// blocks per axis, or not a finite number, is refused whole and the movement
-/// stands as it was. A listener that unwinds leaves the recorded movement as
-/// it was, and the panic carries the mod's crash mark (`item_fall_on`'s rule,
-/// game.rs).
+/// blocks per axis, or not a finite number, is refused whole — the movement
+/// stands as the requested delta would. A listener that unwinds keeps the
+/// **requested** delta, not one an earlier listener had proposed, and the
+/// panic poison (mod_vocab's `runtime::poison_panicking_mods_once`) has
+/// already switched that mod off for the session; the move carries on.
 ///
 /// `kind` names the entity's type (`minecraft:zombie`) only when called: a
 /// listener needs it, a move nobody listens to must not pay for it. It runs
@@ -72,6 +73,8 @@ pub fn arm_with<'k>(
     cause: MoverType,
     delta: Vec3,
 ) {
+    // The requested delta is the floor every listener result falls back to:
+    // armed first, re-armed only by a result that passes validation.
     gate.arm(cause, delta);
     if context.side() != LoopSide::Server {
         return;
@@ -92,17 +95,20 @@ pub fn arm_with<'k>(
             &mut canceled,
         );
     }));
-    if let Err(payload) = fired {
-        // The listener's writes die with it: the gate keeps the movement it
-        // was armed with, as `item_fall_on` keeps its level carrier.
-        std::panic::resume_unwind(payload);
+    if fired.is_err() {
+        // #2414 maintainer ruling: a panicking listener keeps the requested
+        // delta — `replaced` and `canceled` die here even if an earlier
+        // listener had proposed a replacement — and the panic poison has
+        // already disabled the mod for the session. The move carries on.
+        return;
     }
     if canceled {
         gate.skip();
         return;
     }
     // Design #2308: replacement components lie in ±64 blocks and are finite;
-    // a malformed result is rejected whole, never clamped.
+    // a malformed result is rejected whole — like the requested delta would
+    // be — never clamped.
     if replaced.iter().all(|v| v.is_finite() && v.abs() <= 64.0) {
         gate.arm(cause, Vec3::new(replaced[0], replaced[1], replaced[2]));
     }

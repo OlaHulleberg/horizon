@@ -89,6 +89,7 @@ pub(crate) fn installed() -> Option<&'static Installed> {
 
 /// Install the process-wide ordered list of mods.
 pub(crate) fn install(mods: Mods) -> &'static Installed {
+    poison_panicking_mods_once();
     let installed = Installed::new(mods);
     #[cfg(any(test, feature = "testing"))]
     {
@@ -102,6 +103,29 @@ pub(crate) fn install(mods: Mods) -> &'static Installed {
         assert!(MODS.set(installed).is_ok(), "trait mods are installed once");
         MODS.get().unwrap()
     }
+}
+
+/// The panic poison of the design notes (#2414, travel-and-move.md `:49-50`): a
+/// listener that unwinds is disabled for the rest of the session, and the
+/// caller carries on from the preceding proposal. The hook runs while the
+/// panicking mod's crash mark is still in place, so `current_native_mod()`
+/// names it; it switches the mod off and hands the panic to the previous hook.
+/// One hook per process, chained once.
+static PANIC_POISON: std::sync::Once = std::sync::Once::new();
+
+pub(crate) fn poison_panicking_mods_once() {
+    PANIC_POISON.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if let Some(id) = crate::content::crash::current_native_mod()
+                && !set_mod_enabled(id, false)
+            {
+                // A scoped test list may not carry the id; the mark still
+                // names it for the crash report.
+            }
+            previous(info);
+        }));
+    });
 }
 
 /// The process-wide list in dispatch order, or an empty list before installation.
