@@ -75,7 +75,8 @@ pub fn arm_with<'k>(
     delta: Vec3,
 ) {
     // The requested delta is the floor every listener result falls back to:
-    // armed first, re-armed only by a result that passes validation.
+    // armed first, the decision replaced only by a result that passes
+    // validation — the request stays what `overridden` measures against.
     gate.arm(cause, delta);
     if context.side() != LoopSide::Server {
         return;
@@ -103,7 +104,7 @@ pub fn arm_with<'k>(
     // a malformed result is rejected whole — like the requested delta would
     // be — never clamped.
     if replaced.iter().all(|v| v.is_finite() && v.abs() <= 64.0) {
-        gate.arm(cause, Vec3::new(replaced[0], replaced[1], replaced[2]));
+        gate.decide(Vec3::new(replaced[0], replaced[1], replaced[2]));
     }
 }
 
