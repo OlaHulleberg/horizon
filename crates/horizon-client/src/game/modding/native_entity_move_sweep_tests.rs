@@ -231,6 +231,68 @@ fn the_off_walk_movers_fire_too() {
                 }),
                 "the player window's own move fires: {heard:?}"
             );
+            // Position assignments the design excludes fire nothing: a /tp
+            // teleport moves its target without an Entity.move, so the
+            // counting listener stays silent across one.
+            log.lock().unwrap().clear();
+            assert!(game.run_command("tp @s 12.5 30.0 12.5"));
+            let heard = std::mem::take(&mut *log.lock().unwrap());
+            assert!(
+                heard.is_empty(),
+                "a teleport is a position assignment, not a move: {heard:?}"
+            );
+        });
+    });
+}
+
+/// A mob goal's own `Entity.move` — `BreathAirGoal`'s drowning swim-up (#2414
+/// «goals 1:1») — fires through the same gate `do_move` arms, with the self
+/// cause: the goal's tick moves the dolphin by itself, beside travel's own
+/// move, exactly the two `Entity.move` invocations vanilla makes.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_drowning_dolphins_goal_move_fires_too() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "counter",
+        Box::new(Counter(log.clone())),
+    )]
+    .into();
+    mod_api::testing::with_mods(mods, || {
+        with_game(|game| {
+            game.build_registries();
+            game.set_allow_commands(true);
+            let registry = &game.pack.assets.registry;
+            let stone = registry.default_state("minecraft:stone").unwrap();
+            let water = registry.default_state("minecraft:water").unwrap();
+            let mut chunk = horizon_client::chunk::Chunk::empty(0, 0);
+            for x in 0..16 {
+                for z in 0..16 {
+                    chunk.set(x, 8, z, stone.0);
+                    // Water deep enough to drown in, open to the air above.
+                    for y in 9..16 {
+                        chunk.set(x, y, z, water.0);
+                    }
+                }
+            }
+            game.world.chunks.insert((0, 0), std::sync::Arc::new(chunk));
+            game.summon_with_nbt("minecraft:dolphin", [5.5, 10.5, 5.5], "{NoAI:0b}")
+                .unwrap_or_else(|e| panic!("summon dolphin: {e:?}"));
+            // The air supply low enough that BreathAirGoal takes over.
+            game.mobs[0].air = 0;
+            log.lock().unwrap().clear();
+            let _ = game.tick_creatures();
+            let heard: Vec<MoveCause> = std::mem::take(&mut *log.lock().unwrap())
+                .into_iter()
+                .filter(|(kind, _)| kind == "minecraft:dolphin")
+                .map(|(_, cause)| cause)
+                .collect();
+            assert_eq!(
+                heard,
+                vec![MoveCause::SelfMovement, MoveCause::SelfMovement],
+                "the drowning dolphin's round: the goal's own move beside travel's, \
+                 vanilla's two Entity.move invocations"
+            );
         });
     });
 }
