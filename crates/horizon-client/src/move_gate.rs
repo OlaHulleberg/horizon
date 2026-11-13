@@ -4,35 +4,101 @@
 //! here; `clippy.toml` bans calling the `resolve*` entries anywhere else, so a
 //! forgotten family cannot compile around the gate.
 //!
-//! PR 1a carries no hook: `arm` only records the cause and the movement, every
-//! decision is `Run`, and a move with no listener costs one branch. PR 1b adds
-//! the `entity_move` hook inside [`arm`] — decide, fire, apply with a revision
-//! recheck — leaving these signatures as they are.
+//! [`arm`] is also where the `entity_move` hook fires (#2414, design #2308):
+//! decide, fire, apply — in that one function, on the authoritative side, only
+//! when a listener subscribes (one branch otherwise: no snapshot, no
+//! allocation, no mod scan).
 use crate::collisions::{EntityCollisions, SceneCollisions};
 use horizon_core::geometry::{Aabb, Vec3, border::BorderGeometry};
 use horizon_world::block_collision_scan::BlockCollisionWorld;
 use horizon_world::collision_context::CollisionContext;
 use horizon_world::entity_move::MoverType;
 use horizon_world::move_gate::MoveGate;
-use horizon_world::native_load_context::LoopContext;
+use horizon_world::native_load_context::{LoopContext, LoopSide};
 use horizon_world::world_movement::EntityMovementWorld;
+use mod_api::MoveCause;
 use std::io;
+
+/// The `entity_move` hook's target (#2414): dispatch to the installed trait
+/// mods, straight through the mod API (the client library links it), with the
+/// loop's own reader as the context. Fires only from [`arm`], the one
+/// function.
+pub fn native_entity_move(
+    context: &LoopContext,
+    entity: u32,
+    kind: &str,
+    cause: MoveCause,
+    delta: &mut [f64; 3],
+    canceled: &mut bool,
+) {
+    let reader = horizon_client_render::api_context::LoopReader(context);
+    mod_api::dispatch_entity_move(&reader.context(), entity, kind, cause, delta, canceled);
+}
+
+/// The cause the mod API names for a `MoverType` (`entity_move` of #2414):
+/// vanilla's five mover names, one for one.
+fn cause_of(cause: MoverType) -> MoveCause {
+    match cause {
+        MoverType::SelfMovement => MoveCause::SelfMovement,
+        MoverType::Player => MoveCause::Player,
+        MoverType::Piston => MoveCause::Piston,
+        MoverType::ShulkerBox => MoveCause::ShulkerBox,
+        MoverType::Shulker => MoveCause::Shulker,
+    }
+}
 
 /// Arm one physical `Entity.move` invocation (#2414): the entity `entity` of
 /// `kind` (`minecraft:zombie`) is about to move by `delta` for `cause`'s
-/// sake. PR 1b fires the `entity_move` hook here — in this one function —
-/// and writes what the listeners decided into `gate`; PR 1a records the
-/// movement unchanged.
+/// sake. The `entity_move` hook fires here — in this one function — on the
+/// authoritative side, and only when a listener subscribes; with none, or on
+/// a client's own prediction, the movement is recorded unchanged and the tick
+/// cost is the subscriber branch. A listener that cancels skips the
+/// invocation; a replacement outside ±64 blocks per axis, or not a finite
+/// number, is refused whole and the movement stands as it was. A listener
+/// that unwinds leaves the recorded movement as it was, and the panic
+/// carries the mod's crash mark (`item_fall_on`'s rule, game.rs).
 #[inline(never)]
 pub fn arm(
     gate: &mut MoveGate,
-    _context: &LoopContext,
-    _entity: u32,
-    _kind: &str,
+    context: &LoopContext,
+    entity: u32,
+    kind: &str,
     cause: MoverType,
     delta: Vec3,
 ) {
     gate.arm(cause, delta);
+    if context.side() != LoopSide::Server {
+        return;
+    }
+    if !mod_api::__private::listened(mod_api::HookId::EntityMove) {
+        return;
+    }
+    let mut replaced = [delta.x, delta.y, delta.z];
+    let mut canceled = false;
+    let fired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        native_entity_move(
+            context,
+            entity,
+            kind,
+            cause_of(cause),
+            &mut replaced,
+            &mut canceled,
+        );
+    }));
+    if let Err(payload) = fired {
+        // The listener's writes die with it: the gate keeps the movement it
+        // was armed with, as `item_fall_on` keeps its level carrier.
+        std::panic::resume_unwind(payload);
+    }
+    if canceled {
+        gate.skip();
+        return;
+    }
+    // Design #2308: replacement components lie in ±64 blocks and are finite;
+    // a malformed result is rejected whole, never clamped.
+    if replaced.iter().all(|v| v.is_finite() && v.abs() <= 64.0) {
+        gate.arm(cause, Vec3::new(replaced[0], replaced[1], replaced[2]));
+    }
 }
 
 /// [`arm`] for a fresh gate, in one line at a move site.
