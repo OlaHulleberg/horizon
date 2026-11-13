@@ -7,6 +7,8 @@ use mod_api::{Hooks, LoopContext, StructurePiece};
 use std::{rc::Rc, sync::Arc};
 #[path = "wire_loopback/block_entity_on_load.rs"]
 mod block_entity_on_load;
+#[path = "wire_loopback/entity_move.rs"]
+mod entity_move;
 mod boundary {
     include!(concat!(env!("OUT_DIR"), "/wire_host_generated.rs"));
 }
@@ -266,6 +268,13 @@ fn __horizon_mod_hooks() -> Box<dyn Hooks> {
             assert!(event.cancelled);
             event.cancelled = false;
             mod_api::Flow::Continue
+        }
+        fn entity_move(
+            &self,
+            context: &dyn LoopContext,
+            event: &mut mod_api::EntityMoveEvent<'_>,
+        ) -> mod_api::Flow {
+            entity_move::guest_listener(context, event)
         }
         fn item_tooltip(
             &self,
