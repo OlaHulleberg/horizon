@@ -468,8 +468,7 @@ pub fn tick(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if quad {
         // angularFriction returns a float, including the ground product.
         let friction = if m.on_ground {
-            let [x, y, z] = m.on_pos(0.500_001);
-            w.facts.get(w.world.block(x, y, z)).friction * 0.91_f32
+            m.friction_at(w, m.on_pos(0.500_001)) * 0.91_f32
         } else if m.is_in_liquid() {
             0.8_f32
         } else {
@@ -811,7 +810,7 @@ mod tests {
                 };
                 let mut mob = new(1, kind, Vec3::new(-7.5, 100.0, -4.5), 90.0);
                 let holder = new(2, holder_kind, Vec3::new(0.5, 104.0, 0.5), 30.0);
-                let others = [holder.seen(None)];
+                let others = [holder.seen(None, &crate::items::Items::empty())];
                 let mut w = world.clone();
                 w.others = &others;
                 mob.extra.leash = Some(Holder::Mob(holder.id));

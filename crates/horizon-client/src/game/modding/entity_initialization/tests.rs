@@ -48,7 +48,7 @@ fn observe(test: impl FnOnce(Calls)) {
         Box::new(Listener(calls.clone())),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || test(calls));
+    mod_platform::testing::with_mods(mods, || test(calls));
 }
 
 fn tag(kind: &str, uuid: i32) -> Tag {
@@ -104,7 +104,7 @@ fn spawn_summon_and_disk_load_initialize_before_first_attachment_read() {
                 let uuid = 101 + i as i32;
                 game.world
                     .loaded_entities
-                    .push(((0, 0), vec![tag(kind, uuid)]));
+                    .push(((0, 0), vec![tag(kind, uuid).into()]));
                 game.spawn_loaded_entities();
                 let id = *game
                     .persist
@@ -484,7 +484,7 @@ fn a_loaded_entity_reads_its_saved_attachments_over_the_listeners_and_is_named_b
         Box::new(Saving(kinds.clone())),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
             let mut saved = horizon_mod_runtime::attachments::Attachments::default();
@@ -496,7 +496,7 @@ fn a_loaded_entity_reads_its_saved_attachments_over_the_listeners_and_is_named_b
                     Tag::Compound(saved.to_nbt()),
                 );
             }
-            game.world.loaded_entities.push(((0, 0), vec![pig]));
+            game.world.loaded_entities.push(((0, 0), vec![pig.into()]));
             game.spawn_loaded_entities();
             let id = *game
                 .persist
@@ -642,7 +642,7 @@ fn marker_constructor_store_reaches_its_real_owned_map() {
         }
     }
     let ran = Arc::new(AtomicBool::new(false));
-    mod_api::testing::with_mods(
+    mod_platform::testing::with_mods(
         vec![mod_api::ModEntry::new(
             "store",
             Box::new(Store(ran.clone())),
@@ -675,7 +675,7 @@ fn cancelled_mob_creation_forgets_constructor_payload_and_identity() {
         }
     }
     let calls = Calls::default();
-    mod_api::testing::with_mods(
+    mod_platform::testing::with_mods(
         vec![
             mod_api::ModEntry::new("constructing", Box::new(Listener(calls.clone()))),
             mod_api::ModEntry::new("cancel", Box::new(Cancel)),
@@ -697,7 +697,7 @@ fn cancelled_mob_creation_forgets_constructor_payload_and_identity() {
                     .is_none()
                 );
                 assert_eq!(calls.lock().unwrap().len(), 1);
-                assert_eq!(game.persist.uuids, before);
+                assert_eq!(*game.persist.uuids, before);
                 assert!(game.entity_attachments.is_empty());
                 assert!(game.entity_initialization.initialized.is_empty());
             });

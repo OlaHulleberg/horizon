@@ -16,10 +16,15 @@ mod snapshots;
 pub use snapshots::{
     FireworkShapeIngredient, RecipeRule, RecipeSnapshot, RecipeTemplate, RecipeTrimPattern,
 };
+mod cooking;
 mod ingredient;
 pub mod native_hooks;
+mod repair_item;
+#[path = "crafting/shapeless_matching.rs"]
+mod shapeless_matching;
 pub use ingredient::{Ingredient, Shape};
 use serde_json::Value;
+use shapeless_matching::matches_all;
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
@@ -597,11 +602,11 @@ impl<'a> Input<'a> {
     }
 }
 /// What recipes need to know about an item.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct Facts {
     /// Index into the dye colours when the item has the `dye` component.
     dye: Option<usize>,
-    max_damage: u32,
+    info: crate::items::ItemInfo,
     max_stack: u32,
 }
 /// The tables recipes consult.
@@ -916,24 +921,8 @@ impl Special {
                         .get(1, 2)
                         .is_some_and(|s| front.test_in(ctx.context, s))
             }
-            Self::RepairItem => Self::repair_pair(ctx, &stacks).is_some(),
+            Self::RepairItem => repair_item::pair(ctx, &stacks).is_some(),
         }
-    }
-    /// `RepairItemRecipe.getItemsToCombine`.
-    fn repair_pair<'a>(
-        ctx: &Context,
-        stacks: &[&'a ItemStack],
-    ) -> Option<(&'a ItemStack, &'a ItemStack)> {
-        let [first, second] = stacks else {
-            return None;
-        };
-        let durable = |s: &ItemStack| ctx.facts(s).is_some_and(|f| f.max_damage > 0);
-        (second.item == first.item
-            && first.count == 1
-            && second.count == 1
-            && durable(first)
-            && durable(second))
-        .then_some((*first, *second))
     }
     /// `Recipe.assemble`; None is the empty stack.
     fn assemble(&self, ctx: &Context, input: &Input) -> Option<ItemStack> {
@@ -1163,33 +1152,7 @@ impl Special {
                 }
                 out
             }
-            Self::RepairItem => {
-                let (first, second) = Self::repair_pair(ctx, &stacks)?;
-                let max = |s: &ItemStack| ctx.facts(s).map_or(0, |f| f.max_damage) as i64;
-                let durability = max(first).max(max(second));
-                let remaining = (max(first) - i64::from(first.damage))
-                    + (max(second) - i64::from(second.damage))
-                    + durability * 5 / 100;
-                let mut out = ItemStack::new(&first.item, 1);
-                out.damage = (durability - remaining).max(0) as u32;
-                // Only the curses of both survive, at the higher level.
-                let (a, b) = (
-                    first.crafting_enchantments(),
-                    second.crafting_enchantments(),
-                );
-                let mut curses: Vec<(Arc<str>, u32)> = Vec::new();
-                for (id, level) in a.iter().chain(b.iter()) {
-                    if !ctx.recipes.curses.contains(&**id) {
-                        continue;
-                    }
-                    match curses.iter_mut().find(|(c, _)| c == id) {
-                        Some((_, l)) => *l = (*l).max(*level),
-                        None => curses.push((id.clone(), *level)),
-                    }
-                }
-                out.set_crafting_enchantments(curses);
-                out
-            }
+            Self::RepairItem => repair_item::assemble(ctx, &stacks)?,
         };
         let mut made = made;
         made.tidy();
@@ -1349,42 +1312,11 @@ fn shrink(pattern: &[Vec<char>]) -> Vec<Vec<char>> {
         _ => Vec::new(),
     }
 }
-/// A perfect matching of the ingredients to distinct stacks (`StackedContents.canCraft`).
-fn matches_all(context: &LoopContext, ingredients: &[Ingredient], stacks: &[&ItemStack]) -> bool {
-    fn augment(
-        context: &LoopContext,
-        i: usize,
-        ingredients: &[Ingredient],
-        stacks: &[&ItemStack],
-        owner: &mut [Option<usize>],
-        seen: &mut [bool],
-    ) -> bool {
-        for s in 0..stacks.len() {
-            if seen[s] || !ingredients[i].test_in(context, stacks[s]) {
-                continue;
-            }
-            seen[s] = true;
-            if owner[s].is_none_or(|o| augment(context, o, ingredients, stacks, owner, seen)) {
-                owner[s] = Some(i);
-                return true;
-            }
-        }
-        false
-    }
-    if ingredients.len() != stacks.len() {
-        return false;
-    }
-    let mut owner = vec![None; stacks.len()];
-    (0..ingredients.len()).all(|i| {
-        let mut seen = vec![false; stacks.len()];
-        augment(context, i, ingredients, stacks, &mut owner, &mut seen)
-    })
-}
 pub use horizon_items::recipe_sources::qualified;
 
 /// The keys of a minecraft-typed recipe that hold an ingredient: one entry
 /// or a list, what `Recipes`, the station tables and the network copy read.
-const INGREDIENT_KEYS: [&str; 23] = [
+pub(crate) const INGREDIENT_KEYS: [&str; 23] = [
     "ingredient",
     "ingredients",
     "base",
@@ -1411,7 +1343,7 @@ const INGREDIENT_KEYS: [&str; 23] = [
 ];
 /// The keys whose values are a map of ingredients: a shaped recipe's symbols,
 /// a firework star's shapes.
-const INGREDIENT_MAPS: [&str; 2] = ["key", "shapes"];
+pub(crate) const INGREDIENT_MAPS: [&str; 2] = ["key", "shapes"];
 
 /// One recipe file after its load's ingredient pass.
 pub struct ResolvedRecipe {
@@ -1681,6 +1613,9 @@ impl Recipes {
                 }
                 continue;
             }
+            if !Ingredient::validate_recipe(resolved, items, name) {
+                continue;
+            }
             let v = &**resolved;
             let text = |k: &str| v[k].as_str().unwrap_or("").to_owned();
             meta.insert(name.clone(), (text("category"), text("group")));
@@ -1922,7 +1857,7 @@ impl Recipes {
                                 .iter()
                                 .position(|(name, _)| *name == d)
                         }),
-                        max_damage: info.max_damage,
+                        info: info.clone(),
                         max_stack: info.max_stack,
                     },
                 )
@@ -2154,25 +2089,6 @@ impl Recipes {
             .find(|c| c.id == id)
             .map_or(0.0, |c| c.experience)
     }
-    pub fn cook(&self, context: &LoopContext, kind: &str, input: &ItemStack) -> Option<&Cooking> {
-        // Every recipe an item names, not just the first: a mod's match-time
-        // hook may refuse the one the first recipe would take (`Ingredient::test`).
-        let index = self.cook_index.get_or_init(|| {
-            let mut index = CookIndex::new();
-            for (i, c) in self.cooking.iter().enumerate() {
-                let of_kind = index.entry(c.kind.clone()).or_default();
-                for item in &c.ingredient.items {
-                    of_kind.entry(item.clone()).or_default().push(i);
-                }
-            }
-            index
-        });
-        index.get(kind)?.get(&*input.item)?.iter().find_map(|i| {
-            self.cooking
-                .get(*i)
-                .filter(|c| c.ingredient.test_in(context, input))
-        })
-    }
     /// The mod-created sets of this load, with fully qualified keys.
     pub fn custom_property_sets(&self) -> impl Iterator<Item = (&str, &HashSet<String>)> {
         self.property_additions.custom()
@@ -2185,19 +2101,12 @@ impl Recipes {
     /// `input` (`RecipePropertySet.test`): a recipe of that type names it, or
     /// a mod added it to the kind's input set.
     pub fn cooking_accepts(&self, context: &LoopContext, kind: &str, input: &ItemStack) -> bool {
-        self.cook(context, kind, input).is_some()
+        self.cook_placeable(context, kind, input).is_some()
             || crate::lan::recipes::PROPERTY_SETS
                 .iter()
                 .any(|(set, recipe_type, _)| {
                     *recipe_type == kind && self.property_additions.adds(set, &input.item)
                 })
-    }
-    /// `cook` by scanning every recipe, as it was before the index.
-    #[cfg(test)]
-    fn cook_scan(&self, context: &LoopContext, kind: &str, input: &ItemStack) -> Option<&Cooking> {
-        self.cooking
-            .iter()
-            .find(|c| c.kind == kind && c.ingredient.test_in(context, input))
     }
 }
 
@@ -2877,9 +2786,16 @@ mod tests {
             file("minecraft:from_a_later_version", "x"),
         )
         .unwrap();
+        // A vanilla type needs ingredients the loader accepts to be a recipe at all.
+        let cutting = |tag: &str| {
+            format!(
+                r#"{{"type":"minecraft:stonecutting","tag":"{tag}","ingredient":"minecraft:stone","result":{{"id":"minecraft:stone_bricks"}}}}"#
+            )
+            .into_bytes()
+        };
         fs::write(
             root.join("data/minecraft/recipe/iron_ingot.json"),
-            file("minecraft:stonecutting", "vanilla-iron"),
+            cutting("vanilla-iron"),
         )
         .unwrap();
         let items = Items::for_tests(HashMap::new());
@@ -2916,7 +2832,7 @@ mod tests {
             ("recipe/pack:d".to_owned(), vec![file("mymod:crusher", "d")]),
             (
                 "recipe/minecraft:iron_ingot".to_owned(),
-                vec![file("minecraft:stonecutting", "pack-iron")],
+                vec![cutting("pack-iron")],
             ),
             (
                 "recipe/minecraft:p".to_owned(),

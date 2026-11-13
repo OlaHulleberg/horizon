@@ -27,7 +27,7 @@ fn worker(poll: &Poll) -> Arc<Worker> {
 fn outbox(worker: Arc<Worker>) -> Arc<Outbox> {
     // Rebind the fresh, unadopted outbox to our private worker. The global
     // pool never owns or services this connection, even if it was initialized.
-    let mut outbox = Outbox::new(Arc::default()).unwrap();
+    let mut outbox = Outbox::new(Arc::default(), false).unwrap();
     Arc::get_mut(&mut outbox).unwrap().worker = worker;
     outbox
 }

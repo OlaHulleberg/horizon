@@ -35,7 +35,7 @@ pub(super) struct ChunkFormat {
     column: ColumnLayout,
     min_y: i32,
     sections: usize,
-    has_skylight: bool,
+    pub(super) has_skylight: bool,
     biome_map: Vec<u16>,
     biome_bits: u8,
 }
@@ -67,7 +67,7 @@ impl ChunkFormat {
     }
 
     /// LevelChunkSection data into the client's column.
-    fn column(&self, p: &play::LevelChunkWithLight) -> Result<Chunk, String> {
+    pub(super) fn column(&self, p: &play::LevelChunkWithLight) -> Result<Chunk, String> {
         let sections = p
             .chunk
             .sections(self.sections, 16, self.biome_bits)
@@ -152,7 +152,11 @@ impl ChunkFormat {
 
     /// `LevelChunk.replaceBiomes`: each of the dimension's sections reads
     /// its biome container from the packet's buffer, in order.
-    fn replace_biomes(&self, chunk: &mut Chunk, data: &play::ChunkBiomeData) -> Result<(), String> {
+    pub(super) fn replace_biomes(
+        &self,
+        chunk: &mut Chunk,
+        data: &play::ChunkBiomeData,
+    ) -> Result<(), String> {
         let biomes = data
             .biomes(self.sections, self.biome_bits)
             .map_err(|e| e.to_string())?;
@@ -186,6 +190,23 @@ impl ChunkFormat {
         }
         (layers, above)
     }
+}
+
+/// `ClientboundSectionBlocksUpdatePacket.runUpdates`: each changed block's position (the
+/// packed local position within the section) and its state.
+pub(super) fn section_blocks(
+    p: &play::SectionBlocksUpdate,
+) -> impl Iterator<Item = ([i32; 3], i32)> + '_ {
+    let [sx, sy, sz] = p.section;
+    p.changes.iter().map(move |&change| {
+        let local = (change & 0xFFF) as i32;
+        let pos = [
+            sx * 16 + (local >> 8 & 15),
+            sy * 16 + (local & 15),
+            sz * 16 + (local >> 4 & 15),
+        ];
+        (pos, (change >> 12) as i32)
+    })
 }
 
 type Decoded = (Box<C>, Result<Chunk, String>);
@@ -373,20 +394,38 @@ pub(super) enum Next {
 }
 
 impl Game<'_> {
-    /// A chunk packet's column was adopted. The dispatch point for the
-    /// client side of `chunk_load` (the client chunk seam, milestone 8);
-    /// event dispatch is added separately.
-    pub(in crate::game) fn client_chunk_load(&mut self, _x: i32, _z: i32) {}
+    /// A chunk packet's column was adopted, with its block entities in the
+    /// level: the client chunk seam (milestone 8) tells `client_chunk_load`.
+    pub(in crate::game) fn client_chunk_load(&mut self, x: i32, z: i32) {
+        if !mod_api::__private::listened(mod_api::HookId::ClientChunkLoad) {
+            return;
+        }
+        if let Some(dimension) = self.client_chunk_dimension() {
+            self.native_client_chunk_load(&dimension, [x, z]);
+        }
+    }
 
     /// A resident column was freed, whichever route freed it — the last
-    /// event for it, its data still there. The dispatch point for the client
-    /// side of `chunk_unload` (added separately) and of `on_chunk_unloaded`,
-    /// told when the level stays (`level_stays`): one that goes takes its
-    /// chunks with it.
+    /// event for it, its data still there. Tells `client_chunk_unload` and,
+    /// when the level stays (`level_stays`), `on_chunk_unloaded`: a level that
+    /// goes takes its block entities with it. Its passages go with it.
     pub(in crate::game) fn client_chunk_unload(&mut self, x: i32, z: i32, level_stays: bool) {
+        self.forget_chunk_passages(x, z);
+        if mod_api::__private::listened(mod_api::HookId::ClientChunkUnload)
+            && let Some(dimension) = self.client_chunk_dimension()
+        {
+            self.native_client_chunk_unload(&dimension, [x, z]);
+        }
         if level_stays && let Some(level) = self.native_client_level() {
             self.notify_chunk_block_entities_unloaded(level, (x, z));
         }
+    }
+
+    /// The client level's dimension, as the server named it, for the client
+    /// chunk hooks: none off a server (an integrated world's chunks are the
+    /// server's `chunk_load` and `chunk_unload`).
+    fn client_chunk_dimension(&self) -> Option<String> {
+        self.remote.as_ref()?.heard_level.clone()
     }
 }
 
@@ -424,9 +463,6 @@ impl Game<'_> {
             }
         };
         let (x, z) = (p.x, p.z);
-        // The client chunk seam: one load per packet adoption, a re-sent
-        // position included (below). A biome packet takes neither path.
-        self.client_chunk_load(x, z);
         // A column sent again while it is resident (a bulk edit): only what changed is lit and meshed again.
         let resident = self.world.chunks.contains_key(&(x, z));
         if resident {
@@ -442,7 +478,34 @@ impl Game<'_> {
         self.world
             .block_entities
             .unload(|k| (k.0 >> 4, k.2 >> 4) == (x, z));
-        for info in &p.chunk.block_entities {
+        self.load_block_entities((x, z), &p.chunk.block_entities);
+        // After the column's block entities load: an attachment keeps its block entity if the
+        // packet sent it again, and one left from a forgotten column goes.
+        if let Some(r) = self.remote.as_mut() {
+            r.attachments.retain(|holder, _| match *holder {
+                Holder::BlockEntity([bx, by, bz]) => {
+                    (bx >> 4, bz >> 4) != (x, z)
+                        || self.world.block_entities.contains_key(&(bx, by, bz))
+                }
+                _ => true,
+            });
+        }
+        // Asked once the packet's block entities and attachments are in, so a part reading them
+        // sees this column's data.
+        self.ask_chunk_light_emission((x, z));
+        // The client chunk seam: one load per packet adoption, a re-sent position included,
+        // once the column and its block entities are in. A biome packet takes neither path.
+        self.client_chunk_load(x, z);
+    }
+
+    /// `LevelChunk.replaceWithPacketData`'s block entities of column `(x, z)`, as its chunk
+    /// packet lists them: each made for its block, then loading its update tag.
+    pub(in crate::game) fn load_block_entities(
+        &mut self,
+        (x, z): (i32, i32),
+        infos: &[horizon_protocol::chunk::BlockEntityInfo],
+    ) {
+        for info in infos {
             let pos = (
                 x * 16 + i32::from(info.packed_xz as u8 >> 4),
                 i32::from(info.y),
@@ -459,20 +522,6 @@ impl Game<'_> {
             );
             self.bind_remote_attachment(Holder::BlockEntity([pos.0, pos.1, pos.2]));
         }
-        // After the column's block entities load: an attachment keeps its block entity if the
-        // packet sent it again, and one left from a forgotten column goes.
-        if let Some(r) = self.remote.as_mut() {
-            r.attachments.retain(|holder, _| match *holder {
-                Holder::BlockEntity([bx, by, bz]) => {
-                    (bx >> 4, bz >> 4) != (x, z)
-                        || self.world.block_entities.contains_key(&(bx, by, bz))
-                }
-                _ => true,
-            });
-        }
-        // Asked once the packet's block entities and attachments are in, so a part reading them
-        // sees this column's data.
-        self.ask_chunk_light_emission((x, z));
     }
 
     /// `ClientPacketListener.handleChunksBiomes`: each loaded column takes

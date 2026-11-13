@@ -347,7 +347,14 @@ impl Game<'_> {
                 .and_then(|f| f.item.as_ref())
                 .map_or_else(String::new, |s| s.item.to_string());
             let rotation = frame.map_or(0, |f| f.rotation);
-            self.native_player_item_frame_change(player, &name, entity_id, action, &item, rotation);
+            self.native_player_item_frame_change(
+                player,
+                &name,
+                entity_id,
+                action,
+                &item,
+                rotation.rem_euclid(8) as u8,
+            );
         }
         self.swing_arm();
         true
@@ -369,12 +376,50 @@ impl Game<'_> {
             }
             return true;
         }
+        // `isInvulnerableToBase`: a refused hit goes on to onAttack, as a fixed frame's does.
+        if self.native_player_hit_invulnerable(self.item_frames[i].id, self.item_frames[i].kind()) {
+            self.attack_ticks = 0;
+            return true;
+        }
+        self.hit_frame(i, true, self.creative);
+        true
+    }
+    /// `ItemFrame.hurtServer` from a projectile (`AbstractArrow.onHitEntity`,
+    /// `Snowball`, `ThrownEgg`, `ThrownEnderpearl`, `SmallFireball`...): the
+    /// damage source's entity is the projectile's owner. A fixed frame only
+    /// gives way to a creative player's shot (`canHurtWhenFixed`), and then
+    /// breaks whole (`BlockAttachedEntity.hurtServer`). `creative`: that player
+    /// has infinite materials. False when the frame refused the hit.
+    pub(super) fn projectile_hurts_frame(
+        &mut self,
+        id: u32,
+        by_player: bool,
+        creative: bool,
+    ) -> bool {
+        let Some(i) = self.item_frames.iter().position(|f| f.id == id) else {
+            return false;
+        };
+        if self.item_frames[i].fixed {
+            if !creative {
+                return false;
+            }
+            self.item_frames[i].item = None;
+        }
+        self.hit_frame(i, by_player, creative);
+        true
+    }
+    /// The non-fixed part of `ItemFrame.hurtServer`: a filled frame gives its
+    /// item up (`shouldDamageDropItem`), an empty one breaks
+    /// (`BlockAttachedEntity.hurtServer`). `by_player`: the damage source's
+    /// entity is the acting player, `creative` when they have infinite
+    /// materials (no drops).
+    fn hit_frame(&mut self, i: usize, by_player: bool, creative: bool) {
         let with_frame = self.item_frames[i].item.is_none();
         let entity_id = self.item_frames[i].id;
         if with_frame {
             let (kind, pos) = (self.item_frames[i].kind(), self.item_frames[i].pos);
-            if self.hanging_break_cancelled(kind, pos, true) {
-                return true;
+            if self.hanging_break_cancelled(kind, pos, by_player) {
+                return;
             }
         }
         let old_item = self.item_frames[i]
@@ -400,13 +445,14 @@ impl Game<'_> {
         if f.item.is_some() {
             self.frame_output_changed(f.pos);
         }
-        self.drop_frame_items(&mut f, with_frame, true);
+        self.drop_frame_items(&mut f, with_frame, by_player, creative);
         if !with_frame {
             self.item_frames[i].random = f.random.clone();
         }
         // BLOCK_CHANGE by the attacker after the drops: ItemFrame.hurtServer
         // for the item, ItemFrame.dropItem(level, causedBy) for the frame.
-        let ctx = self.who_context(Some(horizon_client::mobs::Who::Player), None);
+        let who = by_player.then_some(horizon_client::mobs::Who::Player);
+        let ctx = self.who_context(who, None);
         self.post_game_event("minecraft:block_change", at, ctx);
         if !with_frame {
             // ItemFrame.hurtServer plays this after the event.
@@ -414,17 +460,18 @@ impl Game<'_> {
                 .play(&sound(&f, "remove_item"), Some(at), 1.0, 1.0);
         }
         self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
-        if let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone()) {
+        if by_player
+            && let (Some(player), Some(name)) = (self.lan_acting_uuid, self.lan_acting_name.clone())
+        {
             self.native_player_item_frame_change(
                 player,
                 &name,
                 entity_id,
                 if with_frame { "break" } else { "remove_item" },
                 if with_frame { "" } else { &old_item },
-                rotation,
+                rotation.rem_euclid(8) as u8,
             );
         }
-        true
     }
     /// `ItemFrame.setItem(stack, true)`: keeps one item, plays the add sound
     /// for a non-empty stack and updates the comparators.
@@ -443,12 +490,18 @@ impl Game<'_> {
     }
     /// `ItemFrame.setItem` / `setRotation`: `updateNeighbourForOutputSignal`, so
     /// the comparators reading the frame take its new signal.
-    fn frame_output_changed(&mut self, pos: [i32; 3]) {
+    pub(in crate::game) fn frame_output_changed(&mut self, pos: [i32; 3]) {
         let at = BlockPos::new(pos[0], pos[1], pos[2]);
         self.with_level(|b, level, ticks| b.update_neighbour_for_output_signal(level, ticks, at));
     }
     /// `ItemFrame.dropItem`: the frame (when breaking) and the held item.
-    fn drop_frame_items(&mut self, f: &mut ItemFrame, with_frame: bool, by_player: bool) {
+    fn drop_frame_items(
+        &mut self,
+        f: &mut ItemFrame,
+        with_frame: bool,
+        by_player: bool,
+        creative: bool,
+    ) {
         // The framed map forgets the frame, except when the drops are off and
         // something caused the break (`removeFramedMap` runs only for a null
         // `causedBy` then).
@@ -464,7 +517,7 @@ impl Game<'_> {
             .ui
             .rules
             .bool_at(horizon_client::gamerules::vanilla::ENTITY_DROPS)
-            || (by_player && self.creative)
+            || (by_player && creative)
         {
             return;
         }
@@ -517,27 +570,40 @@ impl Game<'_> {
                 ((c[0] - blast[0]).powi(2) + (c[1] - blast[1]).powi(2) + (c[2] - blast[2]).powi(2))
                     .sqrt()
                     / diameter;
-            let (kind, pos) = (self.item_frames[i].kind(), self.item_frames[i].pos);
             if dist > 1.0
                 || self.item_frames[i].fixed
-                || self.hanging_break_cancelled(kind, pos, false)
+                || !self.break_frame_by(i, self.explosion_kill_credit())
             {
                 i += 1;
-                continue;
-            }
-            let mut f = self.item_frames.remove(i);
-            self.entity_killed_event_by(center(&f), self.explosion_kill_credit());
-            self.audio
-                .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
-            self.drop_frame_items(&mut f, true, false);
-            // ItemFrame.dropItem(level, causedBy): BLOCK_CHANGE after the drops.
-            let ctx = self.who_context(None, None);
-            self.post_game_event("minecraft:block_change", center(&f), ctx);
-            self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
-            if f.item.is_some() {
-                self.frame_output_changed(f.pos);
             }
         }
+    }
+    /// `BlockAttachedEntity.kill`, then `ItemFrame.dropItem(level, causedBy)`
+    /// for the frame at `index`, the kill credited to `source`: the break
+    /// sound, the frame and its item, then `BLOCK_CHANGE`. False when a mod
+    /// kept it (`native_hanging_break`): it stays at `index`.
+    pub(super) fn break_frame_by(
+        &mut self,
+        index: usize,
+        source: Option<super::commands::Target>,
+    ) -> bool {
+        let (kind, pos) = (self.item_frames[index].kind(), self.item_frames[index].pos);
+        if self.hanging_break_cancelled(kind, pos, false) {
+            return false;
+        }
+        let mut f = self.item_frames.remove(index);
+        self.entity_killed_event_by(center(&f), source);
+        self.audio
+            .play(&sound(&f, "break"), Some(center(&f)), 1.0, 1.0);
+        self.drop_frame_items(&mut f, true, false, false);
+        // ItemFrame.dropItem(level, causedBy): BLOCK_CHANGE after the drops.
+        let ctx = self.who_context(None, None);
+        self.post_game_event("minecraft:block_change", center(&f), ctx);
+        self.world.modified.insert((f.pos[0] >> 4, f.pos[2] >> 4));
+        if f.item.is_some() {
+            self.frame_output_changed(f.pos);
+        }
+        true
     }
     /// BlockAttachedEntity.tick for frames.
     pub(super) fn tick_item_frames(&mut self) {
@@ -563,7 +629,7 @@ impl Game<'_> {
                     if f.item.is_some() {
                         self.frame_output_changed(f.pos);
                     }
-                    self.drop_frame_items(&mut f, true, false);
+                    self.drop_frame_items(&mut f, true, false, false);
                     // ItemFrame.dropItem(level, null): sound, drops, then event.
                     let ctx = self.who_context(None, None);
                     self.post_game_event("minecraft:block_change", center(&f), ctx);
@@ -742,8 +808,7 @@ impl Game<'_> {
         }
         // `extractRenderState`: FIXED, seeded by the frame entity.
         let skinning = self.skinning();
-        let lights =
-            horizon_client::block_entity_render::diffuse_lights(self.dim == super::Dim::Nether);
+        let lights = horizon_client::block_entity_render::diffuse_lights(self.nether_lighting());
         for (stack, id, m, light, cull, kind) in items {
             let entity_start = out.len();
             self.mark_entity(entity_start, kind);

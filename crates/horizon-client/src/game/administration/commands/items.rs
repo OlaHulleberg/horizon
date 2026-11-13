@@ -438,14 +438,7 @@ impl Game<'_> {
             Slot::Cart(id, i) => self
                 .edit_cart_slots(*id, |slots| slots.get(*i).cloned().flatten())
                 .flatten(),
-            Slot::Block(p, i) => self
-                .world
-                .block_entities
-                .get(&(p[0], p[1], p[2]))?
-                .slots()
-                .get(*i)
-                .cloned()
-                .flatten(),
+            Slot::Block(p, i) => self.loot_inventory_item((p[0], p[1], p[2]), *i),
         }
     }
     pub(in crate::game) fn slot_accepts(&self, s: &Slot, stack: Option<&ItemStack>) -> bool {
@@ -477,6 +470,7 @@ impl Game<'_> {
         let Some(size) = self.block_container_size(p).filter(|&size| i < size) else {
             return false;
         };
+        self.unpack_loot(crate::game::container_loot::LootTarget::Block(key), None);
         let book = stack.as_ref().is_none_or(|s| {
             self.items()
                 .item_tags
@@ -596,22 +590,20 @@ impl Game<'_> {
             Slot::Guest(conn, slot) => self
                 .for_player(Target::Guest(*conn), |g| g.slot_set(slot, stack))
                 .unwrap_or(false),
-            Slot::Inv(i) => match self.inventory.get_mut(*i) {
-                Some(slot) => {
-                    *slot = stack;
-                    true
-                }
-                None => false,
-            },
+            Slot::Inv(i) if *i < self.inventory.len() => {
+                self.stop_use_replaced(*i, stack.as_ref());
+                self.inventory[*i] = stack;
+                true
+            }
+            Slot::Inv(_) => false,
             // LivingEntity's equipment SlotAccess: setItemSlot, so onEquipItem.
-            Slot::MainHand => match self.inventory.get_mut(self.selected) {
-                Some(slot) => {
-                    let old = std::mem::replace(slot, stack.clone());
-                    self.player_on_equip("mainhand", old.as_ref(), stack.as_ref());
-                    true
-                }
-                None => false,
-            },
+            Slot::MainHand if self.selected < self.inventory.len() => {
+                self.stop_use_replaced(self.selected, stack.as_ref());
+                let old = std::mem::replace(&mut self.inventory[self.selected], stack.clone());
+                self.player_on_equip("mainhand", old.as_ref(), stack.as_ref());
+                true
+            }
+            Slot::MainHand => false,
             Slot::Armor(i) => match self.armor.get_mut(*i) {
                 Some(slot) => {
                     let old = std::mem::replace(slot, stack.clone());
@@ -623,6 +615,7 @@ impl Game<'_> {
                 None => false,
             },
             Slot::Offhand => {
+                self.stop_use_replaced(crate::game::shield::OFFHAND_SLOT, stack.as_ref());
                 let old = std::mem::replace(&mut self.offhand, stack.clone());
                 self.player_on_equip("offhand", old.as_ref(), stack.as_ref());
                 true
@@ -1044,14 +1037,7 @@ impl Game<'_> {
                                 .unwrap_or(Tag::Compound(Default::default())),
                             v => horizon_client::scoreboard::json_to_tag(v),
                         };
-                        edit_components(&mut stack, |c| {
-                            let mut data = match c.get(&"minecraft:custom_data".into()) {
-                                Some(t @ Tag::Compound(_)) => t.clone(),
-                                _ => Tag::Compound(Default::default()),
-                            };
-                            merge_compound(&mut data, &tag);
-                            c.insert("minecraft:custom_data".into(), data);
-                        });
+                        set_custom_data(&mut stack, &tag);
                     }
                     "minecraft:set_components" => {
                         let patch = m["components"].clone();
@@ -1580,6 +1566,22 @@ fn edit_components(stack: &mut ItemStack, f: impl FnOnce(&mut horizon_core::nbt:
     stack.damage = damage;
     stack.extra = extra;
     stack.tidy();
+}
+/// `SetCustomDataFunction.run`: `CustomData.update(stack, tag -> tag.merge(value))`.
+fn set_custom_data(stack: &mut ItemStack, value: &Tag) {
+    edit_components(stack, |c| {
+        let mut data = match c.get(&"minecraft:custom_data".into()) {
+            Some(t @ Tag::Compound(_)) => t.clone(),
+            _ => Tag::Compound(Default::default()),
+        };
+        merge_compound(&mut data, value);
+        // Vanilla CustomData.update removes the component when the result is empty.
+        if matches!(&data, Tag::Compound(m) if m.is_empty()) {
+            c.remove(&"minecraft:custom_data".into());
+        } else {
+            c.insert("minecraft:custom_data".into(), data);
+        }
+    });
 }
 /// `CompoundTag.merge`: nested compounds merge, other values replace.
 fn merge_compound(into: &mut Tag, from: &Tag) {
@@ -2874,5 +2876,18 @@ mod registered_slot_source_preservation_tests {
             assert_eq!(game.player.is_some(), player_was_present);
             assert_eq!(game.world.game_time, clock);
         }
+    }
+}
+
+#[cfg(test)]
+mod set_custom_data_tests {
+    use super::*;
+
+    #[test]
+    fn merging_an_empty_tag_into_a_stack_without_custom_data_adds_no_component() {
+        let mut stack = ItemStack::new("minecraft:stick", 1);
+        set_custom_data(&mut stack, &Tag::Compound(Default::default()));
+        let saved = horizon_client::item_data::encode_components(&stack);
+        assert!(saved.is_none_or(|c| c.get("minecraft:custom_data").is_none()));
     }
 }

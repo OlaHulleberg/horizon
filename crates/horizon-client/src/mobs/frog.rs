@@ -678,14 +678,14 @@ pub(super) fn count_down_cooldown(m: &mut Mob) {
     }
 }
 /// `LONG_JUMP_COOLDOWN_TICKS`.
-fn jump_cooldown(m: &Mob) -> Option<i64> {
+pub(crate) fn jump_cooldown(m: &Mob) -> Option<i64> {
     m.extra
         .memories
         .iter()
         .find(|x| x.0 == LONG_JUMP_COOLDOWN)
         .map(|x| x.1)
 }
-fn set_jump_cooldown(m: &mut Mob, ticks: Option<i64>) {
+pub(crate) fn set_jump_cooldown(m: &mut Mob, ticks: Option<i64>) {
     let memories = &mut m.extra.memories;
     let at = memories.iter().position(|x| x.0 == LONG_JUMP_COOLDOWN);
     match (at, ticks) {
@@ -1109,7 +1109,8 @@ mod tests {
                 (5, "zombie", 1),
             ] {
                 let kind = std::sync::Arc::new(types.types[&format!("minecraft:{name}")].clone());
-                let mut seen = Mob::new(id, kind, Vec3::new(1.5, 64.0, 0.5), 0.0).seen(None);
+                let mut seen = Mob::new(id, kind, Vec3::new(1.5, 64.0, 0.5), 0.0)
+                    .seen(None, &crate::items::Items::empty());
                 seen.size = size;
                 others.push(seen);
             }

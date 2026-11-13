@@ -16,16 +16,18 @@ use super::Frame;
 pub(super) const INTERMEDIATE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// What the renderer's own entries call where a stage's colours cross into and out of it: as
-/// they are under 0.1; under 0.2 vanilla's 2.2 power, as the prelude's `horizon_decode` and
-/// `horizon_encode` (the shadow pass has no prelude, so these stand alone).
-pub fn line_helpers(api: Api) -> &'static str {
-    match api {
-        Api::V0_1 => {
+/// they are under 0.1; under 0.2 vanilla's 2.2 power in, as the prelude's `horizon_decode`, and
+/// out as the frame stores them: encoded, as `horizon_encode`, or where the frame holds linear
+/// light (`linear`, `[frame] blend = "linear"`) as they are. The shadow pass has no prelude, so
+/// these stand alone.
+pub fn line_helpers(api: Api, linear: bool) -> &'static str {
+    match (api, linear) {
+        (Api::V0_1, _) => {
             "fn horizon_line_in(c: vec3<f32>) -> vec3<f32> { return c; }
 fn horizon_line_out(c: vec3<f32>) -> vec3<f32> { return c; }
 "
         }
-        Api::V0_2 => {
+        (Api::V0_2, false) => {
             "fn horizon_line_in(c: vec3<f32>) -> vec3<f32> {
     return pow(select(vec3<f32>(0.0), c, c > vec3<f32>(0.0)), vec3<f32>(2.2));
 }
@@ -34,25 +36,37 @@ fn horizon_line_out(c: vec3<f32>) -> vec3<f32> {
 }
 "
         }
+        (Api::V0_2, true) => {
+            "fn horizon_line_in(c: vec3<f32>) -> vec3<f32> {
+    return pow(select(vec3<f32>(0.0), c, c > vec3<f32>(0.0)), vec3<f32>(2.2));
+}
+fn horizon_line_out(c: vec3<f32>) -> vec3<f32> { return c; }
+"
+        }
     }
 }
 
-/// 0.2's decoding copy: a picture in the frame's gamma into linear light in `INTERMEDIATE`, of
-/// the same size, alpha 1 (`scene_color`, `opaque_color`, the mirror).
+/// 0.2's decoding copy: a picture of the frame into linear light in `INTERMEDIATE`, of the same
+/// size, alpha 1 (`scene_color`, `opaque_color`, the mirror). A frame of vanilla's gamma is
+/// decoded; one that holds linear light (`linear`) is copied as it is.
 #[derive(Clone)]
 pub struct Decoder(wgpu::RenderPipeline);
 
 impl Decoder {
-    fn new(device: &wgpu::Device) -> Self {
-        let source = line_helpers(Api::V0_2).to_owned()
-            + "@group(0) @binding(0) var horizon_from: texture_2d<f32>;
-@vertex fn horizon_vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    pub(super) fn new(device: &wgpu::Device, linear: bool) -> Self {
+        let read = if linear { "c" } else { "horizon_line_in(c)" };
+        let source = line_helpers(Api::V0_2, false).to_owned()
+            + &format!(
+                "@group(0) @binding(0) var horizon_from: texture_2d<f32>;
+@vertex fn horizon_vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {{
     return vec4<f32>(vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u)) * 2.0 - 1.0, 0.0, 1.0);
-}
-@fragment fn horizon_fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
-    return vec4<f32>(horizon_line_in(textureLoad(horizon_from, vec2<i32>(p.xy), 0).rgb), 1.0);
-}
-";
+}}
+@fragment fn horizon_fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {{
+    let c = textureLoad(horizon_from, vec2<i32>(p.xy), 0).rgb;
+    return vec4<f32>({read}, 1.0);
+}}
+"
+            );
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader API 0.2 decode"),
             source: wgpu::ShaderSource::Wgsl(source.into()),
@@ -353,9 +367,11 @@ pub struct NativeFrame {
     frames: u32,
     /// `frame.wetness`, and when it was last written.
     wetness: (f32, Option<std::time::Instant>),
-    /// The shader API line of the pack, and under 0.2 the decoding copy and the mirror it
-    /// decoded (`linear_mirror`).
+    /// The shader API line of the pack, whether the world's frame holds linear light for it
+    /// (`[frame] blend = "linear"`), and under 0.2 the decoding copy and the mirror it decoded
+    /// (`linear_mirror`).
     pub api: Api,
+    pub linear: bool,
     pub decoder: Option<Decoder>,
     mirror: Option<wgpu::TextureView>,
 }
@@ -433,15 +449,16 @@ fn eased(value: f32, target: f32, half_life: f32, dt: f32) -> f32 {
 }
 
 impl NativeFrame {
-    /// The frame of a pack with the `[shadow]` settings `shadow`, if any, and the
-    /// block light colours `lights`.
+    /// The frame of a pack of the shader API line `api` with the `[shadow]` settings `shadow`, if
+    /// any, and the block light colours `lights`, onto a world's frame that holds linear light
+    /// when `linear` (a 0.2 pack's).
     pub fn new(
         device: &wgpu::Device,
         shadow: Option<&horizon_shader_api::manifest::Shadow>,
         textures: Vec<(wgpu::TextureView, wgpu::Sampler)>,
         lights: super::block_light::LightTable,
         pbr: Option<&[wgpu::Texture; 2]>,
-        api: Api,
+        (api, linear): (Api, bool),
     ) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Native shader pack frame"),
@@ -565,7 +582,8 @@ impl NativeFrame {
             shadow_camera: shadow.map(super::native_shadow::camera),
             reflects: false,
             api,
-            decoder: (api == Api::V0_2).then(|| Decoder::new(device)),
+            linear,
+            decoder: (api == Api::V0_2).then(|| Decoder::new(device, linear)),
             mirror: None,
             last: None,
             eye: [f32::NAN; 4],
@@ -1747,6 +1765,7 @@ mod tests {
     /// delta, and a long wait between its frames is not a gap that starts them over.
     #[test]
     fn a_scripted_clock_drives_time_frame_index_and_eased_values() {
+        let _gpu = crate::gfx::test_gpu::lock();
         use crate::gfx::pack_uniforms::FrameTiming;
         let Some((device, _)) = device(false) else {
             return;
@@ -1759,7 +1778,7 @@ mod tests {
             Vec::new(),
             Default::default(),
             None,
-            Api::V0_1,
+            (Api::V0_1, false),
         );
         frame.pack.still_ticks = Some(47_811);
         frame.pack.eye_light = [0, 15];
@@ -1796,6 +1815,7 @@ mod tests {
     /// however the frames before moved the eased values, wetness and the frame count.
     #[test]
     fn a_reset_frame_gives_a_fresh_pack_s_inputs() {
+        let _gpu = crate::gfx::test_gpu::lock();
         use crate::gfx::pack_uniforms::FrameTiming;
         let Some((device, _)) = device(false) else {
             return;
@@ -1815,7 +1835,7 @@ mod tests {
                 Vec::new(),
                 Default::default(),
                 None,
-                Api::V0_1,
+                (Api::V0_1, false),
             )
         };
         let (mut used, mut fresh) = (new(), new());
@@ -1845,26 +1865,27 @@ mod tests {
     /// `fb`, which a pass reads before the pass that writes it, so it holds last frame's.
     #[test]
     fn a_reset_post_reads_its_own_targets_blank() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device(true) else {
             return;
         };
         let manifest = "schema = 1
-id = \"t\"
-name = \"T\"
-version = \"1\"
-api = \"0.1\"
+    id = \"t\"
+    name = \"T\"
+    version = \"1\"
+    api = \"0.1\"
             [[post]]
-file = \"a.wgsl\"
-[[post]]
-file = \"b.wgsl\"
-output = \"fb\"
+    file = \"a.wgsl\"
+    [[post]]
+    file = \"b.wgsl\"
+    output = \"fb\"
             [[post]]
-file = \"c.wgsl\"
-";
+    file = \"c.wgsl\"
+    ";
         let a = "fn post(input: PostInput) -> vec4<f32> { return vec4<f32>(textureLoad(fb, vec2<i32>(input.pixel), 0).rgb + 0.25, 1.0); }
-";
+    ";
         let pass = "fn post(input: PostInput) -> vec4<f32> { return input.color; }
-";
+    ";
         let files = [
             (MANIFEST, manifest),
             ("a.wgsl", a),
@@ -1881,7 +1902,7 @@ file = \"c.wgsl\"
             Vec::new(),
             Default::default(),
             None,
-            Api::V0_1,
+            (Api::V0_1, false),
         );
         let mut post = NativePost::new(
             &device,
@@ -1977,6 +1998,7 @@ file = \"c.wgsl\"
     /// must keep it) times an option, the second halves it and writes the depth as alpha.
     #[test]
     fn passes_chain_through_half_float_targets_with_options_and_depth() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device(true) else {
             return;
         };
@@ -1996,7 +2018,7 @@ file = \"c.wgsl\"
             Vec::new(),
             Default::default(),
             None,
-            Api::V0_1,
+            (Api::V0_1, false),
         );
         queue.write_buffer(
             &frame.buffer,
@@ -2096,23 +2118,24 @@ file = \"c.wgsl\"
     /// frame before.
     #[test]
     fn the_last_pass_reads_last_frames_input_as_history() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device(true) else {
             return;
         };
         let manifest = "schema = 1
-id = \"t\"
-name = \"T\"
-version = \"1\"
-api = \"0.1\"
+    id = \"t\"
+    name = \"T\"
+    version = \"1\"
+    api = \"0.1\"
             [[post]]
-file = \"a.wgsl\"
-[[post]]
-file = \"b.wgsl\"
-";
+    file = \"a.wgsl\"
+    [[post]]
+    file = \"b.wgsl\"
+    ";
         let a = "fn post(input: PostInput) -> vec4<f32> { return vec4<f32>(input.color.rgb * 0.5, 1.0); }
-";
+    ";
         let b = "fn post(input: PostInput) -> vec4<f32> { return textureLoad(history, vec2<i32>(input.pixel), 0); }
-";
+    ";
         let files = [(MANIFEST, manifest), ("a.wgsl", a), ("b.wgsl", b)]
             .map(|(n, t)| (n.to_owned(), t.as_bytes().to_vec()))
             .into();
@@ -2124,7 +2147,7 @@ file = \"b.wgsl\"
             Vec::new(),
             Default::default(),
             None,
-            Api::V0_1,
+            (Api::V0_1, false),
         );
         let mut post = NativePost::new(
             &device,
@@ -2220,6 +2243,7 @@ file = \"b.wgsl\"
     /// is an integer format, and `surface_at` gets the floats back from the stored bits.
     #[test]
     fn the_surface_is_an_integer_target_that_the_post_stage_reads_bit_exact() {
+        let _gpu = crate::gfx::test_gpu::lock();
         assert_eq!(
             super::super::native_material::SURFACE_FORMAT.sample_type(None, None),
             Some(wgpu::TextureSampleType::Uint)
@@ -2244,7 +2268,7 @@ file = \"b.wgsl\"
             Vec::new(),
             Default::default(),
             None,
-            Api::V0_1,
+            (Api::V0_1, false),
         );
         let mut post = NativePost::new(
             &device,
@@ -2396,6 +2420,7 @@ file = \"b.wgsl\"
     /// signs and denormals included.
     #[test]
     fn the_surface_keeps_every_bit_of_the_floats_written_through_the_material_stage_bitcast() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device(false) else {
             return;
         };
@@ -2531,6 +2556,7 @@ file = \"b.wgsl\"
     /// an 8-bit step), at alpha 1.
     #[test]
     fn a_0_2_world_comes_back_through_decode_tonemap_and_encode() {
+        let _gpu = crate::gfx::test_gpu::lock();
         assert!(tonemap_entries(false).contains("horizon_encode(min(horizon_sanitize(out)"));
         let Some((device, queue)) = device(true) else {
             return;
@@ -2579,7 +2605,7 @@ file = \"b.wgsl\"
                 Vec::new(),
                 Default::default(),
                 None,
-                Api::V0_2,
+                (Api::V0_2, false),
             );
             let inputs = FrameInputs {
                 headroom: 1.0,
@@ -2652,6 +2678,7 @@ file = \"b.wgsl\"
     /// without one: `hdr` 0, `headroom` 1, `paper_white` and `peak` 80, `black_level` 0.
     #[test]
     fn a_0_2_frame_describes_the_display_it_goes_to() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, _)) = device(false) else {
             return;
         };
@@ -2663,7 +2690,7 @@ file = \"b.wgsl\"
             Vec::new(),
             Default::default(),
             None,
-            Api::V0_2,
+            (Api::V0_2, false),
         );
         let fields = |i: &FrameInputs| (i.hdr, i.headroom, i.paper_white, i.peak, i.black_level);
         assert_eq!(
@@ -2693,6 +2720,7 @@ file = \"b.wgsl\"
     /// to scRGB and back to HDR10 (`Hdr::retargeted`) maps it once all the same.
     #[test]
     fn a_0_2_pack_is_tone_mapped_once_by_its_own_curve_or_horizons() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device(true) else {
             return;
         };
@@ -2733,7 +2761,7 @@ file = \"b.wgsl\"
                 Vec::new(),
                 Default::default(),
                 None,
-                Api::V0_2,
+                (Api::V0_2, false),
             );
             let inputs = FrameInputs {
                 hdr: u32::from(hdr),
@@ -2760,6 +2788,8 @@ file = \"b.wgsl\"
                 true,
             );
             (display.paper_white, display.peak) = (paper, peak);
+            // As the renderer has it under a pack that draws: Horizon lights none of it.
+            display.lighting = false;
             if switched {
                 use super::super::hdr::Output::{Pq, ScRgb};
                 display = display.retargeted(&device, &queue, ScRgb);

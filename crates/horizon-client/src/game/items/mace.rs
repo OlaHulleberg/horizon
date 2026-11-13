@@ -418,6 +418,28 @@ impl Game<'_> {
         self.audio.play(sound, Some(feet), 1.0, 1.0);
         Some(fall)
     }
+    /// What a server's guest does after their hit landed on another player:
+    /// the weapon's side, the exhaustion and the sprint a knockback stops.
+    /// Returns the attacker's motion when a smash set it, which
+    /// `MaceItem.hurtEnemy` sends at once (`ClientboundSetEntityMotionPacket`),
+    /// not at the end of the tick after gravity (#8246). The mark from before
+    /// the hit stays.
+    pub(in crate::game) fn pvp_hit_after(
+        &mut self,
+        victim_on_ground: bool,
+        stops_sprint: bool,
+    ) -> Option<Vec3> {
+        let p = self.player.as_mut()?;
+        let marked = std::mem::take(&mut p.health.sync_velocity);
+        self.weapon_hit_player(victim_on_ground);
+        let p = self.player.as_mut()?;
+        let sent = std::mem::replace(&mut p.health.sync_velocity, marked).then_some(p.velocity);
+        self.pvp_exhaustion();
+        if stops_sprint {
+            self.stop_sprint_after_extra_knockback();
+        }
+        sent
+    }
     /// `Player.itemAttackInteraction` after the player's hit hurt another
     /// player: the weapon's side of it, as `weapon_hit` does for a mob. A
     /// smash stops the fall and its Wind Burst (a `post_attack` explosion on
@@ -647,7 +669,11 @@ impl Game<'_> {
                 };
                 let level = crate::game::entity::damage_level_of!(self, &attack);
                 let pushed = horizon_client::health::Hurting::ArmorStand(id as i32, source);
-                if level.knockback_canceled(pushed, &mut knock) || knock.strength <= 0.0 {
+                // The smash pushes the armor stand through the short entry, as it pushes the mobs
+                // below (`knockback(power, x, z)`).
+                let canceled = level
+                    .through_short_knockback(|level| level.knockback_canceled(pushed, &mut knock));
+                if canceled || knock.strength <= 0.0 {
                     continue;
                 }
                 let (mut kx, mut kz) = (knock.x, knock.z);

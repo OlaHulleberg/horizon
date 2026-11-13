@@ -58,7 +58,7 @@ fn installed_native_listener_intercepts_ai_setter_and_preserves_species_effects(
         }),
     )]
     .into();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
             game.options.dedicated = Some(Vec::new());
             let kind = game
@@ -68,7 +68,7 @@ fn installed_native_listener_intercepts_ai_setter_and_preserves_species_effects(
                 .unwrap()
                 .clone();
             let target = Mob::new(9010, kind, Vec3::new(2.0, 64.0, 0.0), 0.0);
-            let seen = [target.seen(None)];
+            let seen = [target.seen(None, game.items())];
             let epoch = game.native_lifecycle.epoch().unwrap();
             let replacement = LivingRef::new(EntityRef::new(epoch, target.id));
             let world = game.mob_world_base(&seen);

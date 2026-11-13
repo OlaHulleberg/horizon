@@ -2,10 +2,14 @@
 //! Controls, Key Binds, Mouse Settings, Chat Settings, Accessibility,
 //! Language and Resource Packs, laid out like vanilla's HeaderAndFooter /
 //! OptionsList screens and drawn with the shared widgets.
+mod pack_drop;
+
 use std::time::Instant;
 
 pub use crate::settings::Opt;
 
+#[path = "options_ui_widgets.rs"]
+mod widgets;
 use crate::{
     gamepad::{self, GlyphStyle},
     hdr_calibration::Picture,
@@ -17,6 +21,11 @@ use crate::{
     text::{self, Style, Text},
     ui,
 };
+pub(crate) use widgets::{button, inactive};
+
+#[path = "options_ui_values.rs"]
+mod values;
+pub(crate) use values::{chat_delay_label, chat_px, generic, on_off, percent};
 
 mod layout;
 mod shell_pages;
@@ -36,18 +45,6 @@ fn tr(key: &str) -> Text {
 pub static HORIZON_EXTRAS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 fn horizon_extras() -> bool {
     HORIZON_EXTRAS.load(std::sync::atomic::Ordering::Relaxed)
-}
-fn generic(caption: &str, value: Text) -> Text {
-    Text::translate("options.generic_value", &[tr(caption), value])
-}
-fn percent(caption: &str, value: f32) -> Text {
-    Text::translate(
-        "options.percent_value",
-        &[
-            tr(caption),
-            Text::literal(((f64::from(value) * 100.0) as i32).to_string()),
-        ],
-    )
 }
 /// `text` cut into lines of at most `width` characters, at spaces where it has them.
 fn wrap(text: &str, width: usize) -> Vec<String> {
@@ -99,19 +96,10 @@ fn mod_setting_label(setting: &crate::mod_list::NativeSetting) -> Text {
     };
     Text::option_name_value(tr(&setting.label), value)
 }
-fn on_off(v: bool) -> Text {
-    tr(if v { "options.on" } else { "options.off" })
-}
 /// A music track's name as its row shows it: the file, without its folder
 /// (`minecraft:music/game/calm1` -> `calm1`; the group names the situation).
 fn track_name(id: &str) -> &str {
     id.rsplit('/').next().unwrap_or(id)
-}
-fn chat_px(caption: &str, px: f32) -> Text {
-    Text::translate(
-        "options.pixel_value",
-        &[tr(caption), Text::literal((px as i32).to_string())],
-    )
 }
 pub(crate) enum Kind {
     /// Slider position 0..1.
@@ -385,6 +373,7 @@ impl Opt {
             Opt::ModSetting(i, j) => {
                 Kind::Slider(mod_setting(s, i, j).map_or(0.0, |m| m.value.fraction()))
             }
+            Opt::ChatDelay => values::kind(s.file.double("chatDelay")),
             Opt::FovEffects | Opt::DarknessPulsing => {
                 Kind::Slider(s.file.double(self.file_key().unwrap()).sqrt() as f32)
             }
@@ -498,6 +487,7 @@ impl Opt {
     /// The discrete step count for stepped sliders, or `None` if continuous.
     pub fn slider_steps(self) -> Option<u32> {
         match self {
+            Opt::ChatDelay => Some(60),
             Opt::Fov => Some(80),
             Opt::RenderDistance => Some((crate::options_file::MAX_RENDER_DISTANCE - 2) as u32),
             Opt::SimulationDistance => Some(27),
@@ -561,7 +551,7 @@ impl Opt {
         }
         let c = self.caption();
         match self {
-            Opt::ChatDelay => tr("options.chat.delay_none"),
+            Opt::ChatDelay => chat_delay_label(s),
             Opt::FovEffects
             | Opt::DarknessPulsing
             | Opt::DistortionEffects
@@ -766,7 +756,7 @@ impl Opt {
             } else {
                 "options.narrator.notavailable"
             }),
-            Opt::ChatDelay => tr("options.chat.delay_none"),
+            Opt::ChatDelay => chat_delay_label(s),
             Opt::HideLightningFlashes => on_off(s.file.bool("hideLightningFlashes")),
             Opt::MonochromeLogo => on_off(s.file.bool("darkMojangStudiosBackground")),
             Opt::HideSplashTexts => on_off(s.file.bool("hideSplashTexts")),
@@ -963,6 +953,7 @@ impl Opt {
         let v = v.clamp(0.0, 1.0);
         let step = |lo: f32, hi: f32| (lo + v * (hi - lo)).round();
         match self {
+            Opt::ChatDelay => values::set(s, v),
             Opt::FovEffects | Opt::DarknessPulsing => s.file.set(
                 self.file_key().unwrap(),
                 crate::options_file::V::Double(f64::from(v).powi(2)),
@@ -990,7 +981,7 @@ impl Opt {
             Opt::CloudRange => s.cloud_range = step(2.0, 128.0) as i32,
             Opt::EntityDistance => s.entity_distance = step(2.0, 20.0) / 4.0,
             Opt::BiomeBlend => s.biome_blend = step(0.0, 7.0) as i32,
-            Opt::Preset => s.graphics_preset = PRESETS[step(0.0, 3.0) as usize].into(),
+            Opt::Preset => s.graphics_preset = PRESETS[preset_from_slider(v)].into(),
             Opt::Mipmaps => s.mipmap_levels = step(0.0, 4.0) as i32,
             Opt::MaxAnisotropy => s.file.set(
                 "maxAnisotropyBit",
@@ -1553,7 +1544,7 @@ pub enum Page {
     Music,
 }
 #[derive(Clone, Debug, PartialEq)]
-enum Act {
+pub(crate) enum Act {
     None,
     Push(Page),
     Done,
@@ -1618,7 +1609,7 @@ enum WKind {
     },
 }
 #[derive(Clone, Debug, PartialEq)]
-struct Widget {
+pub(crate) struct Widget {
     x: f32,
     y: f32,
     w: f32,
@@ -1673,6 +1664,8 @@ fn matches_focus(id: &FocusId, i: usize, wd: &Widget) -> bool {
 /// What the game must do after an interaction.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
+    /// Dropped resource packs accepted on the confirmation screen.
+    ImportPacks(Vec<std::path::PathBuf>),
     /// The Pack Options page closed with changes: the player's choices of its entries, the
     /// ones that differ from their defaults (the others went back to theirs).
     PackOptions {
@@ -1856,9 +1849,9 @@ pub struct OptionsUi {
     radial_pick: shell::Shell<crate::radial_editor::PickScreen>,
     /// Shaders: the shader packs and the picked one's options, on the settings shell.
     shader: shell::Shell<crate::shader_ui::ShaderScreen>,
-    /// The Pack Options page, and the packs' Polytone config entries by pack id (the game
-    /// fills them beside `pack_infos`).
-    pub pack_options: crate::pack_options_ui::PackOptionsUi,
+    /// Pack Options, on the settings shell, and the packs' Polytone config entries by pack id
+    /// (the game fills them beside `pack_infos`).
+    pack_options: shell::Shell<crate::pack_options_ui::PackOptionsScreen>,
     pub pack_configs: std::collections::BTreeMap<String, horizon_polytone::pack::Configs>,
     pub split_profiles: crate::split_profiles::SplitProfiles,
     /// HDR calibration while its page is open.
@@ -1980,27 +1973,6 @@ impl Default for OptionsUi {
             layouts_built: 0,
         }
     }
-}
-fn button(x: f32, y: f32, w: f32, label: Text, act: Act) -> Widget {
-    Widget {
-        x,
-        y,
-        w,
-        h: 20.0,
-        kind: WKind::Button {
-            label,
-            active: true,
-            act,
-        },
-        list: false,
-        row: 0,
-    }
-}
-fn inactive(mut w: Widget) -> Widget {
-    if let WKind::Button { active, .. } = &mut w.kind {
-        *active = false;
-    }
-    w
 }
 fn option_widget(s: &Settings, opt: Opt, x: f32, y: f32, w: f32) -> Widget {
     // OptionsSubScreen.addContents: the narrator button is active only while
@@ -2311,23 +2283,6 @@ impl OptionsUi {
                 self.page(),
                 Page::Video | Page::Controls | Page::KeyBinds | Page::ModBrowser
             )
-    }
-    /// Whether the resource pack screen is open (not Create World's data packs on the same
-    /// page).
-    pub fn resource_packs_open(&self) -> bool {
-        self.page() == Page::Packs && self.data_pack_dir.is_none()
-    }
-    /// The packs in `resourcepacks/` changed while the pack screen is open
-    /// (`PackSelectionScreen`'s directory watcher): the screen is made again over
-    /// `infos`, keeping the selection made on it so far.
-    pub fn update_pack_infos(&mut self, infos: Vec<crate::pack_screen::PackInfo>) {
-        if let Some(p) = self.pack_screen.take()
-            && p.changed
-        {
-            self.pack_selection = p.commit();
-            self.pack_reselected = true;
-        }
-        self.pack_infos = infos;
     }
     pub fn page(&self) -> Page {
         *self.stack.last().unwrap_or(&Page::Main)
@@ -3231,10 +3186,6 @@ impl OptionsUi {
             c.draw(batch, atlas, cursor);
             return;
         }
-        if self.page() == Page::PackOptions {
-            self.pack_options.draw(batch, atlas, cursor, self.in_world);
-            return;
-        }
         let waiting = self.waiting();
         let in_world = self.in_world;
         if self.draw_radial_name(batch, atlas, cursor, in_world) {
@@ -3682,20 +3633,6 @@ impl OptionsUi {
             }
             return events;
         }
-        if self.page() == Page::PackOptions {
-            let mut events = Vec::new();
-            for action in self
-                .pack_options
-                .click((x, y), size, drag, right || self.shift)
-            {
-                match action {
-                    crate::pack_options_ui::Action::ButtonClick => events.push(Event::ButtonClick),
-                    crate::pack_options_ui::Action::SliderDrag => {}
-                    crate::pack_options_ui::Action::Done => events.extend(self.back(s)),
-                }
-            }
-            return events;
-        }
         if self.page() == Page::Packs {
             let mut events = Vec::new();
             if drag {
@@ -3716,6 +3653,7 @@ impl OptionsUi {
                 self.pack_focus = Instant::now();
             }
             match action {
+                crate::pack_screen::Action::Import(paths) => events.push(Event::ImportPacks(paths)),
                 crate::pack_screen::Action::OpenFolder => events.push(match &self.data_pack_dir {
                     Some(dir) => Event::OpenDataPackFolder(dir.clone()),
                     None => Event::OpenPackFolder,
@@ -3724,14 +3662,7 @@ impl OptionsUi {
                 crate::pack_screen::Action::BrowsePick(i) => {
                     events.push(Event::DownloadPack(i));
                 }
-                crate::pack_screen::Action::Options(id) => {
-                    let mut configs = horizon_polytone::pack::Configs::default();
-                    if let Some(own) = self.pack_configs.get(&id) {
-                        configs.merge(own);
-                    }
-                    self.pack_options = crate::pack_options_ui::PackOptionsUi::open(configs);
-                    self.push(Page::PackOptions);
-                }
+                crate::pack_screen::Action::Options(id) => self.open_pack_options(&id),
                 crate::pack_screen::Action::None => {}
             }
             return events;
@@ -3986,7 +3917,6 @@ impl OptionsUi {
         // release, even if the pointer has left the widget or its value stayed.
         let slider = self.dragging.take().is_some();
         let shell_slider = self.shell_mut().and_then(|shell| shell.release());
-        self.pack_options.release();
         let calibration_slider = self.calibration.as_mut().is_some_and(|c| c.release());
         let split_drop = self.split_setup.release();
         if slider || shell_slider.is_some() || calibration_slider {
@@ -4101,10 +4031,6 @@ impl OptionsUi {
             self.studio.wheel(amount);
             return Vec::new();
         }
-        if self.page() == Page::PackOptions {
-            self.pack_options.scroll(size, amount);
-            return Vec::new();
-        }
         let plain = self.resource_error.is_none()
             && !(self.pack_screen.is_some() && self.stack.last() == Some(&Page::Packs))
             && self.stack.last() != Some(&Page::Mods);
@@ -4195,10 +4121,6 @@ impl OptionsUi {
             if let Some(p) = &mut self.mods_screen {
                 p.scroll(cursor.0 as f64, cursor.1 as f64, amount as f64);
             }
-            return;
-        }
-        if self.page() == Page::PackOptions {
-            self.pack_options.scroll(size, amount);
             return;
         }
         match &mut self.pack_screen {
@@ -4350,14 +4272,8 @@ impl OptionsUi {
         self.can_change_value = false;
         match page {
             Page::PackOptions => {
-                let ui = std::mem::take(&mut self.pack_options);
-                if ui.changed {
-                    let entries = ui.configs.entries().keys().cloned().collect();
-                    events.push(Event::PackOptions {
-                        entries,
-                        chosen: ui.configs.chosen(),
-                    });
-                }
+                let screen = std::mem::take(&mut self.pack_options.screen);
+                events.extend(screen.finished());
             }
             Page::ShaderOptions | Page::ShaderPacks => {
                 if s.shader_options.as_ref().is_some_and(|o| o.changed) {
@@ -5036,6 +4952,36 @@ mod tests {
 
     /// A renderer whose destination offers nothing and whose display reports nothing.
     const NONE: EffectiveOutput = EffectiveOutput::NONE;
+
+    #[test]
+    fn pack_options_leave_with_a_change_and_with_nothing_after_its_undo() {
+        use crate::settings_shell::Screen as _;
+        let mut s = Settings::default();
+        let atlas = HudAtlas::build(&crate::resource_source::ResourceSource::directory(
+            std::path::PathBuf::from("/nonexistent/horizon-test-assets"),
+        ));
+        let atlas = atlas.unwrap();
+        let mut ui = OptionsUi::default();
+        let mut configs = horizon_polytone::pack::Configs::default();
+        let birds = serde_json::json!({"default_value": true});
+        configs.add_entry("p:birds".into(), &birds);
+        ui.pack_configs.insert("pack".into(), configs);
+        for undone in [false, true] {
+            ui.open_pack_options("pack");
+            assert!(ui.shell().is_some(), "Pack Options is on the shell");
+            let birds = crate::pack_options_ui::Item::Entry(0);
+            ui.pack_options.screen.press(&mut s, birds, false);
+            if undone {
+                let before = s.clone();
+                ui.pack_options.screen.undo(&mut s, &before);
+            }
+            let events = ui.key(&mut s, &atlas, winit::keyboard::KeyCode::Escape, None);
+            let sent = events
+                .iter()
+                .any(|e| matches!(e, Event::PackOptions { .. }));
+            assert_eq!(sent, !undone, "undone: {undone}");
+        }
+    }
 
     /// The window allows the input method only while `typing` says a search
     /// box has the focus (`Game::text_field_focused`), so a page without one
@@ -8697,6 +8643,10 @@ mod tests {
     }
 }
 
+fn preset_from_slider(v: f32) -> usize {
+    let v = if v >= 1.0 { 0.99999 } else { v };
+    ((v * 4.0).floor() as usize).min(3)
+}
 #[cfg(test)]
 #[path = "options_ui_graphics_tests.rs"]
 mod graphics_tests;

@@ -6,7 +6,7 @@ use horizon_client::{
     chunk::Chunk,
     mobs::{Mob, MobEvent},
 };
-use horizon_core::{geometry::Vec3, position::ChunkPos, random::LegacyRandom};
+use horizon_core::{geometry::Vec3, position::ChunkPos, random::RandomSource};
 use std::sync::Arc;
 
 /// A game over 5x5 empty chunks around (0, 0) with a stone floor at y = 3:
@@ -77,7 +77,7 @@ fn enderman(game: &Game, id: u32, at: Vec3, seed: i64) -> Mob {
         .unwrap()
         .clone();
     let mut mob = Mob::new(id, kind, at, 0.0);
-    mob.random = LegacyRandom::new(seed);
+    mob.random.set_seed(seed);
     mob.persistent = true;
     mob
 }
@@ -188,7 +188,7 @@ fn shulker(game: &Game, id: u32, at: Vec3, seed: i64) -> Mob {
         .unwrap()
         .clone();
     let mut mob = Mob::new(id, kind, at, 0.0);
-    mob.random = LegacyRandom::new(seed);
+    mob.random.set_seed(seed);
     mob.persistent = true;
     mob
 }
@@ -327,7 +327,7 @@ fn a_teleporting_shulker_posts_teleport_where_it_stood() {
         let others: Vec<_> = game
             .mobs
             .iter()
-            .map(|m| super::creatures::seen(m, uuid))
+            .map(|m| super::creatures::seen(m, uuid, game.items()))
             .collect();
         let mut level_random = game.world.random.clone();
         let mut events = Vec::new();

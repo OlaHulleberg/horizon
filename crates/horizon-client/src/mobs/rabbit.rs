@@ -49,6 +49,9 @@ pub fn register(m: &mut Mob) {
     g.add(6, Stroll::avoiding_water(0.6));
     g.add(11, LookAtPlayer::new(10.0));
     m.ai.mov.kind = super::control::MoveKind::Custom;
+    // Rabbit's constructor ends with setSpeedModifier(0.0), which leaves the move control in
+    // MOVE_TO towards the default wanted position (0, 0, 0).
+    m.ai.mov.set_wanted(0.0, 0.0, 0.0, 0.0);
     m.ai.nav.can_float = true;
     m.extra.ints[IDLE_TIMEOUT] = m.random.next_int_bound(40).unwrap_or(0) + 180;
 }
@@ -462,6 +465,7 @@ mod tests {
             &json!({"children": {"head": {}, "left_hind_foot": {}}}),
         ));
         let kind = Arc::new(MobType {
+            shadow: None,
             id: "minecraft:rabbit".into(),
             species: Species::Rabbit,
             width: 0.4,
@@ -481,6 +485,7 @@ mod tests {
             jump_strength: 0.42,
             attributes: Arc::default(),
             item_stack_limits: Default::default(),
+            attribute_bounds: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,

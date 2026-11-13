@@ -9,6 +9,7 @@ use horizon_client::{
     collisions::SceneCollisions,
 };
 use horizon_client::{
+    entities::nameplate::NameplateDistances,
     hud::HudBatch,
     mobs::{Anim, Brain, Mob, MobType},
     mouse::Rotation,
@@ -185,6 +186,7 @@ pub(super) fn player_type_with_document(
 fn load_player_type(models: &horizon_client::mobs::EntityModelDocument) -> Option<Arc<MobType>> {
     models.model("minecraft:player#main").map(|model| {
         Arc::new(MobType {
+            shadow: None,
             id: "minecraft:player".into(),
             // Players render as a humanoid; the species only drives local AI.
             species: horizon_client::mobs::Species::Zombie,
@@ -205,6 +207,7 @@ fn load_player_type(models: &horizon_client::mobs::EntityModelDocument) -> Optio
             jump_strength: 0.42,
             attributes: Default::default(),
             item_stack_limits: Default::default(),
+            attribute_bounds: Default::default(),
             gravity: 0.08,
             safe_fall_distance: 3.0,
             fall_damage_multiplier: 1.0,
@@ -316,9 +319,9 @@ impl Game<'_> {
         }
         // Minecraft.cameraEntity: a server's spectator camera on a mob or
         // another player.
-        let (entity, descending, entity_kind) = match self.camera_mob() {
-            Some(m) => (
-                super::remote_camera::mob_camera_entity(m),
+        let (entity, descending, entity_kind) = match self.spectated_camera_snapshot() {
+            Some(e) => (
+                e,
                 false,
                 horizon_world::collision_context::EntityContextKind::Living,
             ),
@@ -391,6 +394,17 @@ impl Game<'_> {
             view.y_rot,
             view.x_rot,
         ))
+    }
+    /// `Camera.rotation()` as the quads of particles take it: the frame's camera (a
+    /// bed's, a front view's, a mod's), not the player's own yaw and pitch.
+    pub(super) fn particle_rotation(&self) -> glam::Quat {
+        if self.studio.flying() {
+            return self.camera_orientation();
+        }
+        let (yaw, pitch) = self
+            .posed_rotation
+            .unwrap_or((self.view.y_rot, self.view.x_rot));
+        super::camera_rotation(CameraType::FirstPerson, yaw, pitch)
     }
     /// The player as `Camera.alignWithEntity` sees it.
     fn player_camera_entity(&mut self) -> Option<CameraEntity> {
@@ -475,11 +489,17 @@ impl Game<'_> {
     /// Keep the player's model in step with the player (`LivingEntity.tick`
     /// body turning, `WalkAnimationState`, the swing and the pose).
     pub(super) fn tick_player_model(&mut self) {
-        let scale = self
-            .player
-            .as_mut()
-            .and_then(|p| p.attribute("minecraft:scale").ok())
-            .unwrap_or(1.0) as f32;
+        let (scale, nameplate) = self.player.as_mut().map_or_else(
+            || (1.0, NameplateDistances::default()),
+            |p| {
+                let scale = p.attribute("minecraft:scale").unwrap_or(1.0) as f32;
+                let nameplate = NameplateDistances {
+                    name_tag: p.attribute("minecraft:name_tag_distance").ok(),
+                    below_name: p.attribute("minecraft:below_name_distance").ok(),
+                };
+                (scale, nameplate)
+            },
+        );
         let Some(p) = self.player.as_ref() else {
             self.player_model = None;
             return;
@@ -542,6 +562,7 @@ impl Game<'_> {
         };
         m.extra.ints[1] = bed;
         m.extra.model_scale = scale;
+        m.set_nameplate(nameplate);
         // The crouch flag is still last tick's here.
         let (from, at) =
             player_model_positions(previous_position, position, m.extra.crouching, crouching);
@@ -787,24 +808,21 @@ impl Game<'_> {
         let lookup = |name: &str| atlas.sprites.get(name).map(|r| [r.u0, r.v0, r.u1, r.v1]);
         let start = out.len();
         let body = self.own_body_visible();
-        // `native_player_submit`: a native mod's own model for this player,
-        // in place of the vanilla one and its layers (an invisible player is
-        // not asked, as for the others).
+        // The mods' pre hooks (`render_player_pre`, then `render_living_pre`), as for the other
+        // players: a cancel skips the rest of this player's drawing and its post hooks, and the
+        // frame's later passes (flames, name tag) leave it out too.
         let name = self.own_profile_name();
         let who = PlayerRender {
             name: &name,
             local: true,
         };
-        let (drawn, hidden) = match body {
-            true => self.mod_player_geometry(m, who, alpha as f32, camera, packed, out),
-            false => (false, mod_api::HiddenParts::default()),
-        };
-        if drawn {
-            return;
-        }
-        // `native_mob_layer`'s posed parts, kept from the draw below while a mod listens.
-        let mut parts = None;
         let listened = self.mob_render_listened();
+        let pre = self.mod_render_pre(m, Some(who), listened, alpha as f32, camera, packed, out);
+        let Some(hidden) = pre else {
+            return;
+        };
+        // The mods' layers' posed parts, kept from the draw below while they want them.
+        let (mut parts, layers) = (None, self.mod_layers(m));
         // A spectator still draws its own model in third person: the poses'
         // visibility (set by player_model_visibility) hides body parts, and
         // translucent_body marks the body OIT for the ghostly look. Only first
@@ -819,7 +837,7 @@ impl Game<'_> {
                 self.res.mob_data(),
                 &self.player_armor_layers(),
                 hidden,
-                listened.then_some(&mut parts),
+                (listened || layers.is_some()).then_some(&mut parts),
                 out,
             );
         } else {
@@ -831,7 +849,7 @@ impl Game<'_> {
                 packed,
                 self.res.mob_data(),
                 &self.player_armor_layers(),
-                listened.then_some(&mut parts),
+                (listened || layers.is_some()).then_some(&mut parts),
                 out,
             );
         }
@@ -859,9 +877,20 @@ impl Game<'_> {
             self.held_item_geometry(m, camera, alpha, packed, true, None, out);
             // CustomHeadLayer: a pumpkin, skull or other head item.
             self.head_item_geometry(m, camera, alpha, packed, true, out);
-            // `native_mob_layer`: a native mod's layer, over the vanilla ones.
-            self.mod_mob_layer_geometry(m, Some(who), parts, alpha as f32, camera, packed, out);
+            // Mods' layers (`register_entity_layers`), over vanilla's.
+            self.mod_layer_geometry(
+                m,
+                Some(who),
+                parts,
+                layers,
+                alpha as f32,
+                camera,
+                packed,
+                out,
+            );
         }
+        // The post hooks, whether or not the layers drew (a spectator draws none).
+        self.mod_render_post(m, Some(who), parts, alpha as f32, camera, packed, out);
         // LivingEntity.isCurrentlyGlowing: the Glowing effect.
         let vanilla = self
             .potions

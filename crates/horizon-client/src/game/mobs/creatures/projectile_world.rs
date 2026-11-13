@@ -3,6 +3,9 @@
 use super::*;
 
 impl ProjectileWorld for ProjWorld<'_, '_> {
+    fn below_world_y(&self) -> f64 {
+        self.w.world.below_world_y()
+    }
     fn clip(&self, from: Vec3, to: Vec3) -> Option<(Vec3, [i32; 3], [i32; 3])> {
         let mut scene = SceneCollisions {
             world: self.w.world,

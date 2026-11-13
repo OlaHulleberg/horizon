@@ -51,7 +51,7 @@ fn with_game(test: impl FnOnce(&mut Game<'_>)) {
     game.player = Some(
         horizon_client::motion::PlayerMotion::new(game.motion, Vec3::new(2.5, 200.0, 2.5)).unwrap(),
     );
-    game.world.random = LegacyRandom::new(114);
+    game.world.random = horizon_core::random::LevelRandom::for_level(LegacyRandom::new(114));
     test(&mut game);
 }
 
@@ -248,5 +248,57 @@ fn launching_from_a_block_and_while_gliding_use_the_rocket_up() {
         game.inventory[game.selected] = Some(stack.clone());
         assert!(game.boost_firework(&stack), "the gliding boost launches");
         assert_eq!(game.stats.get("used", "minecraft:firework_rocket"), 6);
+    });
+}
+
+#[test]
+#[ignore = "prepared resources; actual registered load, Game tick and posted events"]
+fn a_falling_rocket_hits_the_ground_and_one_in_water_splashes() {
+    with_game(|game| {
+        // Commands and collisions need resident terrain for both rocket columns.
+        // Use the shared chunk fixture and the player's real ticket sources.
+        crate::game::native_entity_refs::tests::prepare_entity_ticking_neighborhood(
+            game,
+            ChunkPos::new(0, 0),
+        );
+        game.build_registries();
+        game.set_allow_commands(true);
+        game.update_chunk_tickets();
+        assert!(game.run_command("setblock 6 199 10 stone"));
+        // Keep the falling rocket submerged through the sixth move: one
+        // floating source block ends at y = 200, above its final position.
+        assert!(game.run_command("setblock 20 199 10 water"));
+        assert!(game.run_command("setblock 20 200 10 water"));
+        for x in [6, 20] {
+            assert!(game.run_command(&format!(
+                "summon firework_rocket {x}.5 202 10.5 {{LifeTime:100,HasBeenShot:1b,ShotAtAngle:1b,Motion:[0d,-0.5d,0d]}}"
+            )));
+        }
+        game.audio.heard.clear();
+        start_events();
+        let mut falls = Vec::new();
+        for _ in 0..6 {
+            game.tick_rockets();
+            falls.push(game.rockets[0].fall_distance);
+        }
+        let events: Vec<_> = crate::game::sculk::TEST_POSTED_EVENTS.with(|v| {
+            std::mem::take(v.borrow_mut().as_mut().unwrap())
+                .into_iter()
+                .map(|e| (e.0, e.1[0].floor() as i32))
+                .filter(|e| matches!(e.0, "minecraft:hit_ground" | "minecraft:splash"))
+                .collect()
+        });
+        stop_events();
+        // The fourth move ends on the stone without a collision; the fifth lands.
+        assert_eq!(falls, [0.5, 1.0, 1.5, 2.0, 0.0, 0.0]);
+        assert_eq!(game.rockets[1].fall_distance, 0.0);
+        assert_eq!(
+            events,
+            [("minecraft:splash", 20), ("minecraft:hit_ground", 6)]
+        );
+        assert_eq!(
+            game.audio.heard.get("minecraft:entity.generic.splash"),
+            Some(&1)
+        );
     });
 }

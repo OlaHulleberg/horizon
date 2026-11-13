@@ -16,6 +16,9 @@ impl PlayerMotion {
         )
         .map_err(attribute_error)?;
         Ok(Self {
+            random: horizon_core::random::EntityRandom::own(crate::mobs::entity_random(
+                0, position,
+            )),
             health: crate::health::PlayerHealth::new(&resources.health, &mut attributes)?,
             status: crate::effects::StatusFlags::default(),
             impulse: ImpulseContext::default(),
@@ -109,6 +112,7 @@ impl PlayerMotion {
             hurt_log: Vec::new(),
             attack_log: Vec::new(),
             border: None,
+            collision_exclusions: Default::default(),
         })
     }
 }

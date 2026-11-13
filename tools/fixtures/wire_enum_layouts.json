@@ -619,7 +619,8 @@
     {
       "name": "ProvidedBy",
       "path": "crate::ProvidedBy",
-      "hash": "5d265204eef1d102",
+      "hash": "fe10e188155f9b86",
+      "contract_change": "arismoko/horizon#3519 appends ProvidedBy::Block; the frozen hash was 5d265204eef1d102",
       "canonical_path": "crate::parts::shared::ProvidedBy",
       "alias_provenance": "rustc E0603 public re-export suggestion from generated direct-type test compilation"
     },
@@ -634,6 +635,12 @@
       "path": "crate::world::types::RaidStatus",
       "hash": "1b3564307af64391",
       "canonical_path": "crate::world::types::RaidStatus"
+    },
+    {
+      "name": "RailShape",
+      "path": "crate::block::rail_shape::RailShape",
+      "hash": "d5b1c18674ac3799",
+      "canonical_path": "crate::block::rail_shape::RailShape"
     },
     {
       "name": "Rarity",
@@ -698,8 +705,10 @@
     {
       "name": "Shape",
       "path": "crate::item::crafting::Shape",
-      "hash": "a157d010a4183033",
-      "canonical_path": "crate::item::crafting::Shape"
+      "hash": "004a43af941b0c62",
+      "canonical_path": "crate::item::crafting::Shape",
+      "baseline_hash": "a157d010a4183033",
+      "contract_change": "#3737 adds CustomDisplay at ordinal 3; ordinals 0, 1, 2 remain unchanged. Hash independently mixed from the four literal variant names using the original FNV layout algorithm."
     },
     {
       "name": "ShapeEntityKind",

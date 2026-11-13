@@ -10,10 +10,9 @@ use horizon_client::{
     collisions::SceneCollisions,
     containers::BlockEntity,
     items::{ItemStack, Items},
-    mobs::{Mob, Species, sulfur_cube},
+    mobs::{Mob, Species, equip::equippable, sulfur_cube},
     particles::{ParticleOptions, ParticleType},
     projectiles::{Projectile, ProjectileKind},
-    random_source,
 };
 use mod_api::SoundSource;
 // Its old home, for mixin code that names it here.
@@ -24,16 +23,16 @@ use horizon_core::{
 };
 use horizon_world::{
     fluid::FluidKind,
-    level::{BucketContent, PlaceContext, PlaceOutcome},
+    level::{PlaceContext, PlaceOutcome},
     registry::BlockStateId,
 };
 use std::sync::Arc;
 
-type Pos = (i32, i32, i32);
+pub(super) type Pos = (i32, i32, i32);
 
 /// The sound event of a plain click, a failed dispense and a launched projectile.
-const CLICK: i32 = 1000;
-const FAIL: i32 = 1001;
+pub(super) const CLICK: i32 = 1000;
+pub(super) const FAIL: i32 = 1001;
 const LAUNCH: i32 = 1002;
 
 fn step(d: Direction) -> [i32; 3] {
@@ -46,7 +45,7 @@ fn step(d: Direction) -> [i32; 3] {
         Direction::East => [1, 0, 0],
     }
 }
-fn offset(p: Pos, d: Direction) -> Pos {
+pub(super) fn offset(p: Pos, d: Direction) -> Pos {
     let s = step(d);
     (p.0 + s[0], p.1 + s[1], p.2 + s[2])
 }
@@ -109,7 +108,7 @@ fn shrink(mut stack: ItemStack) -> Option<ItemStack> {
     (stack.count > 0).then_some(stack)
 }
 /// A dispenser's answer: the slot's new content and the level event played.
-type Dispensed = (Option<ItemStack>, i32);
+pub(super) type Dispensed = (Option<ItemStack>, i32);
 
 /// None keeps vanilla's behaviour; an explicit empty remainder consumes the stack.
 fn mod_dispensed(answer: Option<mod_api::Dispensed>, items: &Items) -> Option<Dispensed> {
@@ -339,7 +338,7 @@ impl Game<'_> {
             f64::from(p.2) + 0.5,
         ]
     }
-    fn pos_of(p: Pos) -> BlockPos {
+    pub(super) fn pos_of(p: Pos) -> BlockPos {
         BlockPos::new(p.0, p.1, p.2)
     }
 
@@ -433,14 +432,15 @@ impl Game<'_> {
 
     // ---- DefaultDispenseItemBehavior ----
 
-    /// `DispenserBlock.getDispensePosition(source, scale, offset)`.
+    /// `DispenserBlock.getDispensePosition(source, scale, offset)`; vanilla adds
+    /// `scale * step + offset` first, then adds that sum to the block centre.
     fn dispense_position(pos: Pos, facing: Direction, scale: f64, offset: [f64; 3]) -> Vec3 {
         let s = step(facing);
         let c = Self::center(pos);
         Vec3::new(
-            c[0] + scale * f64::from(s[0]) + offset[0],
-            c[1] + scale * f64::from(s[1]) + offset[1],
-            c[2] + scale * f64::from(s[2]) + offset[2],
+            c[0] + (scale * f64::from(s[0]) + offset[0]),
+            c[1] + (scale * f64::from(s[1]) + offset[1]),
+            c[2] + (scale * f64::from(s[2]) + offset[2]),
         )
     }
     /// `DefaultDispenseItemBehavior.spawnItem` at `getDispensePosition`.
@@ -517,7 +517,7 @@ impl Game<'_> {
     }
     /// `DefaultDispenseItemBehavior.consumeWithRemainder`: the remainder goes
     /// into the dispenser (`insertItem`) or is dropped.
-    fn consume_with_remainder(
+    pub(super) fn consume_with_remainder(
         &mut self,
         pos: Pos,
         facing: Direction,
@@ -663,7 +663,7 @@ impl Game<'_> {
             "minecraft:honeycomb" => self.dispense_honeycomb(pos, facing, stack)?,
             "minecraft:potion" => self.dispense_potion(pos, facing, stack)?,
             _ if item.ends_with("shulker_box") => self.dispense_shulker_box(pos, facing, stack)?,
-            _ if horizon_world::fluid::mod_fluid_of_bucket(&item).is_some() => {
+            _ if self.dispenses_as_filled_bucket(&item) => {
                 self.dispense_filled_bucket(pos, facing, stack)?
             }
             _ if super::boats::any_boat_wood(&item).is_some() => {
@@ -688,12 +688,8 @@ impl Game<'_> {
         facing: Direction,
         stack: ItemStack,
     ) -> Result<Dispensed> {
-        let equippable = self
-            .res
-            .items()
-            .get(&stack.item)
-            .is_some_and(|i| i.equip_slot.is_some());
-        if equippable {
+        // `ItemStack.has(DataComponents.EQUIPPABLE)`: the stack's own, a removed one included.
+        if equippable(self.items(), &stack).is_some() {
             let mut stack = stack;
             if self.dispense_equipment(pos, facing, &mut stack) {
                 return Ok((Some(stack).filter(|s| s.count > 0), CLICK));
@@ -901,54 +897,61 @@ impl Game<'_> {
     /// `EquipmentDispenseItemBehavior.dispenseEquipment`: the first living
     /// entity in front that `canEquipWithDispenser` gets one of the item.
     fn dispense_equipment(&mut self, pos: Pos, facing: Direction, stack: &mut ItemStack) -> bool {
-        let Some(info) = self.items().get(&stack.item) else {
+        // The stack's own `equippable`: its slot and allowed entities, and `dispensable`.
+        let Some(equippable) = equippable(self.items(), stack) else {
             return false;
         };
-        let (Some(slot), true) = (
-            info.equip_slot.as_deref().and_then(Slot::from_name),
-            info.equip_dispensable,
-        ) else {
+        let default = (self.items().get(&stack.item)).is_some_and(|info| info.equip_dispensable);
+        let dispensable = horizon_client::item_sync::dispensable(stack, default);
+        let Some(slot) = Slot::from_name(equippable.slot).filter(|_| dispensable) else {
             return false;
         };
-        let allowed = info.equip_allowed.clone();
         // Equippable.equipSound defaults to the generic armour sound.
-        let sound = info
-            .equip_sound
-            .clone()
+        let sound = (self.items().get(&stack.item))
+            .and_then(|info| info.equip_sound.clone())
             .or_else(|| Some("minecraft:item.armor.equip_generic".into()));
         let front = offset(pos, facing);
         let one = ItemStack {
             count: 1,
             ..stack.clone()
         };
-        let allows = |id: &str| allowed.as_ref().is_none_or(|a| a.contains(id));
+        // `Equippable.canBeEquippedBy`, then the item's parts (`canEquip`) with the stack converted
+        // once, for the entity in front.
+        let (tags, prepared) = (
+            &self.stations().enchantments.entity_tags,
+            self.equip_stack(stack),
+        );
+        let allows = |entity: u32, id: &str| {
+            let data = equippable.allows(id, tags);
+            self.can_equip(&prepared, equippable.slot, entity, id, data)
+        };
         // LivingEntity.canEquipWithDispenser: alive, the slot usable, the
         // item's allowed entities, the slot empty and the dispenser rule.
         let target = self.targets_at(front).into_iter().find(|t| match *t {
             // Player.canUseSlot: every slot; the armour and the off hand are
             // the ones an equippable item can reach.
             Target::Player => {
-                allows("minecraft:player")
+                allows(self.own_entity_id() as u32, "minecraft:player")
                     && match slot {
                         Slot::OffHand => self.offhand.is_none(),
                         _ => slot.armor_index().is_some_and(|i| self.armor[i].is_none()),
                     }
             }
-            Target::Guest(conn) => {
-                allows("minecraft:player")
-                    && self
-                        .lan
-                        .as_ref()
-                        .and_then(|h| h.hub.guest(conn))
-                        .is_some_and(|g| match slot {
+            Target::Guest(conn) => self
+                .lan
+                .as_ref()
+                .and_then(|h| h.hub.guest(conn))
+                .is_some_and(|g| {
+                    allows(g.entity_id as u32, "minecraft:player")
+                        && match slot {
                             Slot::OffHand => g.offhand.is_none(),
                             _ => slot.armor_index().is_some_and(|i| g.armor[i].is_none()),
-                        })
-            }
+                        }
+                }),
             // ArmorStand.canUseSlot: not a locked slot, and a hand needs arms.
             Target::Stand(i) => slot.stand_index().is_some_and(|s| {
                 let stand = &self.armor_stands[i];
-                allows("minecraft:armor_stand")
+                allows(stand.id, "minecraft:armor_stand")
                     && !stand.is_disabled(s)
                     && stand.equipment[s].is_none()
             }),
@@ -956,7 +959,7 @@ impl Game<'_> {
                 let m = &self.mobs[i];
                 m.alive()
                     && mob_can_use_slot(m, slot)
-                    && allows(&m.kind.id)
+                    && allows(m.id, &m.kind.id)
                     && mob_slot_item(m, slot).is_none()
                     && mob_can_dispenser_equip(m, slot)
             }
@@ -1192,14 +1195,13 @@ impl Game<'_> {
             return;
         }
         // Projectile.shoot spreads the shot with the projectile's own random.
-        let mut own = random_source::entity();
         match item.as_str() {
             "minecraft:experience_bottle"
             | "minecraft:splash_potion"
             | "minecraft:lingering_potion" => {
-                let mut shot = Projectile::new(ProjectileKind::Snowball, at, None);
-                shot.shoot(&mut own, dir, power, uncertainty);
-                self.launch_thrown(one, at, shot.velocity, None);
+                let mut shot = super::potions::thrown_projectile(one, at, false);
+                shot.shoot_own(dir, power, uncertainty);
+                self.add_projectile(shot);
             }
             _ => {
                 let kind = match item.as_str() {
@@ -1239,13 +1241,14 @@ impl Game<'_> {
                     _ => ProjectileKind::Snowball,
                 };
                 let mut shot = Projectile::new(kind, at, None);
+                shot.set_egg_item(&one);
                 // ArrowItem/SpectralArrowItem.asProjectile: dispensed arrows
                 // may be picked up.
                 if let Some(a) = shot.arrow.as_mut() {
                     a.set_item(&one);
                     a.pickup = horizon_client::arrows::Pickup::Allowed;
                 }
-                shot.shoot(&mut own, dir, power, uncertainty);
+                shot.shoot_own(dir, power, uncertainty);
                 self.spawn_projectile(shot, &one);
             }
         }
@@ -1265,14 +1268,18 @@ impl Game<'_> {
         self.next_entity += 1;
         let (_, uuid) = horizon_client::mobs::living_random();
         self.persist.uuids.insert(self.next_entity, uuid);
-        let mut stand =
+        let stand =
             horizon_client::entities::ArmorStand::new(self.next_entity, foot, y_rot(facing));
-        // Entity.applyImplicitComponents: a name from an anvil names the stand.
-        if let Some(name) = stack.custom_name() {
-            stand.custom_name = Some(horizon_client::text::Text::literal(name));
-        }
         self.world.modified.insert((front.0 >> 4, front.2 >> 4));
         self.armor_stands.push(stand);
+        // EntityType.appendDefaultStackConfig: the dispenser's yaw first, then
+        // the item's createDefaultStackConfig with no user.
+        self.apply_item_stack_config(
+            super::commands::Target::Stand(self.next_entity),
+            "minecraft:armor_stand",
+            &stack,
+            false,
+        );
         (shrink(stack), CLICK)
     }
     /// A tame donkey, mule or llama in front without a chest gets it.
@@ -1341,7 +1348,7 @@ impl Game<'_> {
         self.boats.push(boat);
         // BoatDispenseItemBehavior: createDefaultStackConfig with no user,
         // then setYRot(direction.toYRot()).
-        self.apply_vehicle_stack_config(super::commands::Target::Boat(id), &kind, &stack, false);
+        self.apply_item_stack_config(super::commands::Target::Boat(id), &kind, &stack, false);
         self.set_boat_yaw(id, yaw);
         if self.serving.is_some() || self.options.dedicated.is_some() {
             let boat = self.boats.last().unwrap();
@@ -1365,14 +1372,14 @@ impl Game<'_> {
             c[2] + f64::from(s[2]) * 1.125,
         );
         let front = offset(pos, facing);
-        let y_offset = if let Some(rail) = self.rail(front.0, front.1, front.2) {
+        let y_offset = if let Some(rail) = self.rail(None, front.0, front.1, front.2) {
             if rail.shape.is_slope() { 0.6 } else { 0.1 }
         } else {
             if !self.res.facts().is_air(self.block_at(front)) {
                 return (self.dispense_default_in_level(pos, facing, stack), CLICK);
             }
             let below = (front.0, front.1 - 1, front.2);
-            let Some(rail) = self.rail(below.0, below.1, below.2) else {
+            let Some(rail) = self.rail(None, below.0, below.1, below.2) else {
                 return (self.dispense_default_in_level(pos, facing, stack), CLICK);
             };
             if facing != Direction::Down && rail.shape.is_slope() {
@@ -1391,12 +1398,7 @@ impl Game<'_> {
         self.carts.push(cart);
         // AbstractMinecart.createMinecart: createDefaultStackConfig with no user.
         let id = self.next_entity;
-        self.apply_vehicle_stack_config(
-            super::commands::Target::Cart(id),
-            kind.id(),
-            &stack,
-            false,
-        );
+        self.apply_item_stack_config(super::commands::Target::Cart(id), kind.id(), &stack, false);
         if self.serving.is_some() || self.options.dedicated.is_some() {
             let cart = self.carts.last().unwrap();
             self.native_vehicle_create(
@@ -1409,52 +1411,6 @@ impl Game<'_> {
 
     // ---- buckets ----
 
-    /// The filled bucket behaviour: `DispensibleContainerItem.emptyContents`.
-    fn dispense_filled_bucket(
-        &mut self,
-        pos: Pos,
-        facing: Direction,
-        stack: ItemStack,
-    ) -> Result<Dispensed> {
-        let item = stack.item.to_string();
-        let target = offset(pos, facing);
-        let (content, sound, mob) =
-            horizon_client::items::bucket_contents(&item).expect("filled bucket dispatcher");
-        let target_pos = Self::pos_of(target);
-        let emptied = self.with_level(|b, level, ticks| {
-            b.bucket_empty(level, ticks, target_pos, None, content, sound, false, false)
-        });
-        self.process_level_events()?;
-        if emptied.is_none() {
-            return Ok((self.dispense_default_in_level(pos, facing, stack), CLICK));
-        }
-        if self.dimension_type().water_evaporates
-            && matches!(
-                content,
-                BucketContent::Fluid(FluidKind::Water) | BucketContent::MobWater
-            )
-        {
-            self.evaporation_smoke([target.0, target.1, target.2]);
-        }
-        if let Some(kind) = mob {
-            // MobBucketItem.checkExtraContent: the mob from the bucket calls
-            // out, then ENTITY_PLACE.
-            if let Some(id) = self.spawn_mob_at(kind, target, true) {
-                self.mob_placed(id, &stack)?;
-            }
-            self.post_block_game_event(
-                "minecraft:entity_place",
-                [target.0, target.1, target.2],
-                None,
-                None,
-            );
-        }
-        let bucket = ItemStack::new("minecraft:bucket", 1);
-        Ok((
-            self.consume_with_remainder(pos, facing, stack, bucket),
-            CLICK,
-        ))
-    }
     /// The empty bucket: `BucketPickup.pickupBlock`.
     fn dispense_empty_bucket(
         &mut self,
@@ -1781,6 +1737,25 @@ impl Game<'_> {
         if !self.with_level(|b, level, ticks| b.directional_can_place(level, ticks, &ctx)) {
             return Ok((Some(stack), FAIL));
         }
+        if mod_api::__private::listened(mod_api::HookId::EntityPlace)
+            && let Some(preview) =
+                self.with_level(|b, level, ticks| b.placement_preview(level, ticks, &ctx))
+        {
+            let against = ctx.placed_against_pos(preview.pos);
+            let against = self.world.block(against.x, against.y, against.z);
+            let mut canceled = false;
+            self.native_entity_place(
+                None,
+                preview.pos,
+                preview.state,
+                against,
+                mod_api::Placement::Single,
+                &mut canceled,
+            );
+            if canceled {
+                return Ok((Some(stack), FAIL));
+            }
+        }
         let outcome = self.with_level(|b, level, ticks| b.place_block(level, ticks, &ctx));
         let PlaceOutcome::Placed { pos: placed, state } = outcome else {
             self.process_level_events()?;
@@ -1796,6 +1771,7 @@ impl Game<'_> {
         if self.world.block_entities.get(&target).is_some() {
             self.apply_placed_item([target.0, target.1, target.2], &stack, false);
         }
+        self.block_item_placed(&stack, None, placed, &ctx);
         self.process_level_events()?;
         Ok((shrink(stack), CLICK))
     }
@@ -2021,7 +1997,7 @@ impl Game<'_> {
         );
     }
     /// `ShearsDispenseItemBehavior.tryShearEntity`: the first live, ready
-    /// `Shearable` in the block is sheared.
+    /// `Shearable` in the block is sheared (an entity part's `IShearable` answer comes first).
     pub(super) fn shear_entity(&mut self, target: Pos) -> Result<bool> {
         let shears = ItemStack::new("minecraft:shears", 1);
         for t in self.targets_at(target) {
@@ -2030,19 +2006,19 @@ impl Game<'_> {
                 return Ok(true);
             }
             let Target::Mob(i) = t else { continue };
+            let part = self.part_shearable(i, None, &shears);
             let m = &self.mobs[i];
-            if !m.alive() {
+            if !m.alive() || part.is_some_and(|(_, shearable)| !shearable) {
                 continue;
             }
-            let at = m.position;
-            let entity_id = m.id;
-            let kind = m.kind.id.clone();
+            let (at, entity_id, kind) = (m.position, m.id, m.kind.id.clone());
             let sound_at = Some([at.x, at.y, at.z]);
             // shear(level, BLOCKS, tool): level.playSound(null, this, sound, BLOCKS, 1, 1).
             let shear_sound = |name: &'static str| {
                 LevelSound::new(name, [at.x, at.y, at.z], 1.0, 1.0).in_source(SoundSource::Blocks)
             };
             match m.species() {
+                _ if let Some((part, _)) = part => self.part_shear(i, part, None, &shears),
                 Species::SulfurCube if sulfur_cube::has_body(m) => {
                     // SulfurCube.shear: the swallowed block comes out at the
                     // passenger attachment, and nothing is swallowed for 5 s.
@@ -2319,21 +2295,8 @@ impl Game<'_> {
     ) -> Result<Dispensed> {
         let target = offset(pos, facing);
         let state = self.block_at(target);
-        let name = self.dispenser_block_name(target);
-        // HoneycombItem.WAXABLES: each copper block has a waxed twin.
-        let waxed = name.strip_prefix("minecraft:").and_then(|n| {
-            if n.starts_with("waxed_") {
-                return None;
-            }
-            let twin = format!("minecraft:waxed_{n}");
-            let mut s = self.pack.assets.registry.state(state)?.clone();
-            self.pack.assets.registry.default_state(&twin)?;
-            s.name = twin;
-            self.pack.assets.registry.resolve(&s).ok()
-        });
-        let Some(waxed) =
-            waxed.filter(|_| name.contains("copper") || name.contains("lightning_rod"))
-        else {
+        // HoneycombItem.getWaxed, as the player's honeycomb waxes.
+        let Some(waxed) = self.honeycomb_waxed(state) else {
             return Ok((
                 self.default_execute(pos, facing, stack),
                 optional_event("honeycomb"),
@@ -2499,7 +2462,7 @@ mod tests {
         )]
         .into();
         super::super::api_values::install_parts(&mods).unwrap();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
                 game.options.dedicated = Some(Vec::new());
                 game.world
@@ -2575,6 +2538,239 @@ mod tests {
                 );
             });
         });
+    }
+
+    /// Dresses only the entity type it is told to: what the part of an iron helmet answers to
+    /// `can_equip`, and what it was asked as `(slot, entity, kind, position)`, the position read
+    /// from the entity's handle through the read-only `Host`.
+    #[derive(Clone)]
+    struct Fits {
+        accepts: Arc<std::sync::Mutex<&'static str>>,
+        asked: Arc<std::sync::Mutex<Vec<(String, u32, String, Option<[f64; 3]>)>>>,
+    }
+    #[mod_api::horizon_part]
+    impl mod_api::ItemPart for Fits {
+        fn can_equip(&self, host: &dyn mod_api::Host, event: &mut mod_api::CanEquipEvent<'_>) {
+            let at = event.entity.entity().position(host);
+            let (slot, kind) = (event.slot.to_owned(), event.kind.to_owned());
+            (self.asked.lock().unwrap()).push((slot, event.entity.id(), kind, at));
+            event.can_equip = event.kind == *self.accepts.lock().unwrap();
+        }
+    }
+    struct Tailor(Fits);
+    #[mod_api::__subscriptions]
+    impl mod_api::Hooks for Tailor {
+        fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+            let helmet = r.item_key("minecraft:iron_helmet");
+            r.item_part(helmet, self.0.clone());
+        }
+    }
+    impl Fits {
+        fn new(accepts: &'static str) -> Self {
+            Self {
+                accepts: Arc::new(std::sync::Mutex::new(accepts)),
+                asked: Arc::default(),
+            }
+        }
+        fn asked(&self) -> Vec<(String, u32, String, Option<[f64; 3]>)> {
+            std::mem::take(&mut *self.asked.lock().unwrap())
+        }
+        /// Runs `test` with a mod whose part of the iron helmet is this one installed.
+        fn installed(&self, test: impl FnOnce()) {
+            let tailor = mod_api::ModEntry::new("tailor", Box::new(Tailor(self.clone())));
+            let mods: mod_api::Mods = vec![tailor].into();
+            crate::entry::install_client_hooks();
+            super::super::api_values::install_parts(&mods).unwrap();
+            mod_platform::testing::with_mods(mods, test);
+        }
+    }
+
+    /// One scene per dispense, three blocks apart: a dispenser at (5, 64, 2 + 3 row) facing east,
+    /// and in front a zombie that picks up loot (id 10 + row) and an armour stand (id 20 + row),
+    /// the zombie first. Dispenses `stack` and answers whether the dispenser equipped it, the
+    /// zombie's slot that took it, whether the stand took it, and where the two stand.
+    fn dress(
+        game: &mut Game<'_>,
+        row: u32,
+        stack: ItemStack,
+    ) -> (bool, Option<Slot>, bool, [f64; 3]) {
+        use horizon_core::geometry::Vec3;
+        (game.world.chunks).insert((0, 0), Arc::new(horizon_client::chunk::Chunk::empty(0, 0)));
+        let kind = game
+            .res
+            .mob_types()
+            .get("minecraft:zombie")
+            .unwrap()
+            .clone();
+        let z = 2 + 3 * row as i32;
+        let at = Vec3::new(6.5, 64.0, f64::from(z) + 0.5);
+        let mut zombie = horizon_client::mobs::Mob::new(10 + row, kind, at, 0.0);
+        zombie.extra.pick_up_loot = true;
+        game.mobs.push(zombie);
+        game.armor_stands
+            .push(horizon_client::entities::ArmorStand::new(20 + row, at, 0.0));
+        let mut stack = stack;
+        let done = game.dispense_equipment((5, 64, z), Direction::East, &mut stack);
+        let zombie = game.mobs.iter().find(|m| m.id == 10 + row).unwrap();
+        let worn = [Slot::Head, Slot::Chest, Slot::Legs, Slot::Feet]
+            .into_iter()
+            .find(|slot| mob_slot_item(zombie, *slot).is_some());
+        let stand = game.armor_stands.iter().find(|s| s.id == 20 + row).unwrap();
+        (
+            done,
+            worn,
+            stand.equipment.iter().any(Option::is_some),
+            [at.x, at.y, at.z],
+        )
+    }
+
+    /// An iron helmet whose `equippable` is removed (`fields` None) or replaced by `fields`.
+    fn helmet_with(fields: Option<Vec<(&str, horizon_core::nbt::Tag)>>) -> ItemStack {
+        use horizon_core::nbt::Tag;
+        let mut helmet = ItemStack::new("minecraft:iron_helmet", 1);
+        let (id, value) = match fields {
+            Some(fields) => ("minecraft:equippable", Tag::compound(fields)),
+            None => ("!minecraft:equippable", Tag::Compound(Default::default())),
+        };
+        helmet.data_mut().set_other(id, Some(value));
+        helmet
+    }
+
+    /// `IItemExtension.canEquip` at the dispenser: vanilla dresses the zombie, the first in
+    /// front; a part of the iron helmet that accepts only armour stands dresses the stand
+    /// instead, and one that accepts only players dresses neither. The part reads where each
+    /// one stands through its `Host`. An item with no part is as vanilla, and a handle that
+    /// names no live entity is refused without asking the part.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_can_equip_part_decides_which_entity_a_dispenser_dresses() {
+        let fits = Fits::new("minecraft:armor_stand");
+        fits.installed(|| {
+            super::super::native_entity_refs::tests::with_game(|game| {
+                game.options.dedicated = Some(Vec::new());
+                // No part answers for the chestplate: the component's answer stands.
+                let chestplate = ItemStack::new("minecraft:iron_chestplate", 1);
+                let (_, worn, stand, _) = dress(game, 0, chestplate);
+                assert_eq!((worn, stand), (Some(Slot::Chest), false));
+                assert!(fits.asked().is_empty());
+                // The helmet's part accepts only armour stands.
+                let helmet = ItemStack::new("minecraft:iron_helmet", 1);
+                let (_, worn, stand, at) = dress(game, 1, helmet.clone());
+                assert_eq!((worn, stand), (None, true));
+                let asked = |id, kind: &str| ("head".to_owned(), id, kind.to_owned(), Some(at));
+                assert_eq!(
+                    fits.asked(),
+                    [
+                        asked(11, "minecraft:zombie"),
+                        asked(21, "minecraft:armor_stand")
+                    ]
+                );
+                // Or only players: neither stands in front.
+                *fits.accepts.lock().unwrap() = "minecraft:player";
+                let (done, worn, stand, _) = dress(game, 2, helmet.clone());
+                assert_eq!((done, worn, stand), (false, None, false));
+                assert_eq!(fits.asked().len(), 2);
+                // A missing entity is refused, and the part never hears of it.
+                let prepared = game.equip_stack(&helmet);
+                assert!(!game.can_equip(&prepared, "head", 9_999, "minecraft:zombie", true));
+                assert!(fits.asked().is_empty());
+                // With no part to ask, the component's answer stands for any entity.
+                let chestplate = game.equip_stack(&ItemStack::new("minecraft:iron_chestplate", 1));
+                assert!(game.can_equip(&chestplate, "chest", 9_999, "minecraft:zombie", true));
+            });
+        });
+    }
+
+    /// The dispenser reads the stack's own `equippable`, with no part installed: a removed
+    /// component dispenses nothing onto anyone, an override for the feet dresses the zombie's
+    /// feet, `allowed_entities` naming only armour stands skips the zombie for the stand, an
+    /// explicitly empty list allows nobody, and `dispensable: false` keeps the dispenser out.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_dispenser_reads_the_stacks_own_equippable() {
+        use horizon_core::nbt::Tag;
+        super::super::native_entity_refs::tests::with_game(|game| {
+            game.options.dedicated = Some(Vec::new());
+            let slot = |name: &str| ("slot", Tag::String(name.into()));
+            let allowed = |list: Vec<Tag>| ("allowed_entities", Tag::List(list));
+            let dressed = |game: &mut Game<'_>, row, stack| {
+                let (done, worn, stand, _) = dress(game, row, stack);
+                (done, worn, stand)
+            };
+            assert_eq!(dressed(game, 0, helmet_with(None)), (false, None, false));
+            assert_eq!(
+                dressed(game, 1, helmet_with(Some(vec![slot("feet")]))),
+                (true, Some(Slot::Feet), false)
+            );
+            let stands = vec![Tag::String("armor_stand".into())];
+            assert_eq!(
+                dressed(
+                    game,
+                    2,
+                    helmet_with(Some(vec![slot("head"), allowed(stands)]))
+                ),
+                (true, None, true)
+            );
+            assert_eq!(
+                dressed(
+                    game,
+                    3,
+                    helmet_with(Some(vec![slot("head"), allowed(Vec::new())]))
+                ),
+                (false, None, false)
+            );
+            let kept = ("dispensable", Tag::Byte(0));
+            assert_eq!(
+                dressed(game, 4, helmet_with(Some(vec![slot("head"), kept]))),
+                (false, None, false)
+            );
+        });
+    }
+
+    /// The LAN guest in front of a dispenser: a part that accepts only players lets the helmet
+    /// on, asked for the guest's own entity at its position; one that accepts only armour stands
+    /// keeps it off; and with no part, a stack whose `allowed_entities` leaves the player out is
+    /// not dispensed onto them.
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    fn a_can_equip_part_decides_whether_a_dispenser_dresses_a_guest() {
+        use horizon_core::nbt::Tag;
+        let fits = Fits::new("minecraft:armor_stand");
+        fits.installed(|| {
+            let mut resources = None;
+            let mut game = server_with_guest(&mut resources);
+            // Open the world and admit the guest as a join does, so its handle resolves.
+            game.native_lifecycle
+                .begin_open(mod_api::Authority::IntegratedServer);
+            game.reset_entity_residency();
+            let guest = game.lan.as_ref().unwrap().hub.guest(2).unwrap().entity_id as u32;
+            assert_eq!(
+                dispense_at_guest(&mut game, "minecraft:iron_helmet"),
+                (false, 2)
+            );
+            let asked = ("head".to_owned(), guest, "minecraft:player".to_owned());
+            let at = Some([8.5, 200.0, 8.5]);
+            assert_eq!(
+                fits.asked(),
+                [(asked.0.clone(), asked.1, asked.2.clone(), at)]
+            );
+            *fits.accepts.lock().unwrap() = "minecraft:player";
+            assert_eq!(
+                dispense_at_guest(&mut game, "minecraft:iron_helmet"),
+                (true, 1)
+            );
+            assert_eq!(fits.asked(), [(asked.0, asked.1, asked.2, at)]);
+        });
+        let mut resources = None;
+        let mut game = server_with_guest(&mut resources);
+        let zombies = vec![Tag::String("zombie".into())];
+        let fields = vec![
+            ("slot", Tag::String("head".into())),
+            ("allowed_entities", Tag::List(zombies)),
+        ];
+        let mut stack = helmet_with(Some(fields));
+        assert!(!game.dispense_equipment((8, 201, 8), Direction::Down, &mut stack));
+        assert!(game.lan.as_ref().unwrap().hub.guest(2).unwrap().armor[0].is_none());
     }
 
     #[test]

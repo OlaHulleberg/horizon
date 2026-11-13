@@ -18,15 +18,17 @@ fn entry(cache: &ModuleCache, engine: &Engine, bytes: &[u8]) -> PathBuf {
         .join(format!("{}.cwasm", ModuleCache::key(engine, bytes)))
 }
 fn answer(engine: &Engine, module: &Module) -> i32 {
-    let mut store = Store::new(engine, ());
-    // Production engines use epoch interruption.
-    store.set_epoch_deadline(u64::MAX / 2);
-    let instance = Instance::new(&mut store, module, &[]).unwrap();
-    instance
-        .get_typed_func::<(), i32>(&mut store, "answer")
-        .unwrap()
-        .call(&mut store, ())
-        .unwrap()
+    crate::test_stack::on_guest_stack(|| {
+        let mut store = Store::new(engine, ());
+        // Production engines use epoch interruption.
+        store.set_epoch_deadline(u64::MAX / 2);
+        let instance = Instance::new(&mut store, module, &[]).unwrap();
+        instance
+            .get_typed_func::<(), i32>(&mut store, "answer")
+            .unwrap()
+            .call(&mut store, ())
+            .unwrap()
+    })
 }
 fn entries(cache: &ModuleCache) -> Vec<PathBuf> {
     fs::read_dir(&cache.root)
@@ -103,6 +105,12 @@ fn configurations_coexist_without_eviction() {
     let production = crate::runtime::engine().unwrap();
     let mut config = wasmtime::Config::new();
     config.epoch_interruption(crate::runtime::ENGINE_CONFIG.1);
+    config.max_wasm_stack(horizon_guest_stack::GUEST_STACK_BYTES);
+    // Wasmtime validates this bound even for synchronous engines. No async
+    // support or fiber execution is enabled by setting its size.
+    config.async_stack_size(
+        horizon_guest_stack::GUEST_STACK_BYTES + horizon_guest_stack::HOST_HEADROOM,
+    );
     config.cranelift_opt_level(wasmtime::OptLevel::None);
     let other = Engine::new(&config).unwrap();
     assert_ne!(
@@ -327,38 +335,40 @@ fn measure_compile_and_cached_load() {
 
 #[test]
 fn group_linker_uses_cache_and_programmatic_linking_leaves_it_empty() {
-    use crate::link::{Group, Member};
-    let (_dir, cache, _, _) = fixture();
-    // Programmatic linking does not install a production epoch deadline.
-    let engine = Engine::default();
-    let bytes = wat::parse_str(
-        r#"(module
+    crate::test_stack::on_guest_stack(|| {
+        use crate::link::{Group, Member};
+        let (_dir, cache, _, _) = fixture();
+        // Programmatic linking does not install a production epoch deadline.
+        let engine = Engine::default();
+        let bytes = wat::parse_str(
+            r#"(module
         (@custom "dylink.0" "\01\04\00\00\00\00")
         (func (export "answer") (result i32) i32.const 42))"#,
-    )
-    .unwrap();
-    let members = [Member {
-        name: "fixture",
-        module: &bytes,
-    }];
-    let mut plain = Group::link(&engine, &members).unwrap();
-    let mut result = [wasmtime::Val::I32(0)];
-    plain.call("fixture", "answer", &[], &mut result).unwrap();
-    assert_eq!(result[0].unwrap_i32(), 42);
-    assert!(entries(&cache).is_empty());
-    for _ in 0..2 {
-        let mut group = Group::link_cached_with(
-            Store::new(&engine, ()),
-            &members,
-            Some(&cache),
-            |_, _, _| None,
         )
         .unwrap();
-        group.call("fixture", "answer", &[], &mut result).unwrap();
+        let members = [Member {
+            name: "fixture",
+            module: &bytes,
+        }];
+        let mut plain = Group::link(&engine, &members).unwrap();
+        let mut result = [wasmtime::Val::I32(0)];
+        plain.call("fixture", "answer", &[], &mut result).unwrap();
         assert_eq!(result[0].unwrap_i32(), 42);
-        assert_eq!(entries(&cache).len(), 1);
-    }
-    assert_cached(&cache, &engine, &bytes);
+        assert!(entries(&cache).is_empty());
+        for _ in 0..2 {
+            let mut group = Group::link_cached_with(
+                Store::new(&engine, ()),
+                &members,
+                Some(&cache),
+                |_, _, _| None,
+            )
+            .unwrap();
+            group.call("fixture", "answer", &[], &mut result).unwrap();
+            assert_eq!(result[0].unwrap_i32(), 42);
+            assert_eq!(entries(&cache).len(), 1);
+        }
+        assert_cached(&cache, &engine, &bytes);
+    })
 }
 
 #[test]
@@ -493,7 +503,7 @@ fn child_success_avoids_in_process_compile() {
 }
 
 #[test]
-fn child_failures_fall_back_to_identical_compilation() {
+fn child_failures_refuse_without_unbounded_compilation() {
     for (command, marker) in [
         (wrong as fn(&Path, &str) -> std::process::Command, None),
         (crash, None),
@@ -504,27 +514,40 @@ fn child_failures_fall_back_to_identical_compilation() {
     ] {
         let (_dir, cache, _, bytes) = fixture();
         let engine = crate::runtime::engine().unwrap();
-        let (module, source) = cache
+        let error = cache
             .load_with_child(
                 &engine,
                 &bytes,
                 Some((command, std::time::Duration::from_secs(10))),
             )
-            .unwrap();
-        assert_eq!(source, Source::Compiled);
+            .unwrap_err();
+        if marker.is_some() {
+            assert!(
+                error.downcast_ref::<CompileTimeout>().is_some(),
+                "{error:#}"
+            );
+        } else {
+            assert!(
+                error.downcast_ref::<CompileUnavailable>().is_some(),
+                "{error:#}"
+            );
+            let diagnostic = error.to_string();
+            assert!(diagnostic.contains("cannot enforce compilation budget"));
+            assert!(diagnostic.contains("private writable .horizon-cache/wasm"));
+        }
         if let Some(marker) = marker {
             assert!(cache.root.parent().unwrap().join(marker).exists());
         }
-        assert_eq!(answer(&engine, &module), 42);
-        assert_eq!(cache.compiles.load(Ordering::Relaxed), 1);
-        assert_eq!(
-            module.serialize().unwrap(),
-            Module::new(&engine, &bytes).unwrap().serialize().unwrap()
+        assert_eq!(cache.compiles.load(Ordering::Relaxed), 0);
+        assert!(
+            !cache
+                .entry_path(&ModuleCache::key(&engine, &bytes))
+                .exists()
         );
         assert!(
             entries(&cache)
                 .iter()
-                .all(|p| p.extension().unwrap() == "cwasm")
+                .all(|path| path.extension().unwrap() == "cwasm")
         );
     }
 }

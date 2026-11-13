@@ -602,6 +602,10 @@ impl Game<'_> {
             let full = count == b.max_passengers();
             let delta = b.delta_rotation;
             let boat_box = b.bounds();
+            let ridden = horizon_client::motion::RiddenBoat {
+                under_water: b.under_water(),
+                max_y: boat_box.max_position().y,
+            };
             let seats: Vec<_> = mobs
                 .iter()
                 .enumerate()
@@ -637,6 +641,7 @@ impl Game<'_> {
             for (j, offset, at, previous, facing) in seats {
                 let m = &mut self.mobs[j];
                 m.seated(id, offset, boat_box);
+                m.fluids.boat = Some((id, ridden));
                 m.position = at;
                 m.previous = previous;
                 m.velocity = Vec3::ZERO;
@@ -685,6 +690,7 @@ impl Game<'_> {
             Target::Boat(_) => {
                 if let Some(i) = self.boats.iter().position(|b| b.id == id) {
                     self.release_vehicle_container(id);
+                    self.unpack_boat_loot(i, false);
                     let boat = self.boats.remove(i);
                     self.drop_vehicle_contents(boat.position.components(), &boat.items);
                     self.boat_removed(&boat);
@@ -694,6 +700,10 @@ impl Game<'_> {
             Target::Cart(_) => {
                 self.release_vehicle_container(id);
                 if let Some(i) = self.carts.iter().position(|c| c.id == id) {
+                    self.unpack_loot(
+                        super::container_loot::LootTarget::Cart(self.carts[i].id),
+                        None,
+                    );
                     let cart = self.carts.remove(i);
                     self.drop_vehicle_contents(cart.position.components(), &cart.items);
                     self.retain_removed_vehicle(id, RemovedVehicle::Cart(cart));
@@ -863,7 +873,7 @@ mod tests {
             let area = Aabb::new(Vec3::new(0.3, 0.0, 0.0), Vec3::new(0.4, 1.0, 0.1));
             assert!(!game.mobs[0].bounds().intersects(area));
             let mods = vec![mod_api::ModEntry::new("resize-test", Box::new(Resize))].into();
-            mod_api::testing::with_mods(mods, || {
+            mod_platform::testing::with_mods(mods, || {
                 game.vehicles_ticking(true);
                 assert!(mob.set_baby(game, false));
                 let cow = &game.mobs[0];
@@ -1091,7 +1101,7 @@ mod boat_callback_review_tests {
             }),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
                 game.options.dedicated = Some(Vec::new());
                 game.boats.push(super::super::boats::Boat::new(
@@ -1133,7 +1143,7 @@ mod boat_callback_review_tests {
             }),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
                 game.options.dedicated = Some(Vec::new());
                 game.boats.push(super::super::boats::Boat::new(

@@ -121,14 +121,14 @@ mod tests {
             &settings,
             std::time::Instant::now(),
             false,
-            crate::game::execution_role::ExecutionRole::IntegratedServer,
+            crate::game::execution_role::ExecutionRole::Client,
             &Progress::new(),
             &mut |_, _| unreachable!(),
         )
         .unwrap();
         let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
         options.resources = root.clone();
-        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        options.execution_role = crate::game::execution_role::ExecutionRole::Client;
         let res: &'static _ = Box::leak(Box::new(loaded.resources));
         let mut game = Game::new(
             res,
@@ -176,7 +176,7 @@ mod tests {
             ([8, 64, 8], fence),
             "the feet's own cell is air; the fence is what holds them up"
         );
-        game.world.random = LegacyRandom::new(1234);
+        game.world.random = horizon_core::random::LevelRandom::for_level(LegacyRandom::new(1234));
         let level = game.world.random.state();
 
         game.tick_breeze_effects();
@@ -207,7 +207,7 @@ mod tests {
             .unwrap();
         game.world.set(8, 63, 8, stone).unwrap();
         game.mobs[0].on_ground = true;
-        game.world.random = LegacyRandom::new(1234);
+        game.world.random = horizon_core::random::LevelRandom::for_level(LegacyRandom::new(1234));
         let level = game.world.random.state();
 
         game.tick_breeze_effects();

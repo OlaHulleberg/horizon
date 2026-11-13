@@ -115,6 +115,9 @@ impl Stacked {
         result
     }
     /// `tryPick` (`canCraft(recipe, amount, output)`).
+    /// When `output` is `None` this is a non-destructive check: `self` is not
+    /// mutated. When `output` is `Some`, the matched items are deducted from
+    /// `self` and recorded in `output`.
     pub fn try_pick(
         &mut self,
         ingredients: &[&Ingredient],
@@ -178,6 +181,33 @@ struct Grid {
 }
 
 impl Menu {
+    /// `on_take` for a quick-moved slot. Merchant and furnace results report the stack
+    /// left in the slot after the move (their `onQuickCraft` already saw the original). A
+    /// crafting result reports the copy it takes (which Item.onCraftedBy may still change)
+    /// minus what stayed behind: `ResultSlot.onQuickCraft` counts only the items that moved.
+    pub(super) fn take_after_quick_move(
+        &mut self,
+        env: &Env,
+        index: usize,
+        clicked: &mut ItemStack,
+        stack: &mut ItemStack,
+    ) {
+        if matches!(
+            self.slots[index].role,
+            super::Role::MerchantResult | super::Role::Output
+        ) {
+            return self.on_take(env, index, stack);
+        }
+        let left = if self.slots[index].role == super::Role::CraftResult {
+            stack.count
+        } else {
+            0
+        };
+        clicked.count -= left;
+        self.on_take(env, index, clicked);
+        clicked.count += left;
+    }
+
     fn place_grid(&self) -> Option<Grid> {
         match self.state.kind {
             Kind::Inventory => Some(Grid {
@@ -212,13 +242,26 @@ impl Menu {
     /// `Inventory.fillStackedContents` then the menu's
     /// `fillCraftSlotsStackedContents`.
     pub fn stacked_contents(&self, env: &Env) -> Stacked {
+        self.stacked_for(env, false)
+    }
+
+    /// The counted items; a viewer's (`viewer`) counts every stack, worn,
+    /// enchanted and renamed ones too, as crafting by hand takes them.
+    fn stacked_for(&self, env: &Env, viewer: bool) -> Stacked {
         let mut stacked = Stacked::default();
+        let account = |stacked: &mut Stacked, stack: &ItemStack| {
+            if viewer {
+                stacked.account_stack(stack, Self::max_stack(env, stack));
+            } else {
+                stacked.account_simple(stack, Self::max_stack(env, stack));
+            }
+        };
         for stack in self.state.containers[PLAYER][..36].iter().flatten() {
-            stacked.account_simple(stack, Self::max_stack(env, stack));
+            account(&mut stacked, stack);
         }
         // The mods' extra sources, after the inventory.
         for stack in self.state.sources.iter().flatten().flatten() {
-            stacked.account_simple(stack, Self::max_stack(env, stack));
+            account(&mut stacked, stack);
         }
         match self.state.kind {
             // A furnace's SimpleContainer counts all three slots, unfiltered.
@@ -236,7 +279,7 @@ impl Menu {
             }
             _ => {
                 for stack in self.state.containers[GRID].iter().flatten() {
-                    stacked.account_simple(stack, Self::max_stack(env, stack));
+                    account(&mut stacked, stack);
                 }
             }
         }
@@ -274,7 +317,15 @@ impl Menu {
         let ingredients: Vec<&Ingredient> = placement.ingredients.iter().collect();
         let post = if stacked.try_pick(&ingredients, 1, None) {
             let matches = self.recipe_in_grid(env, id);
-            self.place(env, &grid, &placement, &mut stacked, use_max, matches);
+            self.place(
+                env,
+                &grid,
+                &placement,
+                &mut stacked,
+                use_max,
+                matches,
+                false,
+            );
             PostPlace::Nothing
         } else {
             self.clear_grid(env, &grid);
@@ -290,6 +341,8 @@ impl Menu {
     /// every grid slot can take, alternatives shared out by
     /// `StackedItemContents`, capped at the ingredients' stack size).
     /// The viewer leaves both alone on failure, including in creative mode.
+    /// Unlike the recipe book it takes worn, enchanted and renamed items, as
+    /// JEI's transfer and crafting by hand do.
     pub fn transfer_recipe(&mut self, env: &Env, id: &str, all: bool) -> Result<(), TransferError> {
         self.touch();
         let (grid, placement, mut stacked) = self.transfer_match(env, id)?;
@@ -346,7 +399,7 @@ impl Menu {
         {
             return Err(TransferError::Unavailable);
         }
-        let mut stacked = self.stacked_contents(env);
+        let mut stacked = self.stacked_for(env, true);
         let ingredients: Vec<_> = placement.ingredients.iter().collect();
         if !stacked.try_pick(&ingredients, 1, None) {
             return Err(TransferError::Missing);
@@ -371,7 +424,7 @@ impl Menu {
         let previous = self.state.containers.clone();
         let sources = self.state.sources.clone();
         let (drops, dropped) = (self.state.drops.len(), self.state.dropped.len());
-        self.place(env, grid, placement, stacked, all, false);
+        self.place(env, grid, placement, stacked, all, false, true);
         let no_room = self.state.dropped.len() != dropped;
         if no_room || !self.recipe_in_grid(env, id) {
             self.state.containers = previous;
@@ -443,6 +496,7 @@ impl Menu {
         stacked: &mut Stacked,
         use_max: bool,
         matches: bool,
+        viewer: bool,
     ) {
         self.touch();
         let ingredients: Vec<&Ingredient> = placement.ingredients.iter().collect();
@@ -488,7 +542,7 @@ impl Menu {
             let item = used[ingredient as usize].clone();
             let mut remaining = adjusted;
             while remaining > 0 {
-                remaining = self.move_item_to_grid(target, &item, remaining);
+                remaining = self.move_item_to_grid(target, &item, remaining, viewer);
                 if remaining == -1 {
                     break;
                 }
@@ -497,14 +551,15 @@ impl Menu {
     }
 
     /// `moveItemToGrid`: the rest still to move, or -1 when nothing matches.
-    /// The inventory first, then the mods' extra sources in order.
-    fn move_item_to_grid(&mut self, target: usize, item: &str, count: i32) -> i32 {
+    /// The inventory first, then the mods' extra sources in order. A viewer's
+    /// (`viewer`) takes worn, enchanted and renamed stacks too.
+    fn move_item_to_grid(&mut self, target: usize, item: &str, count: i32, viewer: bool) -> i32 {
         self.touch();
         let existing = self.slot(target).cloned();
         let fits = |s: &Option<ItemStack>| {
             s.as_ref().is_some_and(|s| {
                 &*s.item == item
-                    && usable_for_crafting(s)
+                    && (viewer || usable_for_crafting(s))
                     && existing
                         .as_ref()
                         .is_none_or(|e| e.same_item_same_components(s))
@@ -769,9 +824,9 @@ mod container_limit_tests {
         menu.set_container_limits(vec![Some(10); 3]);
         menu.containers[super::PLAYER][0] =
             Some(crate::items::ItemStack::new("minecraft:stick", 20));
-        assert_eq!(menu.move_item_to_grid(0, "minecraft:stick", 20), 10);
+        assert_eq!(menu.move_item_to_grid(0, "minecraft:stick", 20, false), 10);
         assert_eq!(menu.slot(0).unwrap().count, 10);
-        assert_eq!(menu.move_item_to_grid(0, "minecraft:stick", 10), -1);
+        assert_eq!(menu.move_item_to_grid(0, "minecraft:stick", 10, false), -1);
         assert_eq!(
             menu.containers[super::PLAYER][0].as_ref().unwrap().count,
             10

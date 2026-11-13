@@ -6,6 +6,16 @@ use horizon_core::geometry::Vec3;
 #[test]
 #[ignore = "needs HORIZON_TEST_RESOURCES, HORIZON_WASM_FIXTURE and HORIZON_WASM_STD built from this tree"]
 fn wasm_selectors_resolve_in_game_and_refuse_before_guest_dispatch() {
+    // Enters the guest: libtest's thread is smaller than the guest stack policy requires. The
+    // load budget: this checks behaviour, not speed, and a loaded runner can pass 100 ms.
+    horizon_guest_stack::run_on_guest_stack(|| {
+        horizon_mod_wasm::copy_probe::with_load_budget(
+            wasm_selectors_resolve_in_game_and_refuse_before_guest_dispatch_on_guest_stack,
+        )
+    });
+}
+
+fn wasm_selectors_resolve_in_game_and_refuse_before_guest_dispatch_on_guest_stack() {
     use horizon_mod_package::manifest::Package;
     use horizon_mod_wasm::{WasmPackage, load};
     let path = std::env::var("HORIZON_WASM_FIXTURE").unwrap();
@@ -27,9 +37,10 @@ fn wasm_selectors_resolve_in_game_and_refuse_before_guest_dispatch() {
     );
     assert!(loaded.refused.is_empty(), "{:?}", loaded.refused);
     loaded.initialize(&[info]).unwrap();
-    mod_api::testing::with_mods(loaded.mods.into(), || {
+    mod_platform::testing::with_mods(loaded.mods.into(), || {
         super::super::native_guest_turn_tests::with_guests(|game| {
             game.build_registries();
+            crate::game::mods::register_cauldron_fluid_contents(game.pack.assets.registry);
             game.register_native_commands();
             let cow = game.res.mob_types().get("minecraft:cow").unwrap().clone();
             for (id, x) in [(101, 12.0), (103, 4.0), (102, 7.0)] {
@@ -38,6 +49,7 @@ fn wasm_selectors_resolve_in_game_and_refuse_before_guest_dispatch() {
             }
             game.as_guest(12, |game| {
                 for line in [
+                    "wasmcauldron",
                     "wasmheal @a",
                     "wasmentity @e[type=minecraft:cow,limit=1,sort=nearest]",
                     "wasmentities @e[type=minecraft:cow,sort=nearest]",
@@ -111,6 +123,16 @@ fn wasm_selectors_resolve_in_game_and_refuse_before_guest_dispatch() {
 #[test]
 #[ignore = "needs HORIZON_TEST_RESOURCES, HORIZON_WASM_FIXTURE and HORIZON_WASM_STD built from this tree"]
 fn wasm_server_tick_messages_reach_dedicated_game() {
+    // Enters the guest: libtest's thread is smaller than the guest stack policy requires. The
+    // load budget: this checks behaviour, not speed, and a loaded runner can pass 100 ms.
+    horizon_guest_stack::run_on_guest_stack(|| {
+        horizon_mod_wasm::copy_probe::with_load_budget(
+            wasm_server_tick_messages_reach_dedicated_game_on_guest_stack,
+        )
+    });
+}
+
+fn wasm_server_tick_messages_reach_dedicated_game_on_guest_stack() {
     use horizon_mod_package::manifest::Package;
     use horizon_mod_wasm::{WasmPackage, load};
     let path = std::env::var("HORIZON_WASM_FIXTURE").unwrap();
@@ -152,7 +174,7 @@ fn wasm_server_tick_messages_reach_dedicated_game() {
         "message_observer",
         Box::new(Heard(heard.clone())),
     ));
-    mod_api::testing::with_mods(mods.into(), || {
+    mod_platform::testing::with_mods(mods.into(), || {
         super::super::native_guest_turn_tests::with_guests(|game| {
             game.options.execution_role =
                 crate::game::execution_role::ExecutionRole::DedicatedServer;

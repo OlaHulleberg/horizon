@@ -8,6 +8,8 @@
 //! encrypts the connection (ClientHandshakePacketListenerImpl.handleHello).
 use crate::auth::AuthSession;
 pub mod ingress;
+mod known_packs;
+use known_packs::{fill_known_entries, select_known_packs};
 #[cfg(test)]
 #[path = "net/mod_packet_tests.rs"]
 mod mod_packet_tests;
@@ -24,7 +26,6 @@ use horizon_protocol::{
 };
 use queued_writer::QueuedWriter;
 pub use queued_writer::{PreparedPacket, PreparedPayload};
-use std::path::Path;
 #[cfg(test)]
 use std::sync::mpsc::channel;
 use std::{
@@ -380,45 +381,52 @@ impl Session {
         let recorder = Arc::new(Mutex::new(None));
         let thread_recorder = recorder.clone();
         let (address_owned, name_owned) = (address.to_owned(), name.to_owned());
-        let thread = std::thread::Builder::new()
-            .name("horizon-net".into())
-            .spawn(move || {
-                horizon_threads::favour_current();
-                let result = captured_payloads.map_err(Reason::plain).and_then(|_| {
-                    run(
-                        local,
-                        &address_owned,
-                        &name_owned,
-                        auth.as_deref(),
-                        info,
-                        &lang,
-                        &send,
-                        &thread_writer,
-                        &thread_configuring,
-                        &thread_counters,
-                        &thread_cookies,
-                        &thread_far,
-                        transferred,
-                        &resources,
-                        lan,
-                        &thread_recorder,
-                        &thread_payloads,
-                    )
-                });
-                thread_payloads.close();
-                thread_far.cancel();
-                let from_server = result.is_ok();
-                let why = result.unwrap_or_else(|e| e);
-                if let Some(w) = thread_writer.lock().unwrap().take() {
-                    w.shutdown();
-                }
-                let _ = send.send(Event::Disconnected {
-                    reason: why.text,
-                    key: why.key,
-                    from_server,
-                });
-            })
-            .ok();
+        // Payload handlers of wasm mods run on this thread (the client's network root).
+        let thread = horizon_guest_stack::spawn("horizon-net".into(), move || {
+            horizon_threads::favour_current();
+            let result = captured_payloads.map_err(Reason::plain).and_then(|_| {
+                run(
+                    local,
+                    &address_owned,
+                    &name_owned,
+                    auth.as_deref(),
+                    info,
+                    &lang,
+                    &send,
+                    &thread_writer,
+                    &thread_configuring,
+                    &thread_counters,
+                    &thread_cookies,
+                    &thread_far,
+                    transferred,
+                    &resources,
+                    lan,
+                    &thread_recorder,
+                    &thread_payloads,
+                )
+            });
+            thread_payloads.close();
+            thread_far.cancel();
+            let from_server = result.is_ok();
+            let why = result.unwrap_or_else(|e| e);
+            if let Some(w) = thread_writer.lock().unwrap().take() {
+                w.shutdown();
+            }
+            let _ = send.send(Event::Disconnected {
+                reason: why.text,
+                key: why.key,
+                from_server,
+            });
+        })
+        .inspect_err(|error| {
+            // No reader runs to report the end: say it here, or the session waits forever.
+            let _ = payload_events.send(Event::Disconnected {
+                reason: format!("network thread: {error}"),
+                key: None,
+                from_server: false,
+            });
+        })
+        .ok();
         let debug = std::env::var_os("HORIZON_NET_DEBUG").is_some();
         Self {
             events,
@@ -1306,6 +1314,8 @@ fn receive_application(
             );
             Ok(None)
         }
+        // Raw channels are server-side: a client's table has none.
+        crate::raw_payloads::Classified::Raw(_) => Ok(None),
     }
 }
 
@@ -1385,6 +1395,13 @@ fn configure(
                     channel: crate::content_identity::CHANNEL.into(),
                     data: hash.to_vec(),
                 }))?;
+            }
+            cfg::Clientbound::CustomPayload(p) if crate::viewed_levels_net::asked(&p) => {
+                reply(crate::viewed_levels_net::answer(&p.data).map_err(Reason::plain)?)?
+            }
+            cfg::Clientbound::CustomPayload(p) if crate::menu_extra_net::asked(&p) => {
+                reply(crate::menu_extra_net::answer(&p.data).map_err(Reason::plain)?)?;
+                registries.menu_extra_revision = horizon_protocol::menu_extra::REVISION;
             }
             cfg::Clientbound::CustomPayload(p) if p.channel == crate::datapack_net::CHANNEL => {
                 crate::datapack_net::accept_chunk(&p.data).map_err(Reason::plain)?;
@@ -1533,71 +1550,6 @@ fn configure(
     }
 }
 
-/// `KnownPacksManager.trySelectingPacks`: the packs of the server's list the
-/// client has too. Horizon carries vanilla's core pack (the prepared
-/// resources' `data/`), so it names that one when the server offers it, and
-/// the server leaves that pack's entries' data out (`fill_known_entries`).
-fn select_known_packs(offered: Vec<cfg::KnownPack>) -> Vec<cfg::KnownPack> {
-    let (namespace, id, version) = crate::lan::data::CORE_PACK;
-    offered
-        .into_iter()
-        .filter(|p| p.namespace == namespace && p.id == id && p.version == version)
-        .collect()
-}
-
-fn valid_resource_segment(s: &str, allow_slash: bool) -> bool {
-    !s.is_empty()
-        && !s.starts_with('/')
-        && !s.ends_with('/')
-        && !s.contains("//")
-        && s.split('/')
-            .all(|part| !part.is_empty() && part != "." && part != "..")
-        && s.bytes().all(|b| {
-            b.is_ascii_lowercase()
-                || b.is_ascii_digit()
-                || matches!(b, b'_' | b'-' | b'.')
-                || (allow_slash && b == b'/')
-        })
-}
-
-/// `RegistryDataCollector`: an entry of a pack both sides know comes without
-/// its data, which the client reads from its own copy of the pack
-/// (`data/<namespace>/<registry path>/<path>.json`, `Registries.elementsDirPath`).
-fn fill_known_entries(r: &mut cfg::RegistryData, resources: &Path) {
-    let (registry_ns, registry_path) = r
-        .registry
-        .split_once(':')
-        .unwrap_or(("minecraft", r.registry.as_str()));
-    if !valid_resource_segment(registry_ns, false) || !valid_resource_segment(registry_path, true) {
-        return;
-    }
-    let dir = if registry_ns == "minecraft" {
-        registry_path.to_owned()
-    } else {
-        format!("{registry_ns}/{registry_path}")
-    };
-    for entry in r.entries.iter_mut().filter(|e| e.data.is_none()) {
-        let (ns, path) = entry
-            .id
-            .split_once(':')
-            .unwrap_or(("minecraft", entry.id.as_str()));
-        if !valid_resource_segment(ns, false) || !valid_resource_segment(path, true) {
-            continue;
-        }
-        let file = resources
-            .join("data")
-            .join(ns)
-            .join(&dir)
-            .join(format!("{path}.json"));
-        let json = std::fs::read(&file)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-        if let Some(json) = json {
-            entry.data = Some(crate::lan::data::json_to_nbt(&json));
-        }
-    }
-}
-
 #[horizon_mod_api_macros::replaceable]
 fn receive_brand(payload: &cfg::CustomPayload, send: &ingress::Producer<Event>) {
     if payload.channel == "minecraft:brand"
@@ -1623,13 +1575,31 @@ fn brand() -> Vec<u8> {
 }
 
 /// Flatten a JSON chat component (login disconnects are JSON).
+/// At most `horizon_protocol::text::MAX_TEXT` bytes, as `plain`: a login-phase reason from a
+/// server is any JSON it likes.
 pub fn json_text(v: &serde_json::Value, lang: &Language) -> String {
+    use horizon_protocol::text::{MAX_TEXT, push_capped};
     match v {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Array(a) => a.iter().map(|e| json_text(e, lang)).collect(),
+        serde_json::Value::String(s) => {
+            let mut out = String::new();
+            push_capped(&mut out, s);
+            out
+        }
+        serde_json::Value::Array(a) => {
+            let mut out = String::new();
+            for e in a {
+                if out.len() >= MAX_TEXT {
+                    break;
+                }
+                push_capped(&mut out, &json_text(e, lang));
+            }
+            out
+        }
         serde_json::Value::Object(o) => {
             let mut out = if let Some(t) = o.get("text").and_then(|t| t.as_str()) {
-                t.to_owned()
+                let mut out = String::new();
+                push_capped(&mut out, t);
+                out
             } else if let Some(key) = o.get("translate").and_then(|t| t.as_str()) {
                 let args: Vec<String> = o
                     .get("with")
@@ -1651,7 +1621,10 @@ pub fn json_text(v: &serde_json::Value, lang: &Language) -> String {
             };
             if let Some(extra) = o.get("extra").and_then(|e| e.as_array()) {
                 for e in extra {
-                    out.push_str(&json_text(e, lang));
+                    if out.len() >= MAX_TEXT {
+                        break;
+                    }
+                    push_capped(&mut out, &json_text(e, lang));
                 }
             }
             out
@@ -2008,6 +1981,18 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_login_reason_repeating_its_argument_stays_bounded() {
+        let pattern = "%1$s".repeat(16_000);
+        let mut v = serde_json::json!({ "text": "A" });
+        for _ in 0..3 {
+            v = serde_json::json!({ "translate": "x.unknown", "fallback": pattern, "with": [v] });
+        }
+        let v = serde_json::json!({ "text": "", "extra": [v.clone(), v] });
+        let text = json_text(&v, &Language::default());
+        assert!(text.len() <= horizon_protocol::text::MAX_TEXT);
+    }
+
     fn pack(namespace: &str, id: &str, version: &str) -> cfg::KnownPack {
         cfg::KnownPack {
             namespace: namespace.into(),
@@ -2355,6 +2340,106 @@ mod tests {
             lost(horizon_protocol::Error::new("Bad VarInt")),
             "Internal Exception: Bad VarInt"
         );
+    }
+
+    /// #3716: a client asked about viewed levels answers in configuration, before its
+    /// acknowledgement, that it views two levels besides its own.
+    #[test]
+    fn configuration_answers_the_viewed_levels_query_with_its_cap() {
+        let (root, data) = empty_item_data("viewed-levels");
+        let (client, server) = horizon_protocol::connection::Pipe::pair();
+        let (mut reader, writer) = Connection::local(client).split();
+        let writer = Arc::new(Mutex::new(Some(QueuedWriter::new(writer).unwrap())));
+        let client_writer = writer.clone();
+        let thread = std::thread::spawn(move || {
+            let (send, _events) = event_channel();
+            configure(
+                &mut reader,
+                &client_writer,
+                &Arc::new(AtomicBool::new(true)),
+                &Language::new(),
+                &send,
+                &Cookies::default(),
+                &data,
+                &crate::raw_payloads::Transport::empty(),
+            )
+        });
+        let mut server = Connection::local(server);
+        for packet in [
+            cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                channel: "horizon:levels".into(),
+                data: vec![0, 2],
+            }),
+            cfg::Clientbound::FinishConfiguration(Empty),
+        ] {
+            server.send(&packet.encode()).unwrap();
+        }
+        for expected in [
+            cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                channel: "horizon:levels".into(),
+                data: vec![1, 2, 2],
+            }),
+            cfg::Serverbound::FinishConfiguration(Empty),
+        ] {
+            let (id, body) = server.recv().unwrap();
+            assert_eq!(cfg::Serverbound::decode(id, &body).unwrap(), expected);
+        }
+        assert!(thread.join().unwrap().is_ok());
+        drop(writer);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// #3384: a client asked which `horizon:menu_extra` layout it reads answers its revision
+    /// in configuration, and keeps it for play (a server that never asked serves the legacy layout).
+    #[test]
+    fn configuration_answers_the_menu_extra_revision_query() {
+        let (root, data) = empty_item_data("menu-extra-revision");
+        let (client, server) = horizon_protocol::connection::Pipe::pair();
+        let (mut reader, writer) = Connection::local(client).split();
+        let writer = Arc::new(Mutex::new(Some(QueuedWriter::new(writer).unwrap())));
+        let client_writer = writer.clone();
+        let thread = std::thread::spawn(move || {
+            let (send, _events) = event_channel();
+            configure(
+                &mut reader,
+                &client_writer,
+                &Arc::new(AtomicBool::new(true)),
+                &Language::new(),
+                &send,
+                &Cookies::default(),
+                &data,
+                &crate::raw_payloads::Transport::empty(),
+            )
+        });
+        let mut server = Connection::local(server);
+        for packet in [
+            cfg::Clientbound::CustomPayload(cfg::CustomPayload {
+                channel: "horizon:menu_extra".into(),
+                data: horizon_protocol::menu_extra::query(),
+            }),
+            cfg::Clientbound::FinishConfiguration(Empty),
+        ] {
+            server.send(&packet.encode()).unwrap();
+        }
+        for expected in [
+            cfg::Serverbound::CustomPayload(cfg::CustomPayload {
+                channel: "horizon:menu_extra".into(),
+                data: horizon_protocol::menu_extra::answer(),
+            }),
+            cfg::Serverbound::FinishConfiguration(Empty),
+        ] {
+            let (id, body) = server.recv().unwrap();
+            assert_eq!(cfg::Serverbound::decode(id, &body).unwrap(), expected);
+        }
+        // A failure reads as 0 and fails the assertion below.
+        let revision = thread
+            .join()
+            .unwrap()
+            .map(|registries| registries.menu_extra_revision)
+            .unwrap_or(0);
+        drop(writer);
+        std::fs::remove_dir_all(root).unwrap();
+        assert_eq!(revision, horizon_protocol::menu_extra::REVISION);
     }
 
     #[test]

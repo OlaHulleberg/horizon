@@ -127,7 +127,9 @@ impl LaunchArguments {
                     break;
                 }
                 "--developer-single-player"
+                | "--game-tests"
                 | "--fullscreen"
+                | "--profile"
                 | "--session-stdin"
                 | "--creative"
                 | "--test-terrain"

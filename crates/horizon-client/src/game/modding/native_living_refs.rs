@@ -608,8 +608,24 @@ impl Game<'_> {
             Some(t @ (Target::Player | Target::Guest(_))) => self
                 .for_player(t, |g| {
                     let max = g.player.as_mut()?.attribute("minecraft:max_health").ok()? as f32;
+                    let health = health.min(max);
+                    let revived = g.player.as_ref()?.health.health() <= 0.0 && health > 0.0;
                     g.journal_player_health();
-                    g.player.as_mut()?.set_health(health.min(max), false).ok()
+                    g.player.as_mut()?.set_health(health, false).ok()?;
+                    if revived
+                        && let Some(conn) = g.lan_acting
+                        && let Some(host) = g.lan.as_mut()
+                        && let Some(gi) =
+                            host.hub.guests.iter().position(|guest| guest.conn == conn)
+                        && host.hub.guests[gi].death_canceled
+                    {
+                        host.hub.guests.update(gi, |guest| {
+                            guest.death_canceled = false;
+                            guest.death_time = 0;
+                        });
+                        g.player.as_mut()?.health.dead = false;
+                    }
+                    Some(())
                 })
                 .flatten()
                 .is_some(),
@@ -618,8 +634,15 @@ impl Game<'_> {
                 let Some(m) = self.mobs.iter_mut().find(|m| m.id == id && !m.removed) else {
                     return false;
                 };
+                let revived =
+                    m.death_canceled && m.health <= 0.0 && health.min(m.attrs.max_health) > 0.0;
                 m.health = health.clamp(0.0, m.attrs.max_health);
                 m.needs_sync = true;
+                if revived {
+                    m.death_canceled = false;
+                    m.death_time = 0;
+                    self.died.remove(&id);
+                }
                 true
             }
             _ => false,
@@ -799,7 +822,8 @@ impl Game<'_> {
                 .flatten();
         }
         let stack = self.living_equipment(living, slot)?;
-        let (updated, broken) = self.damage_stack(&stack, amount, false);
+        let wearer = super::durability::Wearer::Living(living.id());
+        let (updated, broken) = self.damage_stack_worn(&stack, amount, wearer);
         if updated.as_ref() == Some(&stack) {
             return None;
         }
@@ -1302,7 +1326,7 @@ mod tests {
             game.player = Some(PlayerMotion::new(game.motion, Vec3::ZERO).unwrap());
             game.audio.engine.loaded = true;
             game.audio.engine.registry.add_file("minecraft", br#"{"entity.item.break":{"sounds":["test/item"]},"block.anvil.break":{"sounds":["test/anvil"]}}"#, &|_, _| true);
-            let source = game.motion.health.damage.id("minecraft:generic").unwrap();
+            let source = horizon_client::health::NO_ATTACK.player_source("minecraft:generic", 0);
             let mut armor: [Option<ItemStack>; 4] = std::array::from_fn(|_| None);
             for (i, name) in ["minecraft:diamond_helmet", "minecraft:diamond_chestplate"]
                 .into_iter()
@@ -1379,7 +1403,7 @@ mod tests {
                 game.audio.heard.clear();
                 game.audio.engine.notifications.clear();
                 game.world.random = random;
-                game.hurt_armor(source, 4.0);
+                game.hurt_armor(&source, 4.0);
                 assert_eq!(game.armor, expected_armor);
                 assert_eq!(game.guest_equipment_breaks, expected_events);
                 assert_eq!(game.audio.heard, expected_sounds);
@@ -2374,7 +2398,7 @@ mod tests {
                 }
             }
         }
-        mod_api::testing::with_mods(
+        mod_platform::testing::with_mods(
             vec![ModEntry::new("first_tick_equipment", Box::new(Reequip))].into(),
             || {
                 super::super::native_entity_refs::tests::with_game(|game| {
@@ -2565,12 +2589,12 @@ mod tests {
             );
             game.yaw = 37.0;
             game.pitch = -21.0;
-            game.world.random = horizon_core::random::LegacyRandom::new(12345);
+            *game.world.random = horizon_core::random::LegacyRandom::new(12345);
             let item = ItemStack::new("minecraft:apple", 1);
             game.inventory[game.selected] = Some(item.clone());
             game.drop_held(true);
             let key_velocity = game.dropped.last().unwrap().velocity;
-            game.world.random = horizon_core::random::LegacyRandom::new(12345);
+            *game.world.random = horizon_core::random::LegacyRandom::new(12345);
             crate::game::native_entity_refs::tests::bind_local_player(game, 42, 123);
             let player = game.living(game.entity(42).unwrap()).unwrap();
             let id = game.living_drop(player, item, false, true).unwrap().id();

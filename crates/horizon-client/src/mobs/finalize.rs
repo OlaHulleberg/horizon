@@ -400,19 +400,51 @@ impl Attr {
             Self::FlyingSpeed => "minecraft:flying_speed",
         }
     }
-    /// `RangedAttribute` bounds.
-    fn range(self) -> (f64, f64) {
-        match self {
-            Self::MaxHealth => (1.0, 1024.0),
-            Self::MovementSpeed => (0.0, 1024.0),
-            Self::FollowRange => (0.0, 2048.0),
-            Self::AttackDamage => (0.0, 2048.0),
-            Self::KnockbackResistance | Self::SpawnReinforcements => (0.0, 1.0),
-            Self::JumpStrength => (0.0, 32.0),
-            Self::Armor => (0.0, 30.0),
-            Self::BurningTime | Self::FlyingSpeed => (0.0, 1024.0),
+}
+/// The definition of each [`Attr`] and of `max_absorption`
+/// (`RangedAttribute`'s default and bounds), read once from the attribute
+/// catalog when the mob types load: what a mob's own attribute record
+/// sanitizes its values with, as `AttributeInstance` does. A type built
+/// without a catalog (a test fixture, the player's render type) has none,
+/// and its values are not clamped.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AttrBounds {
+    attrs: [Option<horizon_world::attributes::Definition>; Attr::ALL.len()],
+    /// `Attributes.MAX_ABSORPTION`'s, for a mob with no attribute map yet.
+    max_absorption: Option<horizon_world::attributes::Definition>,
+}
+impl AttrBounds {
+    /// Each attribute's definition in `catalog`.
+    pub fn of(catalog: &horizon_world::attributes::entity::Catalog) -> Self {
+        Self {
+            attrs: Attr::ALL.map(|a| catalog.definition(a.id())),
+            max_absorption: catalog.definition("minecraft:max_absorption"),
         }
     }
+    /// `RangedAttribute.sanitizeValue` of `a`: NaN to the minimum, then into
+    /// the bounds.
+    pub fn sanitize(&self, a: Attr, value: f64) -> f64 {
+        sanitize(self.attrs[a as usize], value)
+    }
+    /// The saved base `base` of the attribute `id` as a load takes it
+    /// ([`crate::living_attributes::loaded_base`]): clamped into an [`Attr`]'s
+    /// bounds when a mod that widened them is gone.
+    pub fn loaded_base(&self, id: &str, base: f64) -> f64 {
+        Attr::ALL
+            .into_iter()
+            .find(|a| a.id() == id)
+            .and_then(|a| self.attrs[a as usize])
+            .map_or(base, |definition| {
+                crate::living_attributes::loaded_base(id, definition, base)
+            })
+    }
+    /// `RangedAttribute.sanitizeValue` of `max_absorption`.
+    pub fn sanitize_max_absorption(&self, value: f64) -> f64 {
+        sanitize(self.max_absorption, value)
+    }
+}
+fn sanitize(definition: Option<horizon_world::attributes::Definition>, value: f64) -> f64 {
+    definition.map_or(value, |definition| definition.sanitize(value))
 }
 /// `AttributeModifier.Operation`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -438,6 +470,11 @@ pub struct Attributes {
     /// The transient modifiers mods added: in the value and synced, never
     /// saved.
     pub transient: Vec<Modifier>,
+    /// `NAME_TAG_DISTANCE` from a server attribute update: the client reads
+    /// it for nameplates and a save never writes it.
+    pub name_tag_distance: Option<f64>,
+    /// `BELOW_NAME_DISTANCE` from a server attribute update.
+    pub below_name_distance: Option<f64>,
     /// The transient minecraft:baby speed modifier was taken away
     /// (`/attribute ... modifier remove`) until the next setBaby. Not
     /// saved: a load runs setBaby again.
@@ -611,12 +648,7 @@ fn compute(m: &Mob, a: Attr, with_transient: bool, extra: &[(f64, Op)]) -> f64 {
             result *= 1.0 + amount;
         }
     }
-    let (lo, hi) = a.range();
-    if result.is_nan() {
-        lo
-    } else {
-        result.clamp(lo, hi)
-    }
+    m.kind.attribute_bounds.sanitize(a, result)
 }
 /// Copies the attribute values into the fields the game reads.
 fn refresh(m: &mut Mob, a: Attr) {
@@ -801,11 +833,11 @@ pub fn max_health(m: &Mob) -> f32 {
 }
 /// `LivingEntity.onAttributeUpdated(MAX_HEALTH)` after a Health Boost
 /// change: the cached maximum follows the attribute model again, and Health
-/// above it is lowered (nothing is healed). Sulfur cubes and wolves write
-/// their maximum straight into the cache (`sulfur_cube::set_size`,
-/// `tame::set_tame`), outside the model, so they keep theirs.
+/// above it is lowered (nothing is healed). Wolves write their maximum
+/// straight into the cache (`tame::set_tame`), outside the model, so they
+/// keep theirs.
 pub fn health_boost_changed(m: &mut Mob) {
-    if matches!(m.species(), Species::SulfurCube | Species::Wolf) {
+    if m.species() == Species::Wolf {
         return;
     }
     refresh(m, Attr::MaxHealth);
@@ -1048,7 +1080,7 @@ pub const SLOT_NAMES: [&str; 8] = super::drops::SLOTS;
 pub use horizon_items::equipment::{CHEST, FEET, HEAD, LEGS, MAINHAND, OFFHAND};
 const SADDLE: usize = horizon_items::equipment::SADDLE;
 /// The `gear` slot of an `EquipmentSlot`.
-fn gear_slot(slot: usize) -> usize {
+pub fn gear_slot(slot: usize) -> usize {
     match slot {
         MAINHAND => gear::MAIN,
         OFFHAND => gear::OFF,
@@ -1438,7 +1470,13 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
         let d = self.level.spawn_data();
         let e = d.enchantments;
         let pool = e.tag("minecraft:on_mob_spawn_equipment");
-        let picked = e.select(d.items, self.random, id, cost, pool);
+        let picked = e.select(
+            d.items,
+            self.random,
+            &item_stack(m, slot).unwrap_or_else(|| crate::items::ItemStack::new(id, 1)),
+            cost,
+            pool,
+        );
         for (enchantment, level) in picked {
             gear::upgrade(m, gear_slot(slot), &enchantment, level);
         }
@@ -1657,12 +1695,7 @@ impl<L: FinalizeLevel + ?Sized, R: RandomSource> Ctx<'_, L, R> {
         if g.is_none() {
             let mut effect = None;
             if self.difficulty.hard && self.float() < 0.1 * self.special() {
-                effect = Some(match self.int(5) {
-                    0 | 1 => "minecraft:speed",
-                    2 => "minecraft:strength",
-                    3 => "minecraft:regeneration",
-                    _ => "minecraft:invisibility",
-                });
+                effect = Some(super::spawning::spider_random_effect(self.random));
             }
             g = Some(Group::Spider(effect));
         }
@@ -2286,17 +2319,9 @@ pub fn panda_variant(main: u8, hidden: u8) -> u8 {
     if recessive && main != hidden { 0 } else { main }
 }
 /// `AbstractCubeMob.setSize(size, true)` for slimes and magma cubes.
-/// `SulfurCube.setSize(size, true)`, with the attribute bases it sets.
+/// `SulfurCube.setSize(size, true)`.
 fn sulfur_size(m: &mut Mob, size: i32) {
     super::sulfur_cube::set_size(m, size, true);
-    let size = m.extra.size;
-    set_base(m, Attr::MaxHealth, f64::from(4 * size));
-    set_base(
-        m,
-        Attr::MovementSpeed,
-        f64::from(0.2f32 + 0.1f32 * size as f32),
-    );
-    m.health = max_health(m);
 }
 fn cube_size(m: &mut Mob, size: i32) {
     super::cube::set_size(m, size);
@@ -2463,6 +2488,45 @@ pub fn villager_type(biome: &str) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A mob's own attribute record sanitizes with the definitions of the
+    /// catalog its type loaded with, not with copies of vanilla's bounds:
+    /// 26.3's catalog keeps `max_health` at 1..1024 and `knockback_resistance`
+    /// at -2..1, and a catalog with wider bounds keeps more.
+    #[test]
+    fn a_mobs_attributes_take_the_bounds_of_the_types_catalog() {
+        use horizon_world::attributes::entity::Catalog;
+        let bits = |v: f64| format!("{:016x}", v.to_bits());
+        let catalog = |max_health: f64| {
+            Catalog::from_json(&serde_json::json!({
+                "data_version": horizon_world::DATA_VERSION,
+                "attributes": [
+                    {"id": "minecraft:max_health", "default": bits(20.0), "min": bits(1.0), "max": bits(max_health), "syncable": true},
+                    {"id": "minecraft:knockback_resistance", "default": bits(0.0), "min": bits(-2.0), "max": bits(1.0), "syncable": true},
+                ],
+                "entities": {},
+            }))
+            .unwrap()
+        };
+        let mob = |catalog: &Catalog| {
+            let mut kind = (*crate::mobs::sensor_scan_tests::kind()).clone();
+            kind.attribute_bounds = AttrBounds::of(catalog);
+            let mut m = Mob::new(1, Arc::new(kind), horizon_core::geometry::Vec3::ZERO, 0.0);
+            set_base(&mut m, Attr::MaxHealth, 5000.0);
+            set_base(&mut m, Attr::KnockbackResistance, -1.5);
+            m
+        };
+        let vanilla = mob(&catalog(1024.0));
+        assert_eq!(value(&vanilla, Attr::MaxHealth), 1024.0);
+        assert_eq!(vanilla.attrs.max_health, 1024.0);
+        assert_eq!(value(&vanilla, Attr::KnockbackResistance), -1.5);
+        let mut nan = mob(&catalog(1024.0));
+        set_base(&mut nan, Attr::MaxHealth, f64::NAN);
+        assert_eq!(value(&nan, Attr::MaxHealth), 1.0, "NaN is the minimum");
+        let wide = mob(&catalog(1e6));
+        assert_eq!(value(&wide, Attr::MaxHealth), 5000.0);
+        assert_eq!(wide.attrs.max_health, 5000.0);
+    }
 
     #[test]
     fn panda_genes_follow_the_vanilla_table() {

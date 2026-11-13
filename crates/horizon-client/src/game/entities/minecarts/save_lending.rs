@@ -18,7 +18,9 @@ impl Game<'_> {
         }
         let power = if explodes {
             let speed = speed_sqr.sqrt().min(5.0);
-            (4.0 + c.random.next_double() * 1.5 * speed) as f32
+            (f64::from(c.explosion_power)
+                + f64::from(c.explosion_speed_factor) * c.random.next_double() * 1.5 * speed)
+                as f32
         } else {
             0.0
         };
@@ -167,12 +169,17 @@ impl Game<'_> {
                         return;
                     }
                     game.release_vehicle_container(id);
-                    let Some(i) = game.carts.iter().position(|c| {
+                    let Some(_i) = game.carts.iter().position(|c| {
                         c.id == id && c.join == join && !game.persist.removals.contains(&target)
                     }) else {
                         return;
                     };
+                    game.unpack_loot(super::super::container_loot::LootTarget::Cart(id), None);
                     let _save_lease = horizon_client::join_seq::visibility::PassLease::enter();
+                    let Some(i) = game.carts.iter().position(|c| c.id == id && c.join == join)
+                    else {
+                        return;
+                    };
                     let c = game.carts.remove(i);
                     let at = c.position.components();
                     // AbstractMinecartContainer.remove: contents drop even when

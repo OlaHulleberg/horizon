@@ -43,9 +43,13 @@ struct Globals {
     // w: apply the no-pack HDR gain; HDR_WRITE_LIGHT independently keeps float alpha as coverage.
     hdr_light: vec4<f32>,
     hdr_settings: vec4<f32>,
-    hdr_shares: vec4<f32>,
+    hdr_gains: vec4<f32>,
     // The eye fog is measured from, camera-relative: zero but in a mod's world view.
     view_origin: vec4<f32>,
+    // A mod's world view's own, zero outside one (gfx/world_views.rs's `ViewCamera`): x -1 when
+    // mirrored (its screen runs right to left), else 1; y the clip-space depth its clip plane's
+    // entities come forward (`fs_entity_clipped`), 0 without one; z 1 with a clip plane.
+    world_view: vec4<f32>,
 }
 @group(0) @binding(0) var<uniform> globals: Globals;
 @group(0) @binding(1) var sprites: texture_2d_array<f32>;
@@ -295,8 +299,12 @@ fn faded(code: u32, local: vec3<f32>, dx: vec3<f32>, dy: vec3<f32>) -> bool {
     let pixel = max(length(dx), length(dy));
     let unit = exp2(ceil(log2(max(pixel * 1.5, 1.0 / 16.0))));
     let p = vec2<u32>(bitcast<vec2<u32>>(vec2<i32>(floor(plane / unit)))) & vec2(3u);
-    let bayer = array<u32, 16>(0u, 8u, 2u, 10u, 12u, 4u, 14u, 6u, 3u, 11u, 1u, 9u, 15u, 7u, 13u, 5u);
-    return (f32(bayer[p.y * 4u + p.x]) + 0.5) / 16.0 >= shown;
+    // The 4x4 Bayer matrix by rows, 0 8 2 10, 12 4 14 6, 3 11 1 9, 15 7 13 5: four bits each,
+    // two rows a word (a constant array indexed by the pixel would be a private array, which
+    // Adreno's Vulkan compiler, build 0676.41, fails to link).
+    let rows = select(0x6e4ca280u, 0x5d7f91b3u, p.y >= 2u);
+    let bayer = (rows >> (((p.y & 1u) * 4u + p.x) * 4u)) & 0xfu;
+    return (f32(bayer) + 0.5) / 16.0 >= shown;
 }
 // A fading tile or section is drawn a hair toward the camera (depth is
 // reversed: nearer is larger), the newer the more, so it wins where it draws
@@ -318,6 +326,12 @@ fn fade_depth(clip: vec4<f32>, w: f32) -> vec4<f32> {
         // little out of the real ones, and the tile coming in under it hid it
         // at once, before its fade.
         scale *= 1.02;
+    }
+    // A world view's clip plane is its near plane, `z = w` (gfx/world_views.rs's `near_plane_on`):
+    // there the offset scales the depth in front of the plane, `w - z`, which keeps the plane
+    // where it is.
+    if globals.world_view.z != 0.0 {
+        return vec4(clip.xy, clip.w - (clip.w - clip.z) / scale, clip.w);
     }
     return vec4(clip.xy, clip.z * scale, clip.w);
 }
@@ -661,6 +675,11 @@ fn hdr_scene_alpha(scene: f32) -> f32 {
 }
 // The face's normal, from the fragment's derivatives, for how it faces the sun.
 var<private> hdr_normal: vec3<f32>;
+// The normal of the face through `dx` and `dy` (the position's screen derivatives): a mirrored
+// world view's x runs the other way, which would turn it round.
+fn screen_normal(dx: vec3<f32>, dy: vec3<f32>) -> vec3<f32> {
+    return normalize(cross(dy, dx)) * select(1.0, -1.0, globals.world_view.x < 0.0);
+}
 fn hdr_facing() -> f32 {
     return mix(0.45, 1.0, max(dot(hdr_normal, globals.sun.xyz), 0.0));
 }
@@ -734,7 +753,7 @@ fn hdr_mark(tier: u32, y: f32) -> f32 {
 @fragment fn fs_opaque(wire: TerrainWire) -> @location(0) vec4<f32> {
     let in = from_wire(wire);
     if HDR_LIGHTING && globals.hdr_light.z != 0.0 {
-        hdr_normal = normalize(cross(dpdy(in.local), dpdx(in.local)));
+        hdr_normal = screen_normal(dpdx(in.local), dpdy(in.local));
     }
     let texel = sprite(in.uv, in.layer & 0x7fffu);
     var color = texel * in.color;
@@ -752,7 +771,7 @@ fn solid_color(in: TerrainOut) -> vec4<f32> {
     let dx = dpdx(in.local);
     let dy = dpdy(in.local);
     if HDR_LIGHTING && globals.hdr_light.z != 0.0 {
-        hdr_normal = normalize(cross(dy, dx));
+        hdr_normal = screen_normal(dx, dy);
     }
     if faded(in.fade, in.local, dx, dy) { discard; }
     // Bit 15 of the layer marks opaque leaves (forceOpaque): no alpha cutout.
@@ -772,9 +791,9 @@ fn solid_finish(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>) -> vec4<f32>
 fn solid_light(finished: vec4<f32>) -> vec4<f32> {
     if HDR_WRITE_LIGHT {
         if globals.hdr_light.w != 0.0 {
-            return vec4(hdr_written(finished.rgb, finished.a, globals.hdr_settings, globals.hdr_shares), 1.0);
+            return vec4(hdr_written(finished.rgb, finished.a, globals.hdr_settings, globals.hdr_gains), 1.0);
         }
-        return vec4(finished.rgb, 1.0);
+        return frame_stored(vec4(finished.rgb, 1.0));
     }
     return finished;
 }
@@ -827,7 +846,7 @@ fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<
     let in = from_wire(wire);
     let dx = dpdx(in.local);
     let dy = dpdy(in.local);
-    hdr_normal = normalize(cross(dy, dx));
+    hdr_normal = screen_normal(dx, dy);
     if sprite(in.uv, in.layer & 0x7fffu).a < 0.6 { discard; }
     let fogged = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
         linear_fog(in.cylindrical, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
@@ -840,7 +859,7 @@ fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<
 @fragment fn fs_translucent(wire: TerrainWire) -> @location(0) vec4<f32> {
     let in = from_wire(wire);
     if HDR_WRITE_LIGHT && globals.hdr_light.w != 0.0 {
-        hdr_normal = normalize(cross(dpdy(in.local), dpdx(in.local)));
+        hdr_normal = screen_normal(dpdx(in.local), dpdy(in.local));
     }
     let texel = sprite(in.uv, in.layer & 0x7fffu);
     var color = texel * in.color;
@@ -854,9 +873,9 @@ fn solid_finish_at(in: TerrainOut, texel: vec4<f32>, color: vec4<f32>, du: vec2<
         let fogged = max(linear_fog(in.spherical, globals.fog.x, globals.fog.y),
             linear_fog(in.cylindrical, globals.fog.z, globals.fog.w)) * globals.fog_color.a;
         let mark = hdr_scene_alpha(mix(hdr_scene(in.scene.x, in.scene.y, hdr_facing()), globals.hdr_light.y, fogged));
-        return vec4(hdr_written(finished.rgb, mark, globals.hdr_settings, globals.hdr_shares), finished.a);
+        return vec4(hdr_written(finished.rgb, mark, globals.hdr_settings, globals.hdr_gains), finished.a);
     }
-    return finished;
+    return frame_stored(finished);
 }
 
 // Native still-fluid boxes use block sprites and lightmap without terrain AO/emission
@@ -1060,9 +1079,9 @@ fn sky_finished(color: vec3<f32>) -> vec4<f32> {
     let mark = 1.0 - 0.24 * globals.hdr_light.y;
     if HDR_WRITE_LIGHT {
         if globals.hdr_light.w != 0.0 {
-            return vec4(hdr_written(color, mark, globals.hdr_settings, globals.hdr_shares), 1.0);
+            return vec4(hdr_written(color, mark, globals.hdr_settings, globals.hdr_gains), 1.0);
         }
-        return vec4(color, 1.0);
+        return frame_stored(vec4(color, 1.0));
     }
     return vec4(color, mark);
 }
@@ -1095,7 +1114,7 @@ struct SunriseOut {
     let d = view_ray(in.ndc);
     let dist = disc_distance(d, -4.0);
     if dist.x < 0.0 { discard; }
-    return vec4(sky_fog(vec3(0.0), dist), 1.0);
+    return frame_stored(vec4(sky_fog(vec3(0.0), dist), 1.0));
 }
 
 // rendertype_lines.vsh: screen-space stroke and camera-space depth separation.
@@ -1133,7 +1152,7 @@ struct LineOut {
     return out;
 }
 @fragment fn fs_line(in: LineOut) -> @location(0) vec4<f32> {
-    return apply_fog(in.color, in.spherical, in.cylindrical);
+    return frame_stored(apply_fog(in.color, in.spherical, in.cylindrical));
 }
 // Gizmo lines (rendertype_lines with a per-vertex colour and LineWidth in
 // pixels; no layering transform).
@@ -1166,5 +1185,5 @@ struct DebugLineOut {
     return out;
 }
 @fragment fn fs_debug_line(in: DebugLineOut) -> @location(0) vec4<f32> {
-    return apply_fog(in.color, in.spherical, in.cylindrical);
+    return frame_stored(apply_fog(in.color, in.spherical, in.cylindrical));
 }

@@ -129,7 +129,7 @@ impl NativePack {
             textures,
             lights,
             terrain.pbr,
-            api,
+            (api, terrain.linear && api == horizon_shader_api::Api::V0_2),
         );
         // `[displacement]`, unless its option is off; nothing to displace without heights.
         let displacement = report
@@ -307,6 +307,7 @@ mod tests {
     /// a validation panic (#10095).
     #[test]
     fn a_pack_the_backend_refuses_is_an_error_not_a_panic() {
+        let _gpu = crate::gfx::test_gpu::lock();
         use horizon_shader_api::{MANIFEST, Pack, check};
         let instance = crate::gfx::test_gpu::instance();
         let Ok(adapter) = pollster::block_on(instance.request_adapter(&Default::default())) else {
@@ -361,6 +362,7 @@ mod tests {
             flat: None,
             sprites: [1.0, 2048.0],
             format: wgpu::TextureFormat::Rgba8Unorm,
+            linear: false,
             sprite_tags: &[],
             sprite_materials: &[],
             entities: &empty,

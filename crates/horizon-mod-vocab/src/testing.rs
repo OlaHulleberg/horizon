@@ -40,7 +40,10 @@ mod services;
 /// An item forward reference missing from a fake's load-owned catalog.
 pub use crate::parts::ItemKeyError;
 pub use journal::FakeJournal;
-pub use level::{FakeBattery, FakeBlockEntity, FakeContainer, FakeEntity, FakeLevel, FakeTank};
+pub use level::{
+    FakeBattery, FakeBlockEntity, FakeContainer, FakeEntity, FakeGameEvent, FakeLevel, FakeSound,
+    FakeTank,
+};
 pub use players::{FakePlayer, FakePlayers};
 pub use registries::FakeRegistries;
 pub use services::{FakeCommands, FakeMessages};
@@ -73,6 +76,68 @@ pub fn with_dispatch<R>(mods: Mods, f: impl FnOnce() -> R) -> R {
     let installed = Box::leak(Box::new(Installed::new(mods)));
     let _restore = Restore(TEST_MODS.replace(Some(installed)));
     f()
+}
+
+/// Rebuild a fixture's Parts snapshot from a fresh registration epoch on this thread.
+///
+/// On success the replacement stays installed. An error or unwinding restores the previous snapshot.
+/// Production registries remain frozen; only game fixtures that need a complete key table
+/// after their initial synthetic registration should use this.
+// hidden: only the shared game fixtures in horizon-mod-api rebuild their Parts epoch; not API.
+#[doc(hidden)]
+pub fn rebuild_parts<R, E>(f: impl FnOnce() -> Result<R, E>) -> Result<R, E> {
+    struct Restore {
+        previous: Option<&'static crate::parts::Installed>,
+        committed: bool,
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if !self.committed {
+                crate::parts::TEST_PARTS.set(self.previous);
+            }
+        }
+    }
+    let mut restore = Restore {
+        previous: crate::parts::TEST_PARTS.replace(None),
+        committed: false,
+    };
+    let result = f();
+    restore.committed = result.is_ok();
+    result
+}
+
+#[cfg(test)]
+#[test]
+fn rebuilding_fixture_parts_commits_success_and_restores_on_error_or_unwind() {
+    use crate::parts::{custom_stat_declarations, install_input, installation::InstalledInput};
+    let install = |id: &str| {
+        install_input(InstalledInput {
+            custom_stats: vec![id.into()],
+            ..Default::default()
+        });
+    };
+    install("fixture:old");
+    let result: Result<(), ()> = rebuild_parts(|| {
+        assert!(custom_stat_declarations().is_empty());
+        install("fixture:new");
+        Ok(())
+    });
+    assert_eq!(result, Ok(()));
+    assert_eq!(custom_stat_declarations(), ["fixture:new"]);
+    let result: Result<(), &str> = rebuild_parts(|| {
+        install("fixture:failed");
+        Err("fixture refused")
+    });
+    assert_eq!(result, Err("fixture refused"));
+    assert_eq!(custom_stat_declarations(), ["fixture:new"]);
+    let panic = std::panic::catch_unwind(|| {
+        let _: Result<(), ()> = rebuild_parts(|| {
+            install("fixture:panicked");
+            panic!("fixture refused");
+        });
+    });
+    assert!(panic.is_err());
+    assert_eq!(custom_stat_declarations(), ["fixture:new"]);
 }
 
 /// Capture this thread's test installation for work sent to another thread.
@@ -137,6 +202,11 @@ pub struct FakeHost {
     pub messages: FakeMessages,
     /// The transaction journal over the players and the level.
     pub journal: FakeJournal<(FakePlayers, FakeLevel)>,
+    /// The sounds played in the level, in order. Like the game's, they are sent as they are
+    /// played: an aborted transaction does not take them back.
+    pub sounds: Vec<FakeSound>,
+    /// The game events sent in the level, in order, kept as the sounds are.
+    pub game_events: Vec<FakeGameEvent>,
 }
 
 impl FakeHost {
@@ -149,6 +219,30 @@ impl FakeHost {
         self.players.join(uuid, entity, self.level.level())
     }
 
+    /// A queued bucket sound and game event, as the game plays them at the outermost commit.
+    fn play_fluid_effects(&mut self, queued: level::QueuedFluidEffects) {
+        if let Some(sound) = self.registries.fluid_sound(queued.fluid, queued.pickup) {
+            self.sounds.push(FakeSound {
+                sound: sound.to_owned(),
+                at: queued.at,
+                source: crate::SoundSource::Blocks,
+                volume: 1.0,
+                pitch: 1.0,
+            });
+        }
+        self.game_events.push(FakeGameEvent {
+            event: match queued.pickup {
+                true => "minecraft:fluid_pickup",
+                false => "minecraft:fluid_place",
+            }
+            .to_owned(),
+            at: queued.at,
+            context: crate::GameEventContext {
+                source_entity: queued.player.map(PlayerRef::entity),
+                affected_state: None,
+            },
+        });
+    }
     fn max_stack(&self, resource: &crate::ItemResource) -> u32 {
         match resource.value_id(self, "minecraft:max_stack_size") {
             Some(Tag::Int(size)) if (1..=99).contains(&size) => size as u32,
@@ -218,6 +312,17 @@ impl crate::prelude::TagsHost for FakeHost {
     fn tags(&self) -> &dyn crate::Tags {
         &self.registries
     }
+    fn fluid_pickup_sound(&self, fluid: &str) -> Option<&'static str> {
+        self.registries.fluid_sound(fluid, true)
+    }
+    fn fluid_empty_sound(&self, fluid: &str) -> Option<&'static str> {
+        self.registries.fluid_sound(fluid, false)
+    }
+}
+impl crate::prelude::BlockStatesHost for FakeHost {
+    fn fluid_key(&self, id: &str) -> Option<crate::FluidKey> {
+        crate::content::registry_keys::fluid_key(id)
+    }
 }
 impl crate::prelude::LevelsHost for FakeHost {
     fn is_loaded(&self, id: &str) -> bool {
@@ -226,7 +331,15 @@ impl crate::prelude::LevelsHost for FakeHost {
 }
 crate::impl_host_areas!(
     FakeHost,
-    except(block_entities, entities, items, levels, players, tags)
+    except(
+        block_entities,
+        block_states,
+        entities,
+        items,
+        levels,
+        players,
+        tags
+    )
 );
 
 impl ServerHost for FakeHost {
@@ -243,6 +356,26 @@ impl crate::prelude::ModStateServerHost for FakeHost {
         if let Some((players, level)) = self.journal.close(seal, commit) {
             (self.players, self.level) = (players, level);
         }
+        // The outermost commit plays what waited for it.
+        if self.journal.depth() == 0 {
+            for queued in std::mem::take(&mut self.level.fluid_effects) {
+                self.play_fluid_effects(queued);
+            }
+        }
+    }
+    fn transaction_lifecycle(&self) -> crate::TransactionLifecycle {
+        // The fake tells the world of nothing at a close, so no close is ever seen running.
+        if self.journal.depth() == 0 {
+            crate::TransactionLifecycle::None
+        } else {
+            crate::TransactionLifecycle::Open
+        }
+    }
+    fn transaction_current(&self) -> Option<crate::Transaction> {
+        self.journal.current()
+    }
+    fn transaction_depth(&self, tx: &crate::Transaction) -> Option<u32> {
+        self.journal.depth_of(tx)
     }
 }
 impl crate::prelude::ServicesServerHost for FakeHost {
@@ -270,6 +403,11 @@ impl crate::prelude::LevelsBackend for FakeHost {
             .block_at(level, pos)
             .and_then(crate::__private::block_key)
     }
+    /// The named block's first state: the fake keeps no properties.
+    fn level_block_state(&self, level: LevelRef, pos: [i32; 3]) -> Option<crate::BlockState> {
+        let block = crate::prelude::LevelsBackend::level_block(self, level, pos)?;
+        Some(crate::BlockStateRecord::new(block, 0).into())
+    }
 }
 impl crate::prelude::BlockEntitiesBackend for FakeHost {
     fn block_entity_kind(&self, entity: BlockEntityRef) -> Option<BlockEntityTypeKey> {
@@ -278,6 +416,51 @@ impl crate::prelude::BlockEntitiesBackend for FakeHost {
     }
 }
 impl crate::prelude::ItemsBackend for FakeHost {
+    fn container_kind_amount(&self, at: BlockSide, resource: &crate::ItemResource) -> Option<u64> {
+        let Some(items) = self
+            .level
+            .standing(at.level, at.pos)
+            .and_then(|s| s.items.as_ref())
+        else {
+            return Some(0);
+        };
+        items
+            .slots
+            .iter()
+            .flatten()
+            .filter(|stack| resource.matches(stack))
+            .try_fold(0u64, |total, stack| total.checked_add(stack.count() as u64))
+    }
+    fn container_kind_space(&self, at: BlockSide, resource: &crate::ItemResource) -> Option<u64> {
+        let max_stack = self.max_stack(resource);
+        let Some(items) = self
+            .level
+            .standing(at.level, at.pos)
+            .and_then(|s| s.items.as_ref())
+        else {
+            return Some(0);
+        };
+        (0..items.slots.len()).try_fold(0u64, |total, slot| {
+            let room = match &items.slots[slot] {
+                Some(held) if resource.matches(held) => {
+                    items.capacity(slot, max_stack).saturating_sub(held.count())
+                }
+                Some(_) => 0,
+                None => items.capacity(slot, max_stack),
+            };
+            total.checked_add(room as u64)
+        })
+    }
+    fn container_listing(
+        &self,
+        at: BlockSide,
+        from: usize,
+        limit: usize,
+    ) -> Option<Vec<Option<ItemStack>>> {
+        let items = self.level.standing(at.level, at.pos)?.items.as_ref()?;
+        let limit = limit.min(crate::MAX_STORAGE_PAGE);
+        Some(items.slots.iter().skip(from).take(limit).cloned().collect())
+    }
     fn container_size(&self, at: BlockSide) -> Option<usize> {
         let items = self.level.standing(at.level, at.pos)?.items.as_ref()?;
         Some(items.slots.len())
@@ -302,6 +485,10 @@ impl crate::prelude::ItemsBackend for FakeHost {
         None
     }
     fn entity_equipment_size(&self, _: u32) -> Option<usize> {
+        None
+    }
+    fn item_bundle_slots(&self, _: &ItemStack) -> Option<Vec<Option<ItemStack>>> {
+        // The fake registry models declared containers, not game bundle components.
         None
     }
     fn item_container_slots(&self, stack: &ItemStack) -> Option<Vec<Option<ItemStack>>> {
@@ -369,6 +556,13 @@ impl crate::prelude::PlayersBackend for FakeHost {
         let level = self.player_level(player)?;
         crate::Identifier::parse(level.dimension_id()).ok()
     }
+    fn player_has_infinite_materials(&self, player: PlayerRef) -> Option<bool> {
+        Some(self.players.get(player.uuid())?.infinite_materials)
+    }
+    fn player_inventory(&self, player: PlayerRef) -> Option<Vec<ItemStack>> {
+        let slots = &self.players.get(player.uuid())?.slots;
+        Some(slots.range(0..36).map(|(_, stack)| stack.clone()).collect())
+    }
 }
 crate::impl_backend_areas!(
     FakeHost,
@@ -413,6 +607,65 @@ impl crate::prelude::ItemsBackendMut for FakeHost {
     ) -> Option<ItemStack> {
         let standing = self.level.standing_mut(at.level, at.pos)?;
         standing.items.as_mut()?.extract(slot, max)
+    }
+    fn container_insert_kind(
+        &mut self,
+        at: BlockSide,
+        resource: &crate::ItemResource,
+        amount: u64,
+        tx: &Transaction,
+    ) -> u64 {
+        use crate::prelude::ItemsBackend;
+        let size = self.container_size(at).unwrap_or(0);
+        let mut left = amount;
+        for holding in [true, false] {
+            for slot in 0..size {
+                if left == 0 {
+                    break;
+                }
+                let held = self.container_stack(at, slot);
+                let pick = match &held {
+                    Some(held) => holding && resource.matches(held),
+                    None => !holding,
+                };
+                if !pick {
+                    continue;
+                }
+                let ask = left.min(u32::MAX as u64) as u32;
+                let rest = self
+                    .container_insert(at, slot, resource, ask, tx)
+                    .ok()
+                    .flatten()
+                    .map_or(0, |rest| rest.count());
+                left -= (ask - rest) as u64;
+            }
+        }
+        amount - left
+    }
+    fn container_extract_kind(
+        &mut self,
+        at: BlockSide,
+        resource: &crate::ItemResource,
+        amount: u64,
+        tx: &Transaction,
+    ) -> u64 {
+        use crate::prelude::ItemsBackend;
+        let mut left = amount;
+        for slot in 0..self.container_size(at).unwrap_or(0) {
+            if left == 0 {
+                break;
+            }
+            if self
+                .container_stack(at, slot)
+                .is_some_and(|held| resource.matches(&held))
+            {
+                let ask = left.min(u32::MAX as u64) as u32;
+                left -= self
+                    .container_extract(at, slot, ask, tx)
+                    .map_or(0, |out| out.count()) as u64;
+            }
+        }
+        amount - left
     }
     fn game_stack(&mut self, place: &ItemPlace) -> Option<ItemStack> {
         let (player, slot) = self.players.place(place)?;
@@ -483,6 +736,57 @@ impl crate::prelude::FluidsEnergyBackendMut for FakeHost {
             .and_then(|standing| standing.energy.as_mut())
             .map_or(0, |energy| energy.extract(amount))
     }
+    /// The source block at `pos` ([`FakeLevel::set_block`]), a bucket of it; the fake plays no
+    /// sound or game event for it.
+    fn level_pickup_fluid(
+        &mut self,
+        level: LevelRef,
+        pos: [i32; 3],
+        _: Option<PlayerRef>,
+        tx: &Transaction,
+    ) -> Option<FluidStack> {
+        if !self.journal.holds(tx) {
+            return None;
+        }
+        let fluid = self.level.take_source(level, pos)?;
+        Some(FluidStack::new(fluid, 1000))
+    }
+    /// A source of `fluid` where nothing is; the fake plays no sound or game event for it.
+    fn level_place_fluid(
+        &mut self,
+        level: LevelRef,
+        pos: [i32; 3],
+        fluid: crate::FluidKey,
+        _: Option<PlayerRef>,
+        _: bool,
+        tx: &Transaction,
+    ) -> bool {
+        self.journal.holds(tx) && self.level.put_source(level, pos, fluid)
+    }
+    /// Queued with the level for the outermost commit, which plays it as the game does.
+    fn level_play_fluid_effects(
+        &mut self,
+        level: LevelRef,
+        pos: [i32; 3],
+        fluid: crate::FluidKey,
+        pickup: bool,
+        player: Option<PlayerRef>,
+        tx: &Transaction,
+    ) -> bool {
+        let Some(id) = crate::content::registry_keys::fluid_id(fluid) else {
+            return false;
+        };
+        if !self.journal.holds(tx) || level != self.level.level() {
+            return false;
+        }
+        self.level.fluid_effects.push(level::QueuedFluidEffects {
+            at: pos.map(|c| f64::from(c) + 0.5),
+            fluid: id,
+            pickup,
+            player,
+        });
+        true
+    }
 }
 impl crate::prelude::EntitiesBackendMut for FakeHost {
     fn entity_uuid(&mut self, entity: EntityRef) -> Option<u128> {
@@ -506,7 +810,50 @@ impl crate::prelude::PlayersBackendMut for FakeHost {
         Ok(true)
     }
 }
-crate::impl_backend_mut_areas!(FakeHost, except(entities, fluids_energy, items, players));
+impl crate::prelude::LevelsBackendMut for FakeHost {
+    fn level_play_sound(
+        &mut self,
+        level: LevelRef,
+        sound: &str,
+        at: [f64; 3],
+        source: crate::SoundSource,
+        volume: f32,
+        pitch: f32,
+    ) -> bool {
+        if level != self.level.level() {
+            return false;
+        }
+        self.sounds.push(FakeSound {
+            sound: sound.to_owned(),
+            at,
+            source,
+            volume,
+            pitch,
+        });
+        true
+    }
+    fn level_game_event(
+        &mut self,
+        level: LevelRef,
+        event: &str,
+        at: [f64; 3],
+        context: crate::GameEventContext,
+    ) -> bool {
+        if level != self.level.level() {
+            return false;
+        }
+        self.game_events.push(FakeGameEvent {
+            event: event.to_owned(),
+            at,
+            context,
+        });
+        true
+    }
+}
+crate::impl_backend_mut_areas!(
+    FakeHost,
+    except(entities, fluids_energy, items, levels, players)
+);
 
 impl crate::prelude::PlayersClientBackend for FakeHost {}
 

@@ -1332,7 +1332,9 @@ impl Game<'_> {
     /// the one in front (a screen that just opened leaves the old focus
     /// behind it), so every menu's click focus goes.
     pub(super) fn clear_screen_click_focus(&mut self) {
-        if let Some(title) = self.title.as_mut() {
+        if let Some(title) = self.title.as_mut()
+            && !matches!(title.mode, horizon_client::title::Mode::MissingMods { .. })
+        {
             title.focused_button = None;
         }
         self.pause_focus = None;
@@ -1589,8 +1591,12 @@ impl Game<'_> {
                 self.pad_follow_targets();
             }
         }
-        // Nothing scrolls under the on-screen keyboard.
-        let scroll = if self.pad.menu.osk.is_some() {
+        // Nothing scrolls under the on-screen keyboard; over chat its right stick picks a
+        // suggestion.
+        let scroll = if let Some(keyboard) = self.pad.menu.osk.as_mut() {
+            if let Some(out) = keyboard.stick(state.right[1]) {
+                self.pad_osk_output(out);
+            }
             [0.0, 0.0]
         } else {
             gamepad::radial(state.right, look_deadzone)
@@ -1931,6 +1937,13 @@ impl Game<'_> {
         let Some(focus) = self.pad.menu.focus else {
             return;
         };
+        // Includes focus restored or followed directly above, not only explicit
+        // pad_focus_on landings. The pad now owns the screen's focus mark.
+        if !self.pad.menu.keyboard
+            && let Some(title) = self.title.as_mut()
+        {
+            title.missing_mods_pad_focus();
+        }
         if self.pad.menu.pos.is_none() || self.pad.menu.held.iter().any(|h| *h) {
             return;
         }
@@ -2070,6 +2083,13 @@ impl Game<'_> {
     /// value). Whether the key was used; when not, the screen has it (a
     /// container also has Tab and the arrows once they moved the focus).
     pub(super) fn key_focus_key(&mut self, event_loop: &dyn EventLoopCtl, key: KeyCode) -> bool {
+        if self
+            .title
+            .as_ref()
+            .is_some_and(|t| matches!(t.mode, horizon_client::title::Mode::MissingMods { .. }))
+        {
+            return false;
+        }
         let Some(nav) = key_focus::nav_of(key, self.has_shift_down()) else {
             return false;
         };
@@ -2408,7 +2428,8 @@ impl Game<'_> {
         {
             return;
         }
-        self.pad.menu.osk = Some(Keyboard::default());
+        let suggests = self.screen == Screen::Chat && self.title.is_none() && !self.dialog_open();
+        self.pad.menu.osk = Some(Keyboard::new(self.pad_enter_keeps_typing(), suggests));
     }
 
     /// Chat or a sign opened by the pad (either menu mode): the keyboard
@@ -2439,6 +2460,23 @@ impl Game<'_> {
             Output::Text(t) => (None, Some(t.as_str())),
             Output::Backspace => (Some(KeyCode::Backspace), None),
             Output::Enter => (Some(KeyCode::Enter), None),
+            Output::Done if self.pad_enter_keeps_typing() => {
+                self.pad_osk_done_lines();
+                return;
+            }
+            Output::Done => (Some(KeyCode::Enter), None),
+            // Chat's suggestions (CommandSuggestions.keyPressed): Tab, Up and Down.
+            Output::Complete | Output::Previous | Output::Next => {
+                if self.screen == Screen::Chat && !self.dialog_open() {
+                    let key = match out {
+                        Output::Complete => KeyCode::Tab,
+                        Output::Previous => KeyCode::ArrowUp,
+                        _ => KeyCode::ArrowDown,
+                    };
+                    self.chat_key_code(key, None);
+                }
+                return;
+            }
             Output::Close => {
                 self.pad.menu.osk = None;
                 self.pad.menu.osk_dismissed = true;
@@ -2543,6 +2581,24 @@ impl Game<'_> {
             || !self.pad_has_typing_screen()
         {
             self.pad.menu.osk = None;
+        }
+    }
+
+    /// Done over a field of many lines: what the screen's own Done button does (a book and
+    /// quill saves and closes, a sign closes and sends its text); a dialog's input has none, so
+    /// the keyboard closes. Never a new line: that's the New Line key.
+    fn pad_osk_done_lines(&mut self) {
+        self.pad.menu.osk = None;
+        self.pad.menu.osk_dismissed = true;
+        if self.dialog_typing_lines() {
+            return;
+        }
+        if self.sign_edit.is_some() {
+            self.close_sign_editor();
+        } else if self.book.is_some()
+            && let Err(e) = self.book_control(Some("done"))
+        {
+            log::warn!("Horizon: on-screen keyboard: {e}");
         }
     }
 

@@ -7,11 +7,13 @@
 //! network pays nothing.
 pub mod abilities;
 mod advancements;
+pub mod announced_channels;
 pub mod config_payloads;
 pub use advancements::ServerAdvancements;
 pub mod anticheat;
 pub mod arrivals;
 pub mod attributes;
+mod biome_resend;
 pub mod border;
 pub mod chunk_watch;
 pub mod chunks;
@@ -23,7 +25,9 @@ pub mod conn;
 pub mod containers;
 pub mod data;
 pub mod discovery;
+mod effect_meta;
 pub mod entity;
+pub mod equipment_cache;
 pub mod far;
 pub mod forwarding;
 pub mod guest;
@@ -33,6 +37,7 @@ pub mod hub;
 pub mod import;
 mod io_pool;
 pub mod menu;
+pub mod menu_extra_rev;
 #[cfg(test)]
 mod payload_bounds_tests;
 pub mod playerdata;
@@ -42,6 +47,7 @@ mod registry_names;
 pub mod scoreboard;
 mod sound_order;
 pub mod tracking;
+pub mod viewed_levels;
 pub mod waypoints;
 
 pub use conn::{Holding, PlayerSender, flush_all};
@@ -514,6 +520,19 @@ impl Shared {
         if self.shutting_down.load(Ordering::Relaxed) {
             return Some(translatable("multiplayer.disconnect.server_shutdown", &[]));
         }
+        // IntegratedPlayerList.canPlayerLogin: the owner's name (ignoring case,
+        // `isSingleplayerOwner`) is refused while a player of that name is online.
+        if let Some((owner, _)) = &self.config.singleplayer_profile
+            && owner.eq_ignore_ascii_case(name)
+            && self
+                .online
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, online)| online.eq_ignore_ascii_case(name))
+        {
+            return Some(translatable("multiplayer.disconnect.name_taken", &[]));
+        }
         if let Some(gate) = &self.config.gate
             && let Some(reason) = gate(address, uuid, name)
         {
@@ -735,7 +754,7 @@ impl Lan {
             closing: AtomicUsize::new(0),
             turned_away: Mutex::new((0, None)),
             shutting_down: AtomicBool::new(false),
-            random: Mutex::new(crate::server::java_properties::now_millis() as u64 | 1),
+            random: Mutex::new(horizon_java_properties::now_millis() as u64 | 1),
             config,
         });
         let mut lan = Self {
@@ -821,15 +840,14 @@ impl Lan {
     pub fn connect_local(&self) -> io::Result<horizon_protocol::connection::Pipe> {
         let (client, server) = horizon_protocol::connection::Pipe::pair();
         let shared = self.shared.clone();
-        std::thread::Builder::new()
-            .name("horizon-local-conn".into())
-            .spawn(move || {
-                if let Err(e) = conn::serve_local(server, shared)
-                    && std::env::var_os("HORIZON_NET_DEBUG").is_some()
-                {
-                    log::warn!("[lan] local: {e}");
-                }
-            })?;
+        // Configuration payload handlers of wasm mods run on this thread.
+        horizon_guest_stack::spawn("horizon-local-conn".into(), move || {
+            if let Err(e) = conn::serve_local(server, shared)
+                && std::env::var_os("HORIZON_NET_DEBUG").is_some()
+            {
+                log::warn!("[lan] local: {e}");
+            }
+        })?;
         Ok(client)
     }
     /// Everything the connection threads reported since the last call.
@@ -1043,12 +1061,11 @@ fn accept_loop(listener: TcpListener, shared: Arc<Shared>, stop: &AtomicBool) {
                     continue;
                 };
                 shared.wait(&counted, &stream);
-                let _ = std::thread::Builder::new()
-                    .name("horizon-lan-conn".into())
-                    .spawn(move || {
-                        WAITING.set(Some(counted.2));
-                        handle(stream, addr, counted);
-                    });
+                // Configuration payload handlers of wasm mods run on this thread.
+                let _ = horizon_guest_stack::spawn("horizon-lan-conn".into(), move || {
+                    WAITING.set(Some(counted.2));
+                    handle(stream, addr, counted);
+                });
             }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(25));
@@ -1185,6 +1202,37 @@ mod tests {
             Some(translatable("multiplayer.disconnect.server_shutdown", &[]))
         );
         assert_eq!(lan.shared.online(), 1);
+    }
+
+    /// `IntegratedPlayerList.canPlayerLogin`: a login whose name is the
+    /// singleplayer owner's (`IntegratedServer.isSingleplayerOwner`, ignoring
+    /// case) is refused with `multiplayer.disconnect.name_taken` while a player
+    /// of that name is online. The owner's own first login, and any other name,
+    /// get in; a server with no owner profile (a dedicated one) has no such rule.
+    #[test]
+    fn a_login_with_the_owners_name_is_refused_while_the_owner_is_online() {
+        let owned = NetConfig {
+            announce: false,
+            listen: false,
+            singleplayer_profile: Some(("Owner".to_owned(), 1)),
+            ..NetConfig::loopback(0, "Owned".into(), 8)
+        };
+        let lan = Lan::start_with(Arc::new(data::SyncData::empty()), owned).unwrap();
+        let taken = Some(translatable("multiplayer.disconnect.name_taken", &[]));
+        assert!(lan.shared.try_admit(MEMORY_ADDRESS, 1, "Owner").is_none());
+        assert_eq!(lan.shared.try_admit(MEMORY_ADDRESS, 2, "oWNER"), taken);
+        assert_eq!(lan.shared.try_admit(MEMORY_ADDRESS, 1, "Owner"), taken);
+        assert!(lan.shared.try_admit(MEMORY_ADDRESS, 3, "Guest").is_none());
+        assert_eq!(lan.shared.online(), 2);
+
+        let dedicated = NetConfig {
+            announce: false,
+            listen: false,
+            ..NetConfig::loopback(0, "Dedicated".into(), 8)
+        };
+        let lan = Lan::start_with(Arc::new(data::SyncData::empty()), dedicated).unwrap();
+        assert!(lan.shared.try_admit(MEMORY_ADDRESS, 1, "Owner").is_none());
+        assert!(lan.shared.try_admit(MEMORY_ADDRESS, 2, "oWNER").is_none());
     }
 
     #[test]

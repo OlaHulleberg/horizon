@@ -148,3 +148,4 @@ StateHolder.setValueInternal	port	crates/horizon-world/src/registry.rs::BlockReg
 StateHolder.initializeNeighbors	skip:java		neighbour table built once in Java; Horizon resolves states by key (registry.rs state_key)
 StateHolder.getValues	skip:java		stream over the state's property values; Horizon iterates the name-keyed map
 StateHolder.codec	port	crates/horizon-client/src/game/world/persist.rs::Game::state_from_nbt	gap: minor: decodes Name and Properties; the write side is in the NBT writers
+TheEndGatewayBlockEntity.portalTick	port	crates/horizon-client/src/game/blocks/block_entity_anims.rs::Game::tick_end_gateway	the server ticker: the age, the cooldown and the 2400-tick block event; a moved age marks the chunk (`setChanged`)

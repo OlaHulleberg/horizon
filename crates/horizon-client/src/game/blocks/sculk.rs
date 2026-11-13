@@ -1622,12 +1622,7 @@ impl Game<'_> {
         if self.potions.effects.get("conduit_power").is_some()
             && let Some(eye) = self.eye_position()
         {
-            let in_water = horizon_client::fog::fog_type(
-                &self.world,
-                self.res.facts(),
-                eye,
-                &self.near_plane(),
-            ) == FogType::Water;
+            let in_water = self.camera_fog_type(eye) == FogType::Water;
             return self.fog.water_vision(in_water);
         }
         0.0
@@ -1965,6 +1960,50 @@ impl Game<'_> {
         };
         self.post_game_event("minecraft:projectile_land", at, ctx);
     }
+    /// A projectile's own event (`gameEvent(event)`, `Context.of(this, state)`):
+    /// its owner as the projectile's owner, `state` the affected state. A
+    /// guest's projectile posts as theirs, or with no owner once they have left
+    /// (`Projectile.getOwner`), as its shot does.
+    pub(super) fn projectile_own_event(
+        &mut self,
+        event: &'static str,
+        owner: Option<Who>,
+        guest: Option<u32>,
+        at: [f64; 3],
+        state: Option<BlockStateId>,
+    ) {
+        if let Some(conn) = guest.filter(|conn| owner.is_some() && self.lan_acting != Some(*conn)) {
+            let posted = self
+                .as_guest(conn, |g| {
+                    g.projectile_own_event(event, owner, None, at, state);
+                })
+                .is_some();
+            if !posted {
+                self.projectile_own_event(event, None, None, at, state);
+            }
+            return;
+        }
+        let mut ctx = Context {
+            dampening_state: self.state_dampens(state),
+            ..Context::default()
+        };
+        ctx.owner = owner;
+        ctx.player = owner == Some(Who::Player) || self.rides_player(owner);
+        self.post_game_event(event, at, ctx);
+    }
+    /// The state HIT_GROUND names for an entity of `bounds` landing at
+    /// `position` (`Entity.checkFallDamage`): its supporting block's
+    /// (`mainSupportingBlockPos`), else the block at `getOnPosLegacy`.
+    pub(super) fn landing_state(&self, position: Vec3, bounds: Aabb) -> BlockStateId {
+        let p = self.supporting_block(position, bounds).unwrap_or_else(|| {
+            BlockPos::new(
+                position.x.floor() as i32,
+                (position.y - 0.2).floor() as i32,
+                position.z.floor() as i32,
+            )
+        });
+        self.world.block(p.x, p.y, p.z)
+    }
     /// The player shot or threw something.
     pub(super) fn player_projectile_shot(&mut self) {
         if let Some(p) = self.player.as_ref() {
@@ -2040,15 +2079,7 @@ impl Game<'_> {
             return;
         }
         self.sculk_prepare();
-        // mainSupportingBlockPos, or the block's state at getOnPosLegacy.
-        let state = match self.supporting_block(position, bounds) {
-            Some(support) => self.world.block(support.x, support.y, support.z),
-            None => self.world.block(
-                position.x.floor() as i32,
-                (position.y - 0.2).floor() as i32,
-                position.z.floor() as i32,
-            ),
-        };
+        let state = self.landing_state(position, bounds);
         let mut context = self.who_context(None, Some(state));
         context.living = living;
         self.post_game_event(
@@ -2726,8 +2757,8 @@ mod tests {
     #[ignore = "needs prepared resources"]
     fn vanilla_game_event_carries_the_affected_state() {
         use crate::game::native_entity_refs::tests::with_game;
-        use mod_api::testing::with_mods;
         use mod_api::{Hooks, ModEntry, VanillaGameEventEvent};
+        use mod_platform::testing::with_mods;
         use std::sync::{Arc, Mutex};
 
         struct Heard(Arc<Mutex<Vec<Option<BlockStateId>>>>);

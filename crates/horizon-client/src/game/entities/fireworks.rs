@@ -74,6 +74,15 @@ pub(super) struct Rocket {
     pub(super) has_been_shot: bool,
     /// `Entity.isSilent`: no launch sound.
     pub(super) silent: bool,
+    /// `Entity.fallDistance`.
+    pub(super) fall_distance: f64,
+    /// `Entity.stuckSpeedMultiplier`: a cobweb or powder snow it went through
+    /// slows its next move.
+    stuck: Vec3,
+    /// `Entity.wasTouchingWater`: entering water splashes.
+    was_touching_water: bool,
+    /// `Entity.firstTick`: no splash on the tick it appears in water.
+    first_tick: bool,
 }
 impl Rocket {
     /// A rocket a server sent (`handleAddEntity`): placed and moved by it.
@@ -104,6 +113,10 @@ impl Rocket {
             // The server posts the shot.
             has_been_shot: true,
             silent: false,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            was_touching_water: false,
+            first_tick: true,
         }
     }
     /// `Projectile.setOwner`; the UUID is kept only for an owner `who` can't name.
@@ -141,6 +154,7 @@ impl Rocket {
                 left_owner: self.left_owner,
                 on_ground: self.on_ground,
                 has_been_shot: self.has_been_shot,
+                fall_distance: self.fall_distance,
             },
             uuid,
             raw,
@@ -175,6 +189,10 @@ impl Rocket {
             on_ground: r.on_ground,
             has_been_shot: r.has_been_shot,
             silent: r.silent,
+            fall_distance: r.fall_distance,
+            stuck: Vec3::ZERO,
+            was_touching_water: false,
+            first_tick: true,
         }
     }
     /// `Entity.load` over a live rocket (`/data merge`, `/data modify`): what
@@ -195,6 +213,7 @@ impl Rocket {
         self.angled = loaded.angled;
         self.left_owner = loaded.left_owner;
         self.on_ground = loaded.on_ground;
+        self.fall_distance = loaded.fall_distance;
     }
     /// One tick of a server's client: the rocket flies on by itself between
     /// the server's updates (a rocket that follows an entity is placed by the
@@ -206,9 +225,18 @@ impl Rocket {
     ) {
         self.previous = self.position;
         if self.attached_to.is_none() {
-            self.free_flight(scene, context);
+            let _ = self.free_flight(scene, context);
         }
         self.life += 1;
+    }
+    /// The end of `Projectile.shoot`: yaw and pitch are set straight from the
+    /// shot's motion (the old rotation follows, as `rotation` is the old one
+    /// on the next tick).
+    fn turn_to_shot(&mut self) {
+        let v = self.velocity;
+        let horizontal = (v.x * v.x + v.z * v.z).sqrt();
+        let atan2 = horizon_core::geometry::trig::atan2_degrees;
+        self.rotation = [atan2(v.x, v.z), atan2(v.y, horizontal)];
     }
     /// `Projectile.updateRotation`: a fifth of the way from `old` (yaw,
     /// pitch) toward its motion's direction, the short way round.
@@ -236,35 +264,37 @@ impl Rocket {
     }
     /// `EntityType.FIREWORK_ROCKET`: 0.25 x 0.25.
     pub(super) fn bounds(&self) -> Aabb {
+        Self::bounds_at(self.position)
+    }
+    /// [`Self::bounds`] at `position`.
+    fn bounds_at(position: Vec3) -> Aabb {
         let h = 0.125;
         Aabb::new(
-            Vec3::new(self.position.x - h, self.position.y, self.position.z - h),
-            Vec3::new(
-                self.position.x + h,
-                self.position.y + 2.0 * h,
-                self.position.z + h,
-            ),
+            Vec3::new(position.x - h, position.y, position.z - h),
+            Vec3::new(position.x + h, position.y + 2.0 * h, position.z + h),
         )
     }
     /// `FireworkRocketEntity.tick` for a rocket attached to no entity: speed
-    /// up (an angled one keeps its motion) and rise, then move. The rocket's
-    /// move is a self move through the move gate (#2414); PR 1a records the
-    /// movement unchanged.
+    /// up (an angled one keeps its motion) and rise, then move (`Entity.move`:
+    /// a cobweb or powder snow scales this move only). Returns where it moved
+    /// from, the move it asked for and the one it made.
     fn free_flight(
         &mut self,
         scene: &mut SceneCollisions,
         context: &horizon_world::native_load_context::LoopContext,
-    ) {
-        let h = 0.125;
-        let bounds = Aabb::new(
-            Vec3::new(self.position.x - h, self.position.y, self.position.z - h),
-            Vec3::new(
-                self.position.x + h,
-                self.position.y + 2.0 * h,
-                self.position.z + h,
-            ),
-        );
-        let wanted = self.next_motion();
+    ) -> Option<(Vec3, Vec3, Vec3)> {
+        let bounds = self.bounds();
+        let motion = self.next_motion();
+        let mut wanted = motion;
+        if self.stuck.length_squared() > 1.0e-7 {
+            wanted = Vec3::new(
+                wanted.x * self.stuck.x,
+                wanted.y * self.stuck.y,
+                wanted.z * self.stuck.z,
+            );
+            self.stuck = Vec3::ZERO;
+        }
+        let from = self.position;
         let mut gate = horizon_client::move_gate::armed(
             context,
             self.id,
@@ -276,7 +306,7 @@ impl Rocket {
         let Ok(moved) =
             horizon_client::move_gate::scene_resolve(&mut gate, scene, bounds, wanted, 0.0, false)
         else {
-            return;
+            return None;
         };
         let horizontal = (moved.x - wanted.x).abs() > 1e-7 || (moved.z - wanted.z).abs() > 1e-7;
         // Entity.move: on the ground when a move down was stopped.
@@ -286,11 +316,13 @@ impl Rocket {
             self.position.y + moved.y,
             self.position.z + moved.z,
         );
+        // setDeltaMovement(movement2): the motion before the move's scaling.
         self.velocity = if horizontal {
-            Vec3::new(self.velocity.x, wanted.y, self.velocity.z)
+            Vec3::new(self.velocity.x, motion.y, self.velocity.z)
         } else {
-            wanted
+            motion
         };
+        Some((from, wanted, moved))
     }
     /// Position and motion (the dispenser parity fixture).
     pub(super) fn motion(&self) -> (Vec3, Vec3) {
@@ -327,6 +359,100 @@ fn rocket_draws(random: &mut horizon_core::random::LegacyRandom, flight: u8) -> 
     (velocity, lifetime)
 }
 impl Game<'_> {
+    /// `Entity.doWaterSplashEffect` of a rocket moving at `velocity`: the
+    /// splash sound and particles (from a stand-in for the rocket's own
+    /// random, as a dropped item's), then SPLASH.
+    fn rocket_splash(&mut self, r: &Rocket, velocity: Vec3) {
+        let seed = i64::from(r.id)
+            .wrapping_mul(0x5DEECE66D)
+            .wrapping_add(i64::from(r.life));
+        let mut random = horizon_core::random::LegacyRandom::new(seed);
+        let mut splashes = Vec::new();
+        let mut push = |s| splashes.push(s);
+        horizon_client::entities::water_splash_effect(
+            r.position,
+            velocity,
+            0.25,
+            &mut random,
+            &mut push,
+        );
+        for splash in splashes {
+            self.apply_item_splash(splash);
+        }
+        let at = [r.position.x, r.position.y, r.position.z];
+        self.projectile_own_event("minecraft:splash", r.owner, r.guest, at, None);
+    }
+    /// `Entity.move` after a free rocket's move (`from`, the move it asked
+    /// for, the one it made): a move of a block or more casts for a reset
+    /// block or water, `checkFallDamage` adds the drop outside water and on
+    /// the ground posts HIT_GROUND after a fall and resets it; then
+    /// `applyEffectsFromBlocks`: a cobweb or powder snow makes it stuck and
+    /// resets the fall, as does a bubble column (whose push the rocket's
+    /// `setDeltaMovement(movement2)` undoes).
+    fn rocket_moved(
+        &mut self,
+        r: &mut Rocket,
+        (from, wanted, moved): (Vec3, Vec3, Vec3),
+        water: bool,
+    ) {
+        r.fall_distance = self.vehicle_fall_reset(r.fall_distance, from, moved);
+        if !water && moved.y < 0.0 {
+            r.fall_distance -= f64::from(moved.y as f32);
+        }
+        if r.on_ground {
+            if r.fall_distance > 0.0 {
+                // Block.fallOn (farmland's random draw, honey's slide) is not
+                // run for a rocket yet, nor for the other entities that are
+                // not living.
+                let p = r.position;
+                let state = self.landing_state(p, r.bounds());
+                let at = [p.x, p.y, p.z];
+                self.projectile_own_event(
+                    "minecraft:hit_ground",
+                    r.owner,
+                    r.guest,
+                    at,
+                    Some(state),
+                );
+            }
+            r.fall_distance = 0.0;
+        }
+        let length = moved.length_squared();
+        let recorded = length > 1.0e-7 || wanted.length_squared() - length < 1.0e-7;
+        let (world, facts) = (&self.world, self.res.facts());
+        let (registry, collision) = (self.pack.assets.registry, self.collision);
+        let mut tops = Vec::new();
+        let rocket = Rocket::bounds_at;
+        let effects = horizon_client::falling_block::Effects {
+            bounds: rocket,
+            from,
+            to: r.position,
+            original: recorded.then_some(wanted),
+        };
+        let stuck = horizon_client::falling_block::apply_effects_from_blocks_of(
+            effects,
+            &mut r.velocity.clone(),
+            &mut r.fall_distance,
+            &mut tops,
+            |p| {
+                use horizon_client::falling_block::Inside;
+                match &*facts.get(world.block(p.x, p.y, p.z)).name {
+                    "minecraft:cobweb" => Inside::Cobweb,
+                    "minecraft:powder_snow" => Inside::PowderSnow,
+                    _ => horizon_client::motion::bubble_column_at(
+                        world, registry, facts, collision, p,
+                    )
+                    .map_or(Inside::Nothing, Inside::BubbleColumn),
+                }
+            },
+        );
+        if let Some(multiplier) = stuck {
+            r.stuck = multiplier;
+        }
+        for pos in tops {
+            self.bubble_column_particles(pos);
+        }
+    }
     /// A rocket built from `own`, the rocket's own random (`Entity.random`): the
     /// UUID, the motion and the lifetime draw from it in that order, and a rocket
     /// that is then shot (`Projectile.shoot`) goes on drawing from the same one.
@@ -368,6 +494,10 @@ impl Game<'_> {
             on_ground: false,
             has_been_shot: false,
             silent: false,
+            fall_distance: 0.0,
+            stuck: Vec3::ZERO,
+            was_touching_water: false,
+            first_tick: true,
         }
     }
     /// `FireworkRocketItem.useOn`: launch from the clicked point.
@@ -409,6 +539,7 @@ impl Game<'_> {
         let mut own = random_source::entity();
         let mut rocket = self.new_rocket(at, stack, false, &mut own);
         rocket.velocity = shoot(&mut own);
+        rocket.turn_to_shot();
         rocket.angled = true;
         rocket.owner = owner;
         rocket.guest = self.lan_acting.filter(|_| owner == Some(Who::Player));
@@ -539,6 +670,31 @@ impl Game<'_> {
                         .any(|(who, b)| *who == o && b.intersects(reach))
                 });
             }
+            // Entity.baseTick (updateFluidInteraction): water resets the fall,
+            // entering it after the first tick splashes, currents push it; lava
+            // halves the fall.
+            let before = r.velocity;
+            let (water, lava, _) = horizon_client::entities::update_entity_fluids(
+                r.bounds(),
+                r.position,
+                r.position.y + f64::from(0.2125_f32),
+                &mut r.velocity,
+                &self.world,
+                &self.res.motion().fluids,
+                &self.loop_context,
+            );
+            if water > 0.0 {
+                r.fall_distance = 0.0;
+                if !r.was_touching_water && !r.first_tick {
+                    self.rocket_splash(&r, before);
+                }
+            }
+            r.was_touching_water = water > 0.0;
+            // Entity.isInLava is false on the first tick (firstTick).
+            if lava > 0.0 && !r.first_tick {
+                r.fall_distance *= 0.5;
+            }
+            r.first_tick = false;
             let skip = owner.filter(|_| !r.left_owner);
             let mut hit = None;
             if r.attached
@@ -563,7 +719,9 @@ impl Game<'_> {
                     binding: self.collision,
                     subject: None,
                 };
-                r.free_flight(&mut scene, &self.loop_context);
+                if let Some(flight) = r.free_flight(&mut scene, &self.loop_context) {
+                    self.rocket_moved(&mut r, flight, water > 0.0);
+                }
             }
             self.entity_powder_snow_particles(
                 r.previous,
@@ -602,12 +760,16 @@ impl Game<'_> {
             r.life += 1;
             self.rocket_spark(&r);
             if r.life > r.lifetime {
+                // Its move this tick is filed before it goes.
+                let (from, to) = (r.previous, r.position);
+                self.entity_section_step(r.id, [from.x, from.y, from.z], [to.x, to.y, to.z]);
                 self.explode_rocket(&r);
                 continue;
             }
             self.rockets.insert(i, r);
             i += 1;
         }
+        self.entity_sections_stepped(super::entity_sections::Family::Rockets);
     }
     /// `FireworkRocketEntity.explode` and `dealExplosionDamage`.
     fn explode_rocket(&mut self, r: &Rocket) {
@@ -947,6 +1109,20 @@ mod events_tests;
 
 #[cfg(test)]
 mod tests {
+
+    /// `Projectile.shoot` turns a shot rocket to its motion at once.
+    #[test]
+    fn a_shot_rocket_starts_turned_to_its_motion() {
+        use horizon_core::geometry::Vec3;
+        let mut rocket = super::Rocket::remote(1, Vec3::ZERO, Vec3::new(0.0, 0.5, 0.0));
+        rocket.turn_to_shot();
+        assert!((rocket.rotation[1] - 90.0).abs() < 1e-3);
+        let mut rocket = super::Rocket::remote(1, Vec3::ZERO, Vec3::new(1.0, 0.0, 1.0));
+        rocket.turn_to_shot();
+        assert!((rocket.rotation[0] - 45.0).abs() < 1e-4);
+        assert!(rocket.rotation[1].abs() < 1e-4);
+    }
+
     /// A rocket draws its UUID's two longs first, then the motion's two triangles
     /// (four doubles), then `nextInt(6)` and `nextInt(7)` for the lifetime, all from
     /// the one random. The expected values come from `java.util.Random` replayed

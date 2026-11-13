@@ -775,7 +775,10 @@ impl Game<'_> {
         let scale = if end {
             1.0
         } else {
-            Dim::teleportation_scale(source, target)
+            horizon_world::dimension_type::DimensionFacts::teleportation_scale(
+                self.dimension_type_of(source),
+                self.dimension_type_of(target),
+            )
         };
         self.end_portal_travel = end;
         // Leaving the End: the player's own respawn point.
@@ -813,7 +816,10 @@ impl Game<'_> {
         }
         self.bind_player_attachments(conn, false);
         self.as_guest(conn, |g| {
-            g.trigger_dimension(source, target, [from.x, from.y, from.z])
+            g.trigger_dimension(source, target, [from.x, from.y, from.z]);
+            if source != target && !credits_respawn {
+                g.stop_active_item_use();
+            }
         });
         self.server_trips.push(Trip {
             conn,
@@ -1504,7 +1510,7 @@ mod tests {
             Box::new(Observer(joins.clone())),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             super::super::native_entity_refs::tests::with_game(|game| {
                 game.native_joins_skip();
                 let base = game.next_entity;
@@ -1582,7 +1588,7 @@ mod tests {
                 Box::new(Constructed(calls.clone())),
             )]
             .into();
-            mod_api::testing::with_mods(mods, || {
+            mod_platform::testing::with_mods(mods, || {
                 super::super::native_entity_refs::tests::with_game(|game| {
                     game.options.dedicated = Some(Vec::new());
                     let tag = horizon_core::nbt::parse_snbt(r#"{

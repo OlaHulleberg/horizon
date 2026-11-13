@@ -16,6 +16,7 @@ use horizon_protocol::{
         configuration::{ClientInformation, CustomPayload},
         play,
     },
+    passage_sync,
 };
 use std::{
     collections::VecDeque,
@@ -181,6 +182,9 @@ pub struct Guest {
     pub center_sent: Option<(i32, i32)>,
     /// Why the connection closed (the console's "lost connection").
     pub left_reason: String,
+    /// A disconnect was started ([`Guest::begin_disconnect`]); the connection closes when the
+    /// server next polls it, and until then no other disconnect is sent.
+    pub disconnect_pending: bool,
     pub uuid: u128,
     pub name: String,
     /// The profile's properties, for the player list (skins).
@@ -324,6 +328,8 @@ pub struct Guest {
     pub chunk_queue: Vec<(i32, i32)>,
     /// The far ring's chunks still to send, past the view distance (`lan::far`), closest first.
     pub far_queue: Vec<(i32, i32)>,
+    /// Where the bounded far-ring scan resumes; reset when the view changes.
+    pub far_cursor: usize,
     /// PlayerChunkSender: batches sent but not yet acknowledged, how many
     /// may be (1 until the client's first acknowledgement, then 10), the
     /// rate the client asks for and the chunks the next batch may hold.
@@ -331,6 +337,9 @@ pub struct Guest {
     pub max_unacknowledged: u32,
     pub chunks_per_tick: f32,
     pub batch_quota: f32,
+    /// A mod's boxes of its level in which the level's blocks don't stop it (#3717): its moves
+    /// are checked through them, and its body takes them at each turn. Not saved.
+    pub collision_exclusions: horizon_world::collision_exclusions::CollisionExclusions,
     // Entities.
     pub tracker: Tracker,
     // Player state the gameplay code reads and writes.
@@ -343,6 +352,8 @@ pub struct Guest {
     /// until that body exists: the scale a player has set stays through a
     /// respawn and a change of level (#3684).
     pub carried_attributes: Option<horizon_core::nbt::Tag>,
+    /// The accepted hit follows the same living body through a full teleport restore.
+    pub carried_hit: Option<std::sync::Arc<crate::health::AcceptedHit>>,
     /// The vehicle the player's file names (`ServerPlayer.saveParentVehicle`'s
     /// "RootVehicle"), for the ride to come back on the next login.
     pub saved_vehicle: Option<[i32; 4]>,
@@ -362,6 +373,8 @@ pub struct Guest {
     pub offhand: Option<ItemStack>,
     /// `EquipmentSlot.BODY` and `SADDLE`, kept and saved like `Game::equipment`.
     pub equipment: horizon_items::equipment::Equipment,
+    /// Converted tracking stacks, invalidated when their full source stack changes.
+    pub equipment_cache: super::equipment_cache::EquipmentCache,
     pub selected: usize,
     pub carried: Option<ItemStack>,
     /// The inventory menu's crafting grid (2x2) and its result
@@ -432,6 +445,8 @@ pub struct Guest {
     /// their client, zero after a client tick without one.
     pub known_movement: [f64; 3],
     pub dead: bool,
+    /// A cancelled die at non-positive health belongs to this body, across full restores.
+    pub death_canceled: bool,
     /// `LivingEntity.deathTime`: ticks since the guest died.
     pub death_time: u32,
     /// The player record is materialized for gameplay and handle lookup.
@@ -450,6 +465,9 @@ pub struct Guest {
     /// receiving the world, but not placed, so no one else sees, hears or
     /// hurts it until the hand-over finishes.
     pub held: bool,
+    /// Its areas in any level and the other levels its client views (#3716): apart from what
+    /// makes it one of a level's players (`placed_in`, `watches_level`).
+    pub viewed: super::viewed_levels::Viewed,
     /// The hub tick at which it was held, to drop it if its hand-over never comes.
     pub held_since: u64,
     /// A held player whose record has been applied but that is not yet let into the world
@@ -588,6 +606,19 @@ impl Guest {
         guest
     }
 
+    /// Sends the play disconnect with `reason` and keeps `text` (the reason as the log's
+    /// "lost connection" line gives it, as vanilla's), once: while the disconnect is pending a
+    /// second one is refused and the first reason stands. Whether this call started it.
+    pub fn begin_disconnect(&mut self, text: String, reason: horizon_core::nbt::Tag) -> bool {
+        if self.disconnect_pending {
+            return false;
+        }
+        self.disconnect_pending = true;
+        self.left_reason = text;
+        self.sender.disconnect(reason);
+        true
+    }
+
     pub fn participates_online(&self) -> bool {
         self.kind == GuestKind::Network
     }
@@ -608,6 +639,14 @@ impl Guest {
     /// looks at it without being part of it.
     pub fn watches_level(&self, dimension: &str) -> bool {
         self.participates_online() && (self.placed || self.held) && self.dimension == dimension
+    }
+    /// Whether the guest's client views level `dimension` besides its own (#3716): its areas
+    /// name it, or its client holds chunks of it still. It is not one of that level's players.
+    pub fn views_level(&self, dimension: &str) -> bool {
+        self.participates_online()
+            && self.placed
+            && self.dimension != dimension
+            && self.viewed.in_level(dimension)
     }
     /// `ChunkMap.isChunkTracked`: whether the guest watches chunk `(x, z)` of
     /// level `dimension`, inside its view (`ChunkTrackingView.contains`) and
@@ -640,6 +679,7 @@ impl Guest {
             placed_at: 0,
             center_sent: None,
             left_reason: String::new(),
+            disconnect_pending: false,
             uuid: j.uuid,
             name: j.name,
             properties: j.properties,
@@ -710,14 +750,17 @@ impl Guest {
             watched: Default::default(),
             chunk_queue: Vec::new(),
             far_queue: Vec::new(),
+            far_cursor: 0,
             unacknowledged: 0,
             max_unacknowledged: 1,
             chunks_per_tick: 9.0,
             batch_quota: 0.0,
+            collision_exclusions: Default::default(),
             tracker: Tracker::default(),
             motion: None,
             loaded_body: None,
             carried_attributes: None,
+            carried_hit: None,
             saved_vehicle: None,
             logs_kept: None,
             inventory: vec![None; 36],
@@ -725,6 +768,7 @@ impl Guest {
             location_armor: [None, None, None, None],
             offhand: None,
             equipment: Default::default(),
+            equipment_cache: Default::default(),
             selected: 0,
             carried: None,
             craft_grid: Default::default(),
@@ -762,11 +806,13 @@ impl Guest {
             moves_from_ground: false,
             known_movement: [0.0; 3],
             dead: false,
+            death_canceled: false,
             death_time: 0,
             placed: false,
             handover: None,
             expected: j.expected,
             held: false,
+            viewed: Default::default(),
             held_since: 0,
             imported: false,
             arrival_announce: true,
@@ -831,6 +877,29 @@ impl Guest {
             Err(e) => log::debug!("Horizon: attachment sync not sent: {e}"),
         }
     }
+    /// Passages to hold or forget (#3775), if the guest is on a Horizon client, the only
+    /// one that reads them, and placed or held (a hand-over's arrival is sent its chunks,
+    /// so their passages too); a message that cannot be written is not sent.
+    pub fn send_passage_sync(&self, message: &passage_sync::Message) {
+        if !(self.placed || self.held) || self.brand != "horizon" {
+            return;
+        }
+        match passage_sync::encode(message) {
+            Ok(data) => self.send(&play::Clientbound::CustomPayload(CustomPayload {
+                channel: passage_sync::CHANNEL.into(),
+                data,
+            })),
+            Err(e) => log::debug!("Horizon: passage sync not sent: {e}"),
+        }
+    }
+    /// [`Self::send`] of a `ChunksBiomes` whose body is `packet.encode()`, the same
+    /// bytes for each guest with those columns. `note_change` ignores that packet.
+    pub fn send_chunks_biomes_body(&self, body: Vec<u8>) {
+        if !self.participates_online() {
+            return;
+        }
+        self.sender.send(body);
+    }
     /// What `packet` changes about how the client moves, for the prediction's replay: kept until
     /// the tick's ping places it (`Hub::anticheat_ping`).
     fn note_change(&self, packet: &play::Clientbound) {
@@ -880,6 +949,10 @@ impl Guest {
     /// `Entity.stopRiding`: out of the vehicle it rode.
     pub fn stop_riding(&mut self) {
         (self.vehicle, self.vehicle_good) = (None, None);
+    }
+    /// The body remains paired while alive, or until its twentieth death tick.
+    pub fn body_present(&self) -> bool {
+        self.health > 0.0 || self.death_time < 20
     }
     /// `LivingEntity.tickDeath` for a dead player: true once its body is
     /// removed, 20 ticks after it died (`remove(KILLED)`, whose
@@ -959,8 +1032,16 @@ impl Guest {
     /// same player in another level (`restore_all`), only their base values
     /// after a death. The old body, for what else it hands over.
     pub fn new_body(&mut self, restore_all: bool) -> Option<Box<PlayerMotion>> {
-        let m = self.motion.take()?;
+        if !restore_all {
+            self.carried_hit = None;
+            self.death_canceled = false;
+            self.death_time = 0;
+        }
+        let mut m = self.motion.take()?;
         self.carried_attributes = Some(m.carried_attributes(restore_all));
+        if restore_all {
+            self.carried_hit = m.health.accepted_hit.take();
+        }
         Some(m)
     }
     /// `ServerPlayer.restoreFrom(old, false)`'s `setHealth(getMaxHealth())`:
@@ -1045,6 +1126,22 @@ impl Guest {
     pub fn inventory_told(&mut self) {
         for slot in 9..45 {
             self.menu_sent[slot] = self.menu_slot(slot);
+        }
+    }
+    /// `ServerPlayer.drop(boolean)`: `setRemoteSlot` on the selected hotbar
+    /// slot of the open menu (the inventory menu without one) records what the
+    /// dropping client already predicted, so the next broadcast sends the slot
+    /// again once it changes back (a pickup refilling the stack).
+    pub fn told_selected(&mut self) {
+        let slot = 36 + self.selected;
+        self.menu_sent[slot] = self.menu_slot(slot);
+        let told = self.inventory.get(self.selected).cloned().flatten();
+        if let Some(m) = self.menu.as_mut() {
+            let at = m.size + 27 + self.selected;
+            if m.sent.len() <= at {
+                m.sent.resize(at + 1, None);
+            }
+            m.sent[at] = told;
         }
     }
     pub fn set_menu_slot(&mut self, slot: usize, item: Option<ItemStack>) {
@@ -1203,9 +1300,60 @@ fn builtin_component(
                 write_block_predicate(predicate, ids, &mut w)?;
             }
         }
+        "minecraft:tool" => write_tool(value, ids, &mut w)?,
         _ => return None,
     }
     Some(horizon_protocol::item::Component::Raw(w.data))
+}
+
+/// `Tool.STREAM_CODEC` from `Tool.CODEC`'s saved form: the rules (blocks, an
+/// optional speed and an optional `correct_for_drops`), then the default
+/// mining speed, the wear per block and `can_destroy_blocks_in_creative`,
+/// each at its codec default when the stack leaves it out.
+fn write_tool(
+    value: &horizon_core::nbt::Tag,
+    ids: &dyn Fn(&str, &str) -> Option<i32>,
+    w: &mut horizon_protocol::buf::Writer,
+) -> Option<()> {
+    use horizon_core::nbt::Tag;
+    use horizon_world::datafix::dynamic::{as_bool_opt, as_number};
+    let Tag::List(rules) = value.get("rules")? else {
+        return None;
+    };
+    w.varint(i32::try_from(rules.len()).ok()?);
+    for rule in rules.as_slice() {
+        write_holder_set("minecraft:block", rule.get("blocks")?, ids, w)?;
+        match rule.get("speed") {
+            Some(speed) => {
+                w.bool(true);
+                w.f32(as_number(speed)?.float_value());
+            }
+            None => w.bool(false),
+        }
+        match rule.get("correct_for_drops") {
+            Some(correct) => {
+                w.bool(true);
+                w.bool(as_bool_opt(Some(correct))?);
+            }
+            None => w.bool(false),
+        }
+    }
+    let number = |key: &str| value.get(key).map(as_number);
+    w.f32(match number("default_mining_speed") {
+        Some(speed) => speed?.float_value(),
+        None => 1.0,
+    });
+    // ExtraCodecs.NON_NEGATIVE_INT.
+    let wear = match number("damage_per_block") {
+        Some(wear) => wear?.int_value(),
+        None => 1,
+    };
+    w.varint((wear >= 0).then_some(wear)?);
+    w.bool(match value.get("can_destroy_blocks_in_creative") {
+        Some(can) => as_bool_opt(Some(can))?,
+        None => true,
+    });
+    Some(())
 }
 
 /// `ByteBufCodecs.holderSet`: tags or direct registry entries, without item-id remapping.
@@ -1544,6 +1692,9 @@ fn network_stack(
                 "minecraft:can_break",
                 horizon_protocol::item::component::CAN_BREAK,
             ),
+            // The client predicts mining with the stack's own tool and shows
+            // the stack's own attribute modifiers (#14641).
+            ("minecraft:tool", horizon_protocol::item::component::TOOL),
             (
                 "minecraft:attribute_modifiers",
                 horizon_protocol::item::component::ATTRIBUTE_MODIFIERS,
@@ -2098,6 +2249,89 @@ mod tests {
         }
     }
 
+    /// A `tool` or `attribute_modifiers` the writers cannot encode is left out
+    /// of the packet, whole, as `can_break`'s is.
+    #[test]
+    fn a_tool_or_modifier_the_writers_cannot_encode_is_dropped_whole() {
+        let ids = |registry: &str, name: &str| match (registry, name) {
+            ("minecraft:block", "minecraft:stone") => Some(1),
+            ("minecraft:attribute", "minecraft:attack_damage") => Some(3),
+            _ => None,
+        };
+        let parse = |snbt: &str| horizon_core::nbt::parse_snbt(snbt).unwrap().0;
+        let entry = |extra: &str| {
+            format!(r#"[{{type:"attack_damage",id:"x",amount:2.0d,operation:"add_value"{extra}}}]"#)
+        };
+        // The forms the cases below spoil all encode.
+        for (name, snbt) in [
+            (
+                "minecraft:tool",
+                r#"{rules:[{blocks:"minecraft:stone"}]}"#.to_owned(),
+            ),
+            ("minecraft:attribute_modifiers", entry("")),
+            (
+                "minecraft:attribute_modifiers",
+                entry(r#",display:{type:"override",value:"x"}"#),
+            ),
+        ] {
+            let encoded = builtin_component(name, &parse(&snbt), &ids);
+            assert!(encoded.is_some(), "{name} {snbt}");
+        }
+        for (name, snbt) in [
+            // No rules; a rule without blocks, or with a block the registry lacks.
+            ("minecraft:tool", "{}".to_owned()),
+            ("minecraft:tool", "{rules:[{speed:2.0f}]}".to_owned()),
+            (
+                "minecraft:tool",
+                r#"{rules:[{blocks:"minecraft:missing"}]}"#.to_owned(),
+            ),
+            // A speed that is no number; a negative wear (`NON_NEGATIVE_INT`).
+            (
+                "minecraft:tool",
+                r#"{rules:[{blocks:"minecraft:stone",speed:"fast"}]}"#.to_owned(),
+            ),
+            (
+                "minecraft:tool",
+                "{rules:[],damage_per_block:-1}".to_owned(),
+            ),
+            // Not a list; an unknown attribute, operation, slot group or display type.
+            ("minecraft:attribute_modifiers", "{}".to_owned()),
+            (
+                "minecraft:attribute_modifiers",
+                entry("").replace("attack_damage", "missing"),
+            ),
+            (
+                "minecraft:attribute_modifiers",
+                entry("").replace("add_value", "multiply"),
+            ),
+            ("minecraft:attribute_modifiers", entry(r#",slot:"tail""#)),
+            (
+                "minecraft:attribute_modifiers",
+                entry(r#",display:{type:"loud"}"#),
+            ),
+            // An entry without its modifier id; an override without its text.
+            (
+                "minecraft:attribute_modifiers",
+                entry("").replace(r#"id:"x","#, ""),
+            ),
+            (
+                "minecraft:attribute_modifiers",
+                entry(r#",display:{type:"override"}"#),
+            ),
+        ] {
+            let encoded = builtin_component(name, &parse(&snbt), &ids);
+            assert!(encoded.is_none(), "{name} {snbt}");
+        }
+        // Through the stack: the bad component is neither added nor removed.
+        let mut stack = ItemStack::new("minecraft:iron_pickaxe", 1);
+        stack
+            .data_mut()
+            .set_other("minecraft:tool", Some(parse("{}")));
+        let sent = stack_to_network(|_| 1, ids, &Some(stack)).unwrap();
+        assert!(sent.component(component::TOOL).is_none());
+        assert!(sent.removed.is_empty());
+    }
+
     #[test]
     fn builtin_removal_markers_survive_actual_saved_stack_adoption() {
         for (name, kind) in [
@@ -2462,5 +2696,38 @@ mod tests {
                 &format!("scale {scale}"),
             );
         }
+    }
+
+    #[test]
+    fn told_selected_records_the_predicted_drop() {
+        use crate::lan::PlayerSender;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicI32;
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut guest = Guest::new(
+            Joined {
+                conn: 2,
+                uuid: 2,
+                name: "Dropper".into(),
+                properties: Vec::new(),
+                info: horizon_protocol::packets::configuration::ClientInformation::new(2),
+                brand: "test".into(),
+                sender: PlayerSender::new(tx, Arc::default()),
+                latency: Arc::new(AtomicI32::new(0)),
+                address: "127.0.0.1:25565".parse().unwrap(),
+                expected: false,
+            },
+            2,
+            [0.5, 64.0, 0.5],
+            0,
+        );
+        guest.selected = 3;
+        guest.inventory[3] = Some(ItemStack::new("minecraft:netherrack", 63));
+        guest.told_selected();
+        // Dropping one is already known to the client (63); the pickup that
+        // refills the slot must then differ from `menu_sent` and be sent.
+        assert_eq!(guest.menu_sent[39].as_ref().map(|s| s.count), Some(63));
+        guest.inventory[3].as_mut().unwrap().count = 64;
+        assert_ne!(guest.menu_sent[39], guest.menu_slot(39));
     }
 }

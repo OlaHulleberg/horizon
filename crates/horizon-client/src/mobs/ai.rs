@@ -1,7 +1,10 @@
 //! The per-tick mob update in vanilla order (`Entity.baseTick`,
 //! `LivingEntity.baseTick/tick/aiStep`, `Mob.serverAiStep`) and the
 //! dispatch to each species family's goals and special behaviour.
+pub(crate) use freezing::in_powder_snow;
+pub use freezing::{can_freeze, wears_gaze_disguise};
 mod feeding;
+mod freezing;
 
 pub use feeding::takes_food;
 
@@ -16,7 +19,7 @@ use super::{
     undead,
 };
 use crate::blocks::Fluid;
-use crate::breathing::{Breath, breathe, drown};
+use crate::breathing::{Breath, breathe, drown, own_air};
 use crate::health::DamageLevel;
 use horizon_core::{
     geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
@@ -1049,7 +1052,7 @@ pub fn tick(
             decision,
             was_on_fire,
         } => {
-            super::fox::apply_consumption(&decision, w, m, events);
+            super::fox::apply_consumption(&decision, w, m, level, events);
             resume_after_consumption(m, w, level, was_on_fire, events)
         }
     }
@@ -1083,7 +1086,7 @@ pub fn tick_until_consumption(
     m.previous_head_pitch = m.head_pitch;
     m.previous_swell = m.swell;
     m.anim.begin_tick();
-    m.age += 1;
+    super::camel::tick_age(m, w.game_time);
     m.ai.seen_cache.clear();
     if m.ai.last_hurt_by_player > 0 {
         m.ai.last_hurt_by_player -= 1;
@@ -1179,7 +1182,7 @@ fn ai_and_finish_tick(
         // Mob.aiStep still runs without AI: undead burn, endermites age.
         burn_undead(m, w, events);
         if m.species() == Species::Endermite {
-            endermite_lifetime(m);
+            super::hostile::endermite_lifetime(m);
         }
         // AbstractHorse.aiStep (it overrides LivingEntity.aiStep, which NoAI
         // doesn't skip) and AbstractHorse.tick: a NoAI horse still swishes
@@ -1258,6 +1261,7 @@ pub fn finish_tick(
         freeze_tick(m, w, level);
     }
     extinguish_if_wet(m, w, was_on_fire, events);
+    m.reset_unlit_fire();
     if m.species() == Species::SulfurCube && m.alive() {
         // SulfurCube.doPush applies the body's contact damage even with NoAI.
         // Player contact keeps its existing player_push route.
@@ -1292,6 +1296,8 @@ pub fn finish_tick(
         Species::Allay => super::allay::tick(m, w, events),
         Species::Panda => super::panda::tick(m, w, events),
         Species::Villager => super::villager::tick(m, w.game_time),
+        // Vex.tick: gravity off on every tick, AI or not.
+        Species::Vex => m.no_gravity = true,
         _ => {}
     }
     aquatic::school_tick(m, w, level.random());
@@ -1538,9 +1544,9 @@ impl crate::block_contact::InsideWalk for MobInside<'_, '_, '_> {
             crate::block_contact::inside_written(state, at, writes);
         }
         // PowderSnowBlock.entityInside: a burning mob destroys the
-        // block (with `mob_griefing`), then EXTINGUISH puts it out.
+        // block (`canEntityGrief` for the mob), then EXTINGUISH puts it out.
         if self.w.block_name(x, y, z) == "minecraft:powder_snow" {
-            if self.m.is_on_fire() && self.w.mob_griefing {
+            if self.m.is_on_fire() && self.w.can_grief(self.m.id) {
                 self.events.push(MobEvent::BreakBlock {
                     pos: p,
                     drop: false,
@@ -1775,41 +1781,34 @@ pub(super) fn in_rain(m: &Mob, w: &MobWorld) -> bool {
 /// it, anywhere else it runs down from the pre-tick value, and at -20 the
 /// axolotl dries out.
 fn axolotl_air_supply(m: &mut Mob, w: &MobWorld, level: &mut DamageLevel<'_>) {
-    let before = m.air;
-    m.air = (m.air + 4).min(super::axolotl::MAX_AIR);
     if m.no_ai {
+        m.air = (m.air + 4).min(super::axolotl::MAX_AIR);
         return;
     }
-    if m.fluids.in_water || in_rain(m, w) {
-        m.air = super::axolotl::MAX_AIR;
-    } else {
-        m.air = before - 1;
-        if m.air <= -20 {
-            m.air = 0;
-            m.damage(level, 2.0, Damage::of(DamageKind::DryOut));
-        }
+    let breathes = m.fluids.in_water || in_rain(m, w);
+    let (cx, max) = (w.loop_context, super::axolotl::MAX_AIR);
+    if let Some(damage) = own_air(cx, m.id, &m.kind.id, &mut m.air, breathes, max, false) {
+        m.damage(level, damage, Damage::of(DamageKind::DryOut));
     }
 }
 /// `Nautilus.baseTick`: `LivingEntity.baseTick` refills the air of this
 /// water breather, then, unless it has no AI, `Nautilus.handleAirSupply`
 /// takes it back out of water, where the nautilus dries out.
-fn nautilus_air_supply(m: &mut Mob, level: &mut crate::health::DamageLevel<'_>) {
+fn nautilus_air_supply(m: &mut Mob, w: &MobWorld, level: &mut DamageLevel<'_>) {
     const MAX_AIR: i32 = 300;
-    let before = m.air;
-    if m.alive() {
-        m.air = (m.air + 4).min(MAX_AIR);
-    }
     if m.no_ai {
+        if m.alive() {
+            m.air = (m.air + 4).min(MAX_AIR);
+        }
         return;
     }
-    if m.alive() && !m.fluids.in_water {
-        m.air = before - 1;
-        if m.air <= -20 {
-            m.air = 0;
-            m.damage(level, 2.0, Damage::of(DamageKind::DryOut));
-        }
-    } else {
+    if !m.alive() {
         m.air = MAX_AIR;
+        return;
+    }
+    let (cx, wet) = (w.loop_context, m.fluids.in_water);
+    if let Some(damage) = own_air(cx, m.id, &m.kind.id, &mut m.air, wet, MAX_AIR, false) {
+        m.damage(level, damage, Damage::of(DamageKind::DryOut));
     }
 }
 /// `Entity.isInWall` (minus the noPhysics early-out, which the caller applies):
@@ -1850,6 +1849,23 @@ fn extinguish_if_wet(m: &mut Mob, w: &MobWorld, was_on_fire: bool, events: &mut 
     }
 }
 
+/// `LivingEntity.canBreatheUnderWater`: the `can_breathe_under_water` tag, which
+/// `MobType.flags.breathes_water` holds, and the two overrides — a baby happy ghast
+/// and a sulfur cube with a block in its body breathe under water too.
+fn can_breathe_under_water(m: &Mob) -> bool {
+    m.kind.flags.breathes_water
+        || m.species() == Species::HappyGhast && m.is_baby()
+        || m.species() == Species::SulfurCube && crate::mobs::sulfur_cube::has_body(m)
+}
+
+/// `IronGolem.decreaseAirSupply` hands back the air it is given (`iload_1;
+/// ireturn`), so a golem under water is in `baseTick`'s drowning branch with a
+/// consume of 0: it never loses a bubble, never reaches the -20 that hurts, and
+/// never refills either, though the tag does not list its type.
+fn keeps_its_air(m: &Mob) -> bool {
+    m.species() == Species::IronGolem
+}
+
 /// Entity.baseTick + LivingEntity.baseTick + Mob.baseTick.
 fn base_tick(
     m: &mut Mob,
@@ -1888,8 +1904,7 @@ fn base_tick(
     if fire > 0.0 {
         m.ticks_frozen = 0;
     }
-    // Entity.baseTick counts burning damage and the fire timer before
-    // Entity.applyEffectsFromBlocks extinguishes a wet mob later in the tick.
+    // Entity.baseTick counts burn damage and the timer before a wet mob is put out.
     if m.fire_ticks > 0 {
         if m.kind.flags.fire_immune {
             m.fire_ticks = 0;
@@ -1953,16 +1968,11 @@ fn base_tick(
         if m.species() == Species::Axolotl {
             axolotl_air_supply(m, w, level);
         } else if m.species() == Species::Nautilus {
-            nautilus_air_supply(m, level);
+            nautilus_air_supply(m, w, level);
         } else if m.kind.flags.needs_water {
-            if !m.fluids.in_water {
-                m.air -= 1;
-                if m.air == -20 {
-                    m.air = 0;
-                    m.damage(level, 2.0, Damage::of(DamageKind::Drown));
-                }
-            } else {
-                m.air = 300;
+            let (cx, wet) = (w.loop_context, m.fluids.in_water);
+            if let Some(damage) = own_air(cx, m.id, &m.kind.id, &mut m.air, wet, 300, true) {
+                m.damage(level, damage, Damage::of(DamageKind::Drown));
             }
         } else {
             // LivingEntity.baseTick / MobEffectUtil: bubble columns and breathing
@@ -1977,11 +1987,11 @@ fn base_tick(
             let water_breathing = m.has_effect("minecraft:water_breathing")
                 || m.has_effect("minecraft:conduit_power");
             let nautilus = m.has_effect("minecraft:breath_of_the_nautilus");
-            let drowns = submerged && !m.kind.flags.breathes_water && !water_breathing && !nautilus;
+            let drowns = submerged && !can_breathe_under_water(m) && !water_breathing && !nautilus;
             let held = submerged && nautilus && !water_breathing;
             let vanilla = Breath {
                 can_breathe: !drowns,
-                consume: 1,
+                consume: if keeps_its_air(m) { 0 } else { 1 },
                 refill: if drowns || held { 0 } else { 4 },
             };
             let breath = breathe(w.loop_context, m.id, &m.kind.id, vanilla);
@@ -1991,6 +2001,7 @@ fn base_tick(
                 events.push(MobEvent::Drown {
                     mob: m.id,
                     at: [m.position.x, m.position.y, m.position.z],
+                    bubbles: drowning.bubbles,
                 });
                 if let Some(damage) = drowning.damage {
                     m.damage(level, damage, Damage::of(DamageKind::Drown));
@@ -2061,8 +2072,6 @@ fn freeze_tick(m: &mut Mob, w: &MobWorld, level: &mut DamageLevel<'_>) {
         m.damage(level, 1.0, Damage::of(DamageKind::Freeze));
     }
 }
-/// Whether the mob's box (shrunk by `1.0E-5`, as in `Entity.checkInsideBlocks`)
-/// touches powder snow.
 /// Whether the mob's box (shrunk by `1.0E-5`) touches a lava block: the
 /// LAVA_IGNITE contact read where a teleport landed, whose own fluid check
 /// (`Enderman.canRandomlyTeleportTo`, a shulker's empty spot) keeps lava
@@ -2080,42 +2089,6 @@ fn touches_lava(m: &Mob, w: &MobWorld) -> bool {
         }
     }
     false
-}
-pub(super) fn in_powder_snow(m: &Mob, w: &MobWorld) -> bool {
-    let b = m.bounds().deflate(Vec3::new(1e-5, 1e-5, 1e-5));
-    let (min, max) = (b.min_position(), b.max_position());
-    for x in min.x.floor() as i32..=max.x.floor() as i32 {
-        for y in min.y.floor() as i32..=max.y.floor() as i32 {
-            for z in min.z.floor() as i32..=max.z.floor() as i32 {
-                if &*w.facts.get(w.world.block(x, y, z)).name == "minecraft:powder_snow" {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-/// `LivingEntity.canFreeze`: not a `#freeze_immune_entity_types` mob and no
-/// worn piece in `#freeze_immune_wearables`.
-pub fn can_freeze(m: &Mob, w: &MobWorld) -> bool {
-    if w.data
-        .entity_has("minecraft:freeze_immune_entity_types", &m.kind.id)
-    {
-        return false;
-    }
-    let immune = w
-        .items
-        .and_then(|i| i.item_tags.get("minecraft:freeze_immune_wearables"));
-    ![
-        m.extra.head_id(),
-        m.extra.slot_id(horizon_items::equipment::CHEST),
-        m.extra.slot_id(horizon_items::equipment::LEGS),
-        m.extra.slot_id(horizon_items::equipment::FEET),
-        m.extra.body_id(),
-    ]
-    .into_iter()
-    .flatten()
-    .any(|item| immune.is_some_and(|t| t.contains(item)))
 }
 /// `Mob.playAmbientSound` on demand: a spawn egg or a mob bucket just placed `m`.
 pub fn ambient_sound(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
@@ -2630,7 +2603,7 @@ fn sun_burn_tick(m: &mut Mob, w: &MobWorld) -> bool {
         m.position.z.floor() as i32,
     );
     let br = w.brightness(x, y, z);
-    let wet = m.fluids.in_water || in_rain(m, w);
+    let wet = m.fluids.in_water || in_rain(m, w) || in_powder_snow(m, w) || m.in_powder_snow;
     br > 0.5 && m.random.next_float() * 30.0 < (br - 0.4) * 2.0 && !wet && w.can_see_sky(x, y, z)
 }
 // Keep the actual selectors (including partially updated goal state) attached to
@@ -3018,16 +2991,6 @@ fn custom_server_ai_step(m: &mut Mob, cx: &mut Cx) {
         _ => {}
     }
 }
-/// Endermite.aiStep: `counter` is the life; an endermite not required to
-/// persist is discarded at 2400.
-fn endermite_lifetime(m: &mut Mob) {
-    if !m.persistent {
-        m.extra.counter += 1;
-    }
-    if m.extra.counter >= 2400 {
-        m.removed = true;
-    }
-}
 fn species_ai_step(
     m: &mut Mob,
     w: &MobWorld,
@@ -3041,7 +3004,7 @@ fn species_ai_step(
         Species::Enderman => super::enderman::ai_step(m, w, events),
         // Endermite.aiStep: `counter` is the life; an endermite not required
         // to persist is discarded at 2400.
-        Species::Endermite => endermite_lifetime(m),
+        Species::Endermite => super::hostile::endermite_lifetime(m),
         Species::Wolf => super::tame::ai_step(m, w, events),
         Species::Cat => super::tame::cat_ai_step(m, events),
         Species::IronGolem => super::golem::iron_ai_step(m, w),
@@ -3553,6 +3516,14 @@ pub fn walk_target_value(m: &Mob, w: &MobWorld, p: [i32; 3]) -> f32 {
     {
         return 10.0;
     }
+    // Enderman.getWalkTargetValue, Pillager's and Warden's: every position scores
+    // the same, so their strolls pick one of the ten at random.
+    if matches!(
+        m.species(),
+        Species::Enderman | Species::Pillager | Species::Warden
+    ) {
+        return 0.0;
+    }
     if m.hostile()
         && !matches!(
             m.species(),
@@ -3560,6 +3531,15 @@ pub fn walk_target_value(m: &Mob, w: &MobWorld, p: [i32; 3]) -> f32 {
         )
     {
         return -light();
+    }
+    // MushroomCow.getWalkTargetValue replaces Animal's: mycelium is the best
+    // ground and any other is scored by the light, grass or not.
+    if m.species() == Species::Mooshroom {
+        return if w.block_name(p[0], p[1] - 1, p[2]) == "minecraft:mycelium" {
+            10.0
+        } else {
+            light()
+        };
     }
     if m.kind.flags.animal {
         if w.block_name(p[0], p[1] - 1, p[2]) == "minecraft:grass_block" {
@@ -3574,17 +3554,17 @@ pub fn accepts_damage(
     m: &mut Mob,
     source: &Damage,
     _amount: f32,
-    player_uuid: Option<[i32; 4]>,
+    attack: &crate::health::Attack,
 ) -> bool {
     match m.species() {
         Species::Breeze => super::breeze::accepts_damage(m, source),
-        Species::Allay => {
-            !player_uuid.is_some_and(|uuid| super::allay::is_liked_player(m, source.attacker, uuid))
-        }
+        Species::Allay => !attack
+            .player_uuid
+            .is_some_and(|uuid| super::allay::is_liked_player(m, source.attacker, uuid)),
         Species::Creaking => super::creaking::accepts_damage(m, source),
-        Species::Wither => super::wither::accepts(m, source.kind, source.attacker, false),
+        Species::Wither => super::wither::accepts(m, source, attack, false),
         Species::Warden => super::warden::accepts_damage(m, source),
-        Species::Shulker => super::shulker::accepts(m, source),
+        Species::Shulker => super::shulker::accepts(m, source, attack),
         // Bat.hurtServer: a hit wakes it.
         Species::Bat => {
             super::bat::hurt(m);
@@ -4866,9 +4846,12 @@ mod same_vehicle_push_tests {
                 let mut husk = mob(2, "minecraft:husk", Vec3::new(0.5, 65.5, 1.0));
                 camel.extra.rider = Some(husk.id);
                 husk.extra.mount = Some(camel.id);
-                riders.push(husk.seen(None));
+                riders.push(husk.seen(None, &crate::items::Items::empty()));
                 if zombie_too {
-                    riders.push(mob(3, "minecraft:zombie", Vec3::new(0.5, 64.0, 0.0)).seen(None));
+                    riders.push(
+                        mob(3, "minecraft:zombie", Vec3::new(0.5, 64.0, 0.0))
+                            .seen(None, &crate::items::Items::empty()),
+                    );
                 }
                 out = Some(camel);
             });
@@ -4921,21 +4904,24 @@ mod same_vehicle_push_tests {
             return;
         };
         let mut events = Vec::new();
-        let ran = with_test_world(&[villager.seen(None)], |w, _| {
-            push_entities(
-                &mut cow,
-                w,
-                &mut crate::health::TestLevel::new(0).level(),
-                &mut events,
-            );
-        });
+        let ran = with_test_world(
+            &[villager.seen(None, &crate::items::Items::empty())],
+            |w, _| {
+                push_entities(
+                    &mut cow,
+                    w,
+                    &mut crate::health::TestLevel::new(0).level(),
+                    &mut events,
+                );
+            },
+        );
         // Without the vanilla data under .local/horizon-client the world
         // cannot be built: the test has nothing to check.
         let _ = ran;
         assert!(events.is_empty());
         assert_eq!(cow.velocity, Vec3::ZERO);
 
-        let ran = with_test_world(&[cow.seen(None)], |w, _| {
+        let ran = with_test_world(&[cow.seen(None, &crate::items::Items::empty())], |w, _| {
             push_entities(
                 &mut villager,
                 w,
@@ -4979,7 +4965,7 @@ mod same_vehicle_push_tests {
             return;
         };
         let mut events = Vec::new();
-        let ran = with_test_world(&[fox.seen(None)], |w, _| {
+        let ran = with_test_world(&[fox.seen(None, &crate::items::Items::empty())], |w, _| {
             push_entities(
                 &mut cow,
                 w,
@@ -4994,7 +4980,7 @@ mod same_vehicle_push_tests {
         assert_eq!(cow.velocity, Vec3::ZERO);
 
         fox.extra.ints[0] &= !super::super::fox::SLEEPING;
-        let ran = with_test_world(&[fox.seen(None)], |w, _| {
+        let ran = with_test_world(&[fox.seen(None, &crate::items::Items::empty())], |w, _| {
             push_entities(
                 &mut cow,
                 w,
@@ -5049,7 +5035,7 @@ mod same_vehicle_push_tests {
             return;
         };
         let mut events = Vec::new();
-        with_test_world(&[cow.seen(None)], |w, _| {
+        with_test_world(&[cow.seen(None, &crate::items::Items::empty())], |w, _| {
             push_entities(&mut horse, w, level, &mut events)
         });
         assert_eq!(pushed(&events), vec![2], "the ridden horse pushes the cow");
@@ -5061,9 +5047,10 @@ mod same_vehicle_push_tests {
 
         let (horse, mut cow) = pair(true).unwrap();
         let mut events = Vec::new();
-        with_test_world(&[horse.seen(None)], |w, _| {
-            push_entities(&mut cow, w, level, &mut events)
-        });
+        with_test_world(
+            &[horse.seen(None, &crate::items::Items::empty())],
+            |w, _| push_entities(&mut cow, w, level, &mut events),
+        );
         assert_eq!(
             pushed(&events),
             Vec::<u32>::new(),
@@ -5073,9 +5060,10 @@ mod same_vehicle_push_tests {
 
         let (horse, mut cow) = pair(false).unwrap();
         let mut events = Vec::new();
-        with_test_world(&[horse.seen(None)], |w, _| {
-            push_entities(&mut cow, w, level, &mut events)
-        });
+        with_test_world(
+            &[horse.seen(None, &crate::items::Items::empty())],
+            |w, _| push_entities(&mut cow, w, level, &mut events),
+        );
         assert_eq!(
             pushed(&events),
             vec![1],
@@ -5108,11 +5096,15 @@ mod warden_push_tests {
                 set_pose(&mut warden, pose);
                 let standing = pose == Pose::Standing;
                 assert_eq!(warden.pushable(), standing, "{pose:?}");
-                assert_eq!(warden.seen(None).pushable, standing, "{pose:?}");
+                assert_eq!(
+                    warden.seen(None, &crate::items::Items::empty()).pushable,
+                    standing,
+                    "{pose:?}"
+                );
 
                 // The warden's tick: an overlapping mob must not move it.
                 let mut cow = mob(2, "minecraft:cow", 1.0);
-                let others = [cow.seen(None)];
+                let others = [cow.seen(None, &crate::items::Items::empty())];
                 let mut w = world.clone();
                 w.others = &others;
                 let mut events = Vec::new();
@@ -5128,7 +5120,7 @@ mod warden_push_tests {
                 )));
 
                 // The other mob's tick: the warden's Seen must exclude it.
-                let others = [warden.seen(None)];
+                let others = [warden.seen(None, &crate::items::Items::empty())];
                 w.others = &others;
                 events.clear();
                 push_entities(&mut cow, &w, level, &mut events);
@@ -6037,6 +6029,86 @@ mod burn_and_rose_tests {
         m
     }
 
+    fn zombie(types: &crate::mobs::MobTypes) -> Mob {
+        let kind = Arc::new(types.types["minecraft:zombie"].clone());
+        let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+        register(&mut m);
+        m.no_ai = true;
+        m.random = horizon_core::random::LegacyRandom::new(3);
+        m
+    }
+
+    /// `Mob.isSunBurnTick`: `isInWaterOrRain() || isInPowderSnow || wasInPowderSnow`
+    /// is not burnable, so a zombie standing in powder snow only freezes. The
+    /// draws are the mob's own, so the answer over a run of them is fixed.
+    #[test]
+    fn powder_snow_keeps_a_zombie_from_burning_in_daylight() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            build_with("minecraft:powder_snow"),
+            |w, types| {
+                let mut day = w.clone();
+                day.monsters_burn = true;
+                let mut m = zombie(types);
+                let burns = |m: &mut Mob| (0..500).any(|_| sun_burn_tick(m, &day));
+                assert!(!burns(&mut m), "in the powder snow at (0, 64, 0)");
+                // The same mob out of it, in plain daylight: the same draws burn it.
+                m.position = Vec3::new(3.5, 64.0, 3.5);
+                assert!(!m.in_powder_snow);
+                assert!(burns(&mut m), "in plain daylight");
+                // Having been in the powder snow last tick (`wasInPowderSnow`).
+                m.in_powder_snow = true;
+                assert!(!burns(&mut m), "was in the powder snow");
+                // It waits that one tick before the sun reaches it.
+                m.in_powder_snow = false;
+                assert!(burns(&mut m), "the tick after it stepped out");
+            },
+        );
+        let _ = ran;
+    }
+
+    /// `PowderSnowBlock.entityInside`: a mob that is already burning destroys
+    /// the powder snow (`mobGriefing`) and is put out, once, and then no longer
+    /// catches fire there in daylight.
+    #[test]
+    fn a_burning_zombie_in_powder_snow_breaks_the_block_and_is_put_out() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            build_with("minecraft:powder_snow"),
+            |w, types| {
+                let mut day = w.clone();
+                day.monsters_burn = true;
+                let mut m = zombie(types);
+                m.ignite_for_ticks(100);
+                assert!(m.is_on_fire());
+                let (mut lr, mut events) = (crate::health::TestLevel::new(7), Vec::new());
+                assert!(tick(&mut m, &day, &mut lr.level(), &mut events));
+                let broken: Vec<([i32; 3], bool)> = events
+                    .iter()
+                    .filter_map(|e| match e {
+                        MobEvent::BreakBlock { pos, drop, .. } => Some((*pos, *drop)),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(broken, vec![([0, 64, 0], false)], "the powder snow breaks");
+                assert_eq!(m.fire_ticks, 0, "and puts the zombie out");
+                events.clear();
+                for _ in 0..200 {
+                    tick(&mut m, &day, &mut lr.level(), &mut events);
+                }
+                assert!(!m.removed, "the zombie stays");
+                assert_eq!(m.fire_ticks, 0, "no sun burn while it stands in it");
+                assert!(
+                    !events
+                        .iter()
+                        .any(|e| matches!(e, MobEvent::BreakBlock { .. })),
+                    "nothing left to destroy"
+                );
+            },
+        );
+        let _ = ran;
+    }
+
     /// `WitherRoseBlock.entityInside` tests the world difficulty and
     /// `isInvulnerableTo(wither)`, not the regional difficulty of a fresh
     /// chunk and not the hit timer: a golem that was just hurt still gets it.
@@ -6334,7 +6406,7 @@ mod iron_golem_push_tests {
         // CI has no prepared 26.3 data, so a world that does not build skips
         // the whole check rather than asserting the data exists.
         let mut hits = |victim: Mob| -> Option<u32> {
-            let seen = victim.seen(None);
+            let seen = victim.seen(None, &crate::items::Items::empty());
             let mut hits = 0;
             let ran = with_test_world(&[seen], |w, _| {
                 let mut golem = mob(1, Species::IronGolem, "monster");
@@ -6443,7 +6515,8 @@ mod allay_healing_tests {
                     mob.persistent = true;
                     mob.health = initial;
                     mob.extra.ints[2] = 37;
-                    mob.extra.ints[3] = 41;
+                    mob.extra.allay.get_or_insert_with(Default::default);
+                    super::super::allay::set_pickup_cooldown(&mut mob, Some(41));
                     mob.extra.egg_time = 30;
                     assert_eq!(mob.attrs.max_health, 20.0);
                     assert_eq!(mob.age, 0);
@@ -6461,7 +6534,10 @@ mod allay_healing_tests {
                         assert_eq!(mob.extra.egg_time, 30 - elapsed as i32);
                         let skipped = if no_ai { 0 } else { elapsed as i32 };
                         assert_eq!(mob.extra.ints[2], 37 - skipped);
-                        assert_eq!(mob.extra.ints[3], 41 - skipped);
+                        assert_eq!(
+                            super::super::allay::pickup_cooldown(&mob),
+                            Some(41 - skipped)
+                        );
                     }
                 }
             }
@@ -6555,6 +6631,64 @@ mod air_tests {
             out = Some(m.air);
         });
         out
+    }
+
+    /// `LivingEntity.canBreatheUnderWater` on the drown path: the
+    /// `can_breathe_under_water` tag (a guardian and a copper golem are in it, an
+    /// iron golem is not), with the baby happy ghast and the sulfur cube holding a
+    /// block on top of it and the golem's own `decreaseAirSupply` holding its air.
+    /// 300 ticks take the air from 300 to 0 and 20 more deal the drown's 2.
+    #[test]
+    fn the_types_the_jar_lists_breathe_under_water() {
+        let build = |world: &mut crate::world::World,
+                     registry: &horizon_world::registry::BlockRegistry| {
+            world.chunks.insert(
+                (0, 0),
+                std::sync::Arc::new(crate::chunk::Chunk::empty(0, 0)),
+            );
+            let water = registry.default_state("minecraft:water").unwrap();
+            for x in 0..=4 {
+                for z in 0..=4 {
+                    for y in 0..=8 {
+                        world.set(x, y, z, water).unwrap();
+                    }
+                }
+            }
+        };
+        let ran = crate::mobs::world::with_built_test_world(&[], build, |w, types| {
+            let drowned = |id: &str, baby: bool, body: Option<&str>| {
+                let kind = std::sync::Arc::new(types.types[id].clone());
+                let mut m = Mob::new(1, kind, Vec3::new(2.5, 3.0, 2.5), 0.0);
+                if baby {
+                    m.extra.age = -24000;
+                }
+                m.extra.set_body(body.map(Into::into));
+                let start = m.health;
+                let mut events = Vec::new();
+                let mut test_level = crate::health::TestLevel::new(0);
+                for _ in 0..320 {
+                    base_tick(&mut m, w, &mut test_level.level(), &mut events);
+                }
+                (start - m.health, m.air)
+            };
+            // The tag itself, from the shipped data: the golems differ.
+            assert!(types.types["minecraft:copper_golem"].flags.breathes_water);
+            assert!(!types.types["minecraft:iron_golem"].flags.breathes_water);
+            assert_eq!(drowned("minecraft:guardian", false, None), (0.0, 300));
+            assert_eq!(drowned("minecraft:copper_golem", false, None), (0.0, 300));
+            // Not in the tag, and still no drowning damage: its decreaseAirSupply
+            // is the identity, so its air stays at 300 and it never refills.
+            assert_eq!(drowned("minecraft:iron_golem", false, None), (0.0, 300));
+            assert_eq!(drowned("minecraft:happy_ghast", false, None), (2.0, 0));
+            assert_eq!(drowned("minecraft:happy_ghast", true, None), (0.0, 300));
+            assert_eq!(drowned("minecraft:sulfur_cube", false, None), (2.0, 0));
+            assert_eq!(
+                drowned("minecraft:sulfur_cube", false, Some("minecraft:stone")),
+                (0.0, 300)
+            );
+        });
+        // Without the extracted vanilla data the world cannot be built.
+        let _ = ran;
     }
 
     /// `Dolphin.handleAirSupply` is empty and the dolphin isn't in
@@ -6925,6 +7059,86 @@ mod nautilus_noai_air_tests {
 }
 
 #[cfg(test)]
+mod freeze_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// `LivingEntity.aiStep`'s freezing, through `freeze_tick`: powder snow
+    /// builds a mob's frozen ticks towards the 140 that freeze it, and at 140 a
+    /// tick that falls on the 40-tick damage interval hurts it by 1. A skeleton
+    /// answers `canFreeze` false, so it takes neither, and so does the stray (by
+    /// tag), while the bogged, parched, wither skeleton and a zombie freeze.
+    #[test]
+    fn a_skeleton_never_freezes() {
+        crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                let snow = registry.default_state("minecraft:powder_snow").unwrap();
+                for cx in -1..1 {
+                    for cz in -1..1 {
+                        world
+                            .chunks
+                            .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                    }
+                }
+                for x in -4..4 {
+                    for z in -4..4 {
+                        world.set(x, 63, z, stone).unwrap();
+                    }
+                }
+                // The mob stands in this block.
+                world.set(0, 64, 0, snow).unwrap();
+            },
+            |w, types| {
+                let frozen_with = |id: &str, ticks_frozen: i32, body: Option<&str>| {
+                    let kind = Arc::new(types.types[id].clone());
+                    let mut m = Mob::new(1, kind, Vec3::new(0.5, 64.0, 0.5), 0.0);
+                    m.ticks_frozen = ticks_frozen;
+                    m.extra.set_body(body.map(Into::into));
+                    // The freeze damage falls on a tick that is a multiple of 40.
+                    m.age = 40;
+                    let start = m.health;
+                    freeze_tick(&mut m, w, &mut crate::health::TestLevel::new(0).level());
+                    (m.ticks_frozen, start - m.health)
+                };
+                let frozen = |id: &str, ticks_frozen: i32| frozen_with(id, ticks_frozen, None);
+                // Powder snow builds no frozen ticks on a skeleton, and one
+                // already frozen melts two ticks a tick instead of taking the
+                // damage a fully frozen mob takes at 140.
+                for skeleton in ["minecraft:skeleton", "minecraft:stray"] {
+                    assert_eq!(frozen(skeleton, 0), (0, 0.0), "{skeleton}");
+                    assert_eq!(frozen(skeleton, 140), (138, 0.0), "{skeleton} frozen");
+                }
+                // The bogged, parched and wither skeleton extend AbstractSkeleton,
+                // not Skeleton, and freeze like a zombie.
+                for sibling in [
+                    "minecraft:bogged",
+                    "minecraft:parched",
+                    "minecraft:wither_skeleton",
+                ] {
+                    assert_eq!(frozen(sibling, 0), (1, 0.0), "{sibling}");
+                    assert_eq!(frozen(sibling, 139), (140, 1.0), "{sibling} frozen");
+                }
+                // A zombie in the same block freezes, and at 140 takes the 1.
+                assert_eq!(frozen("minecraft:zombie", 139), (140, 1.0));
+                // SulfurCube.canFreeze: a cube carrying a block in its body does
+                // not freeze; without one it freezes and takes the 1 like a zombie.
+                assert_eq!(
+                    frozen_with("minecraft:sulfur_cube", 0, Some("minecraft:stone")),
+                    (0, 0.0)
+                );
+                assert_eq!(
+                    frozen_with("minecraft:sulfur_cube", 140, Some("minecraft:stone")),
+                    (138, 0.0)
+                );
+                assert_eq!(frozen("minecraft:sulfur_cube", 0), (1, 0.0));
+                assert_eq!(frozen("minecraft:sulfur_cube", 139), (140, 1.0));
+            },
+        );
+    }
+}
+#[cfg(test)]
 mod happy_ghast_ambient_tests {
     use super::*;
     use std::sync::Arc;
@@ -7170,7 +7384,10 @@ mod trader_llama_no_ai_tests {
                     Vec3::new(40.5, 200.0, 40.5),
                     0.0,
                 );
-                let seen = [trader.seen(None), cow.seen(None)];
+                let seen = [
+                    trader.seen(None, &crate::items::Items::empty()),
+                    cow.seen(None, &crate::items::Items::empty()),
+                ];
                 assert_eq!(seen[0].delay, 13);
                 let view = MobWorld {
                     others: &seen,
@@ -7345,5 +7562,82 @@ mod baby_speed_tests {
         let mut adult = baby(Species::Zombie, "minecraft:zombie");
         finalize::set_baby(&mut adult, false);
         assert_eq!(speed_bonus(&adult), 1.0);
+    }
+}
+
+#[cfg(test)]
+mod walk_target_tests {
+    use super::*;
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    /// `PathfinderMob.getWalkTargetValue` and its overrides, at three positions
+    /// that differ only in the block below. A cow scores grass 10 and mycelium by
+    /// the light; a mushroom cow, whose own override replaces Animal's, mycelium
+    /// 10 and grass by the light; a monster the negated light; and an enderman, a
+    /// pillager and a warden the same 0 everywhere.
+    #[test]
+    fn a_stroll_scores_its_ground_the_way_the_jar_does() {
+        let ran = crate::mobs::world::with_built_test_world(
+            &[],
+            |world, registry| {
+                let stone = registry.default_state("minecraft:stone").unwrap();
+                let grass = registry.default_state("minecraft:grass_block").unwrap();
+                let mycelium = registry.default_state("minecraft:mycelium").unwrap();
+                for cx in -1..1 {
+                    for cz in -1..1 {
+                        world
+                            .chunks
+                            .insert((cx, cz), Arc::new(crate::chunk::Chunk::empty(cx, cz)));
+                    }
+                }
+                for x in -4..4 {
+                    for z in -4..4 {
+                        world.set(x, 63, z, stone).unwrap();
+                    }
+                }
+                world.set(-2, 63, 0, grass).unwrap();
+                world.set(0, 63, 0, stone).unwrap();
+                world.set(2, 63, 0, mycelium).unwrap();
+            },
+            |w, types| {
+                let value = |id: &str, x: i32| {
+                    let kind = Arc::new(types.types[id].clone());
+                    let m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+                    walk_target_value(&m, w, [x, 64, 0])
+                };
+                // The light term of the middle position, which the report quotes.
+                let light = w.brightness(0, 64, 0) - 0.5;
+                // A cow: grass 10, mycelium and stone by the light.
+                assert_eq!(value("minecraft:cow", -2), 10.0, "cow on grass");
+                assert_eq!(value("minecraft:cow", 0), light, "cow on stone");
+                assert_eq!(value("minecraft:cow", 2), light, "cow on mycelium");
+                // A mushroom cow: mycelium 10, grass by the light, not 10.
+                assert_eq!(
+                    value("minecraft:mooshroom", 2),
+                    10.0,
+                    "mooshroom on mycelium"
+                );
+                assert_eq!(
+                    value("minecraft:mooshroom", -2),
+                    light,
+                    "mooshroom on grass"
+                );
+                // A monster: the negated light, on grass like anywhere else.
+                assert_eq!(value("minecraft:zombie", -2), -light, "zombie");
+                // The three that score every position the same.
+                for flat in [
+                    "minecraft:enderman",
+                    "minecraft:pillager",
+                    "minecraft:warden",
+                ] {
+                    assert_eq!(value(flat, -2), 0.0, "{flat} on grass");
+                    assert_eq!(value(flat, 0), 0.0, "{flat} on stone");
+                    assert_eq!(value(flat, 2), 0.0, "{flat} on mycelium");
+                }
+            },
+        );
+        // Without the extracted vanilla data the world cannot be built.
+        let _ = ran;
     }
 }

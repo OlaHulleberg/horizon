@@ -126,6 +126,10 @@ impl Loading {
             }
         };
         horizon_client::window::settle_created_fullscreen(&window, fullscreen);
+        #[cfg(target_os = "windows")]
+        if let Some(hwnd) = hwnd(&window) {
+            horizon_threads::system_menu::suppress(hwnd);
+        }
         drop(window_step);
         // The renderer takes seconds to build and winit's window sits white
         // until the first frame presents, so paint the boot screen on it and
@@ -209,7 +213,8 @@ impl Loading {
             .options
             .as_ref()
             .map_or_else(Vec::new, |options| pack_finders::data_packs(&options.mods));
-        self.menu.set_root(root, &self.settings, additional.into());
+        self.menu
+            .set_root(root, &self.settings, additional.into(), &gui.splashes);
         self.gui = Some(gui);
         self.title_drawn = false;
         horizon_client::ui_theme::reset_atlas();

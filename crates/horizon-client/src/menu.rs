@@ -21,7 +21,7 @@ pub use mod_api::item::menu::{LogicalSide, MenuButtonContext};
 mod models;
 pub use models::{
     AnvilCraft, AnvilUpdate, AnvilVanilla, CarriedAccess, GrindstonePlace, GrindstoneTake,
-    SlotView, StackedOnOther,
+    SlotRules, SlotView, StackedOnOther,
 };
 use std::sync::Arc;
 
@@ -98,6 +98,8 @@ pub struct Env<'a> {
     /// The side and settings of the resource generation this menu runs in: the
     /// one source of its side, and what a hook inside a menu loop is given.
     pub loop_context: &'a LoopContext,
+    /// `IItemExtension.canEquip` for the armour slots, lent by the game (none keeps the data's).
+    pub can_equip: Option<&'a dyn crate::mobs::equip::CanEquip>,
     pub items: &'a Items,
     pub recipes: &'a Recipes,
     pub brewing: &'a Brewing,
@@ -119,6 +121,9 @@ pub struct Env<'a> {
     pub limited_crafting: bool,
     /// The recipes the player knows (`ServerPlayer.getRecipeBook().contains(id)`).
     pub known_recipes: Option<&'a dyn KnownRecipes>,
+    /// The mods' `menu_slot_rules`, lent by the game with the read-only `Host` behind it (none
+    /// keeps every slot's own answer: a data-only consumer, or a click made without the game).
+    pub slot_rules: Option<&'a dyn SlotRules>,
 }
 
 /// The maps of the level a menu is in.
@@ -491,24 +496,11 @@ fn tidy(slot: &mut Option<ItemStack>) {
     }
 }
 
-/// Dispatch registered vanilla and mod menu slot placement and maximum stack rules.
-/// The slot is its backing container index. The shared application bounds the
-/// final maximum.
-#[inline(always)]
-pub fn native_menu_slot_rules(
-    context: &LoopContext,
-    menu: &str,
-    slot: usize,
-    stack: &ItemStack,
-    may_place: &mut bool,
-    max_stack: &mut u32,
-) {
-    crate::native_client_hooks::menu_slot_rules(context, menu, slot, stack, may_place, max_stack);
-}
-
-/// Apply the scoped rule to a slot's own answers, then enforce its item cap.
+/// Apply the scoped rule to a slot's own answers, then enforce its item cap. The rules are asked
+/// here, while the click plans, and only for a menu type a part answers; with none lent the
+/// slot's answers stand.
 pub fn apply_menu_slot_rules(
-    context: &LoopContext,
+    rules: Option<&dyn SlotRules>,
     menu: &str,
     slot: usize,
     stack: &ItemStack,
@@ -516,7 +508,9 @@ pub fn apply_menu_slot_rules(
     mut max_stack: u32,
     item_max: u32,
 ) -> (bool, u32) {
-    native_menu_slot_rules(context, menu, slot, stack, &mut may_place, &mut max_stack);
+    if let Some(rules) = rules.filter(|rules| rules.listens(menu)) {
+        rules.rule(menu, slot, stack, &mut may_place, &mut max_stack);
+    }
     (may_place, max_stack.clamp(1, CONTAINER_MAX).min(item_max))
 }
 
@@ -1637,18 +1631,8 @@ impl Menu {
     fn vanilla_may_place(&self, env: &Env, s: usize, stack: &ItemStack) -> bool {
         match self.state.slots[s].role {
             Role::Plain | Role::CreativeDisplay => true,
-            Role::Armor(eq) => Self::equippable(env, stack).is_some_and(|e| {
-                ["feet", "legs", "chest", "head"]
-                    .iter()
-                    .position(|s| *s == e.slot)
-                    == Some(eq)
-                    && e.allows("minecraft:player")
-            }),
-            // LivingEntity.isEquippableInSlot: the stack's equippable slot,
-            // and the mount among its allowed entities.
-            Role::MountEquip(slot) => Self::equippable(env, stack).is_some_and(|e| {
-                e.slot == slot && self.state.mount.as_deref().is_some_and(|m| e.allows(m))
-            }),
+            Role::Armor(eq) => Self::armor_may_place(env, eq, stack),
+            Role::MountEquip(slot) => self.mount_may_place(env, slot, stack),
             Role::Shulker => fits_inside_container_items(stack),
             Role::Mod | Role::ModResult => self.state.slots[s].role == Role::Mod,
             Role::Hidden => false,
@@ -1814,7 +1798,7 @@ impl Menu {
             return (own, max.min(Self::max_stack(env, stack)));
         };
         apply_menu_slot_rules(
-            env.loop_context,
+            env.slot_rules,
             id,
             self.state.slots[s].index,
             stack,
@@ -1947,7 +1931,7 @@ impl Menu {
     fn equipment_slot(&self, s: usize) -> Option<&'static str> {
         let slot = self.state.slots[s];
         match slot.role {
-            Role::Armor(eq) => Some(["feet", "legs", "chest", "head"][eq]),
+            Role::Armor(eq) => Some(equippable::ARMOR_SLOTS[eq]),
             _ if slot.container == PLAYER && slot.index == OFFHAND => Some("offhand"),
             _ => None,
         }
@@ -2266,12 +2250,10 @@ impl Menu {
             .recipes
             .find_with(env.loop_context, &grid, n, &map_scale)
         {
-            self.state
-                .crafted
-                .push((format!("minecraft:{id}"), grid.clone()));
-            self.state
-                .item_crafted
-                .push((format!("minecraft:{id}"), taken.clone()));
+            let id = format!("minecraft:{id}");
+            let made = (id.clone(), taken.clone(), grid.clone());
+            self.state.crafted.push((id, grid.clone()));
+            self.state.item_crafted.push(made);
         }
         let remaining = env
             .recipes
@@ -2514,7 +2496,7 @@ enum Equip {
 
 impl Menu {
     fn equip(env: &Env, stack: &ItemStack) -> Equip {
-        match Self::equippable(env, stack).map(|e| e.slot).as_deref() {
+        match crate::mobs::equip::equippable(env.items, stack).map(|e| e.slot) {
             Some("feet") => Equip::Armor(0),
             Some("legs") => Equip::Armor(1),
             Some("chest") => Equip::Armor(2),
@@ -2558,7 +2540,7 @@ impl Menu {
                     true
                 } else if let Some(id) = self.registry_id() {
                     !apply_menu_slot_rules(
-                        env.loop_context,
+                        env.slot_rules,
                         id,
                         self.state.slots[dest].index,
                         stack,
@@ -3130,15 +3112,9 @@ impl Menu {
             return None;
         }
         if after_take || matches!(self.state.kind, Kind::Inventory | Kind::Crafting) {
-            // Furnace and merchant takes pass the remaining slot stack.
-            let taken = if matches!(self.state.kind, Kind::Furnace(_))
-                || self.state.slots[index].role == Role::MerchantResult
-            {
-                &mut stack
-            } else {
-                &mut clicked
-            };
-            self.on_take(env, index, taken);
+            // A merchant result reports the stack it moved, a crafting result the copy it
+            // takes (which Item.onCraftedBy may still change).
+            self.take_after_quick_move(env, index, &mut clicked, &mut stack);
         }
         // What the result slot's move left over is dropped.
         if (index == 0 && matches!(self.state.kind, Kind::Inventory | Kind::Crafting))
@@ -3420,7 +3396,9 @@ pub(crate) mod tests {
             trade: None,
             maps: None,
             limited_crafting: false,
+            can_equip: None,
             known_recipes: None,
+            slot_rules: None,
         };
         let mut menu = Menu::new(kind);
         menu.creative = true;
@@ -3567,7 +3545,9 @@ pub(crate) mod tests {
             trade: None,
             maps: None,
             limited_crafting: false,
+            can_equip: None,
             known_recipes: None,
+            slot_rules: None,
         };
         let mut fuel = ItemStack::new("minecraft:stone", 2);
         fuel.data_mut().set_loot_component(
@@ -3614,7 +3594,9 @@ pub(crate) mod tests {
             trade: None,
             maps: None,
             limited_crafting: false,
+            can_equip: None,
             known_recipes: None,
+            slot_rules: None,
         };
         for (input, payment) in [
             (Input::Pickup, 8),
@@ -3748,7 +3730,7 @@ pub(crate) mod tests {
             })
         };
         check(false);
-        mod_api::testing::with_mods(
+        mod_platform::testing::with_mods(
             vec![mod_api::ModEntry::new("apples", Box::new(AppleSets))].into(),
             || check(true),
         );
@@ -3817,6 +3799,7 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&root);
         let (banners, station_recipes) = (Default::default(), Default::default());
         let (enchantments, names) = (Default::default(), Default::default());
+        let rules = ContextRules(loop_context);
         test(&Env {
             crafting_remainder: None,
             player: Some(7),
@@ -3832,8 +3815,35 @@ pub(crate) mod tests {
             trade: None,
             maps: None,
             limited_crafting: false,
+            can_equip: None,
             known_recipes: None,
+            slot_rules: Some(&rules),
         });
+    }
+
+    /// The `menu_slot_rules` answers a mod menu `test:rules` gives in the tests: slot 0 takes
+    /// a stack on a server only, and holds what the `rules_mod` setting says (7 without it).
+    struct ContextRules<'a>(&'a LoopContext);
+    impl SlotRules for ContextRules<'_> {
+        fn listens(&self, menu: &str) -> bool {
+            menu == "test:rules"
+        }
+        fn rule(
+            &self,
+            menu: &str,
+            slot: usize,
+            _: &ItemStack,
+            may_place: &mut bool,
+            max_stack: &mut u32,
+        ) {
+            if menu == "test:rules" && slot == 0 {
+                *may_place = self.0.side() == LoopSide::Server;
+                *max_stack = self
+                    .0
+                    .setting("rules_mod", "stack")
+                    .map_or(7, |value| value.parse().unwrap());
+            }
+        }
     }
 
     /// `AnvilUpdateEvent`: not asked without a left input, and once per
@@ -4139,13 +4149,54 @@ pub(crate) mod tests {
             menu.set_slot(env, 1, stack("oak_log", 1));
             menu.settle(env);
             menu.click(env, 0, 0, Input::Pickup).unwrap();
+            let mut grid = vec![None; 9];
+            grid[0] = stack("oak_log", 1);
             assert_eq!(
                 menu.item_crafted,
                 vec![(
                     "minecraft:oak_planks".to_owned(),
-                    stack("oak_planks", 4).unwrap()
+                    stack("oak_planks", 4).unwrap(),
+                    grid
                 )]
             );
+        });
+    }
+
+    /// The inventory's own 2x2 grid is recorded as its 4 cells, the log in
+    /// the cell it was in.
+    #[test]
+    fn an_inventory_craft_records_its_four_grid_cells() {
+        with_menu(Kind::Inventory, |env, menu| {
+            menu.creative = false;
+            menu.set_slot(env, 2, stack("oak_log", 1));
+            menu.settle(env);
+            menu.click(env, 0, 0, Input::Pickup).unwrap();
+            assert_eq!(
+                menu.item_crafted,
+                vec![(
+                    "minecraft:oak_planks".to_owned(),
+                    stack("oak_planks", 4).unwrap(),
+                    vec![None, stack("oak_log", 1), None, None]
+                )]
+            );
+        });
+    }
+
+    /// A shift-click that crafts three times records three takes, each with
+    /// the grid as it was before that craft.
+    #[test]
+    fn a_shift_click_craft_records_each_batch_with_its_grid() {
+        with_menu(Kind::Crafting, |env, menu| {
+            menu.creative = false;
+            menu.set_slot(env, 1, stack("oak_log", 3));
+            menu.settle(env);
+            menu.click(env, 0, 0, Input::QuickMove).unwrap();
+            let logs: Vec<_> = menu
+                .item_crafted
+                .iter()
+                .map(|(_, _, grid)| (grid.len(), grid[0].as_ref().map(|s| s.count)))
+                .collect();
+            assert_eq!(logs, [(9, Some(3)), (9, Some(2)), (9, Some(1))]);
         });
     }
 
@@ -4202,11 +4253,14 @@ pub(crate) mod tests {
             listener(&mut event);
             assert_eq!(carried, stack("oak_planks", 4));
             assert!(menu.slot(1).is_none());
+            let mut grid = vec![None; 9];
+            grid[0] = stack("oak_log", 1);
             assert_eq!(
                 menu.item_crafted,
                 vec![(
                     "minecraft:oak_planks".to_owned(),
-                    stack("oak_planks", 4).unwrap()
+                    stack("oak_planks", 4).unwrap(),
+                    grid
                 )]
             );
         });
@@ -4361,14 +4415,6 @@ pub(crate) mod tests {
             std::sync::atomic::AtomicUsize::new(0);
         let installed =
             crate::native_client_hooks::install(crate::native_client_hooks::NativeClientHooks {
-                menu_slot_rules: |context, menu, slot, _, may_place, max_stack| {
-                    if menu == "test:rules" && slot == 0 {
-                        *may_place = context.side() == LoopSide::Server;
-                        *max_stack = context
-                            .setting("rules_mod", "stack")
-                            .map_or(7, |value| value.parse().unwrap());
-                    }
-                },
                 menu_still_valid: |context, player, menu, _, eye, valid| {
                     STILL_VALID_ASKED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     if menu == "test:rules" && player == 2 && eye[2] == 0.0 {
@@ -4389,10 +4435,14 @@ pub(crate) mod tests {
                         *amount += 1.0;
                     }
                 },
-                living_breathe: |context, _, _, can_breathe, consume, _| {
+                living_breathe: |context, _, kind, can_breathe, consume, _| {
                     if context.setting("rules_mod", "stack").is_some() {
-                        *can_breathe = false;
-                        *consume += 4;
+                        // A cod breathes on land; a salmon loses all its air at once.
+                        *can_breathe = kind == "minecraft:cod";
+                        *consume = match kind {
+                            "minecraft:salmon" => i32::MAX,
+                            _ => *consume + 4,
+                        };
                     }
                 },
                 farmland_trample: |context, _, _, _, _, cancel| {
@@ -4409,10 +4459,11 @@ pub(crate) mod tests {
                         .setting("rules_mod", "stack")
                         .map(|value| crate::text::Text::literal(&value));
                 },
-                living_drown: |context, _, _, drowning, damage, _, _| {
+                living_drown: |context, _, _, drowning, damage, bubbles, _| {
                     if context.setting("rules_mod", "stack").is_some() {
                         *drowning = true;
                         *damage += 1.0;
+                        *bubbles = 0;
                     }
                 },
                 living_fall: |context, _, _, distance, multiplier, _| {
@@ -4444,6 +4495,15 @@ pub(crate) mod tests {
                 },
                 is_ladder: |context, _, _, _, ladder| {
                     *ladder |= context.setting("rules_mod", "stack").is_some();
+                },
+                friction: |context, _, kind, _, _, friction| {
+                    if context.setting("rules_mod", "stack").is_some() {
+                        *friction = match kind {
+                            "minecraft:player" => 0.98,
+                            "minecraft:cow" => f32::NAN,
+                            _ => 3.0,
+                        };
+                    }
                 },
                 player_stays_on_ground_surface: |context, _, staying| {
                     *staying |= context.setting("rules_mod", "stack").is_some();
@@ -4616,6 +4676,24 @@ pub(crate) mod tests {
         };
         assert!(!ladder(&before));
         assert!(ladder(&after));
+        // A block's friction reads it too; an answer that is NaN or outside 0..=2 keeps the
+        // block's own.
+        let friction = |context: &LoopContext, kind: &str| {
+            let mut friction = 0.6;
+            crate::motion::native_friction(
+                context,
+                1,
+                kind,
+                horizon_core::position::BlockPos::new(0, 0, 0),
+                horizon_world::registry::BlockStateId(0),
+                &mut friction,
+            );
+            friction
+        };
+        assert_eq!(friction(&before, "minecraft:player"), 0.6);
+        assert_eq!(friction(&after, "minecraft:player"), 0.98);
+        assert_eq!(friction(&after, "minecraft:cow"), 0.6);
+        assert_eq!(friction(&after, "minecraft:item"), 0.6);
         // The edge backoff and the fluid current read it too.
         let movement = |context: &LoopContext| {
             let (mut staying, mut flow) = (false, [0.25, 0.0, 0.0]);
@@ -4715,13 +4793,43 @@ pub(crate) mod tests {
                 "minecraft:zombie",
                 &mut drowning,
                 &mut damage,
-                8,
+                &mut 8,
                 &mut cancel_drown,
             );
             (amount, cancel, can_breathe, consume, drowning, damage)
         };
         assert_eq!(health(&before), (2.0, false, true, 1, false, 2.0));
         assert_eq!(health(&after), (3.0, true, false, 5, true, 3.0));
+        // A listener that lets a cod breathe: on land for 300 ticks it keeps
+        // full air and takes no damage.
+        let mut air = 300;
+        for _ in 0..300 {
+            let hurt =
+                crate::breathing::own_air(&after, 1, "minecraft:cod", &mut air, false, 300, true);
+            assert_eq!(hurt, None);
+        }
+        assert_eq!(air, 300);
+        // A listener that sets `bubble_count` to 0: a drowning player takes the
+        // damage and shows no bubbles (`drown_bubbles` sends nothing for 0).
+        let gasp = crate::breathing::Breath {
+            can_breathe: false,
+            consume: 1,
+            refill: 0,
+        };
+        let mut air = -19;
+        let drowned =
+            crate::breathing::drown(&after, 3, "minecraft:player", &mut air, gasp, true).unwrap();
+        assert_eq!((drowned.damage, drowned.bubbles, air), (Some(3.0), 0, 0));
+        // A listener's `consume` of `i32::MAX` saturates instead of overflowing:
+        // a water animal past -20 only loses air, another kind drowns.
+        let mut air = -19;
+        let hurt =
+            crate::breathing::own_air(&after, 4, "minecraft:salmon", &mut air, false, 300, true);
+        assert_eq!((hurt, air), (None, i32::MIN));
+        let mut air = -19;
+        let hurt =
+            crate::breathing::own_air(&after, 4, "minecraft:salmon", &mut air, false, 6000, false);
+        assert_eq!((hurt, air), (Some(3.0), 0));
         // A server's block menu: the game's `stillValid` answer arrives first and
         // the parts on its mod menu type may change it; a vanilla menu type never
         // asks them, and a menu whose block entity is gone closes without asking.
@@ -4846,7 +4954,9 @@ pub(crate) mod tests {
             trade: None,
             maps: None,
             limited_crafting: false,
+            can_equip: None,
             known_recipes: None,
+            slot_rules: None,
         };
         // Both a pick-up onto the cursor and a shift-click into the inventory.
         for input in [Input::Pickup, Input::QuickMove] {
@@ -4935,7 +5045,9 @@ pub(crate) mod tests {
             trade: None,
             maps: None,
             limited_crafting: false,
+            can_equip: None,
             known_recipes: None,
+            slot_rules: None,
         };
         let menu = &mut Menu::new(mod_menu());
         {
@@ -5340,7 +5452,9 @@ pub(crate) mod tests {
             player_entity_id: None,
             loop_context: &crate::test_resources::loop_context(LoopSide::Client),
             limited_crafting: false,
+            can_equip: None,
             known_recipes: None,
+            slot_rules: None,
         };
 
         let mut menu = Menu::new(Kind::Inventory);
@@ -5394,7 +5508,9 @@ pub(crate) mod tests {
             player_entity_id: None,
             loop_context: &crate::test_resources::loop_context(LoopSide::Client),
             limited_crafting: true,
+            can_equip: None,
             known_recipes: Some(&known),
+            slot_rules: None,
         };
 
         let mut menu = Menu::new(Kind::Inventory);
@@ -5448,7 +5564,9 @@ pub(crate) mod tests {
             player_entity_id: None,
             loop_context: &crate::test_resources::loop_context(LoopSide::Client),
             limited_crafting: true,
+            can_equip: None,
             known_recipes: Some(&known),
+            slot_rules: None,
         };
 
         let mut menu = Menu::new(Kind::Inventory);
@@ -5506,7 +5624,9 @@ pub(crate) mod tests {
             player_entity_id: None,
             loop_context: &crate::test_resources::loop_context(LoopSide::Client),
             limited_crafting: true,
+            can_equip: None,
             known_recipes: Some(&known),
+            slot_rules: None,
         };
 
         let mut menu = Menu::new(Kind::Inventory);
@@ -5554,7 +5674,9 @@ pub(crate) mod tests {
             trade: None,
             maps: None,
             limited_crafting: false,
+            can_equip: None,
             known_recipes: None,
+            slot_rules: None,
         };
         let potion = ItemStack::new("minecraft:potion", 1);
         let mut seen = Vec::new();

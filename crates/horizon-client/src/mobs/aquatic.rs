@@ -219,19 +219,19 @@ pub fn tick(m: &mut Mob, events: &mut Vec<MobEvent>) {
     let puff = m.extra.size;
     if m.extra.counter > 0 {
         if puff == 0 {
-            m.sound("entity.puffer_fish.blow_up", events);
+            m.voice("entity.puffer_fish.blow_up", events);
             m.extra.size = 1;
         } else if m.extra.counter > 40 && puff == 1 {
-            m.sound("entity.puffer_fish.blow_up", events);
+            m.voice("entity.puffer_fish.blow_up", events);
             m.extra.size = 2;
         }
         m.extra.counter += 1;
     } else if puff != 0 {
         if m.extra.counter2 > 60 && puff == 2 {
-            m.sound("entity.puffer_fish.blow_out", events);
+            m.voice("entity.puffer_fish.blow_out", events);
             m.extra.size = 1;
         } else if m.extra.counter2 > 100 && puff == 1 {
-            m.sound("entity.puffer_fish.blow_out", events);
+            m.voice("entity.puffer_fish.blow_out", events);
             m.extra.size = 0;
         }
         m.extra.counter2 += 1;
@@ -329,7 +329,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, level: &mut DamageLevel<'_>, events: &
                     m.velocity.z + f64::from((b * 2.0 - 1.0) * 0.05),
                 );
                 m.on_ground = false;
-                m.sound("entity.tadpole.flop", events);
+                m.voice("entity.tadpole.flop", events);
             }
             // Tadpole.aiStep: the age lock's particles, after the age.
             super::ai::make_age_locked_particle(m, events);
@@ -350,21 +350,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld, level: &mut DamageLevel<'_>, events: &
                     S::TropicalFish => "entity.tropical_fish.flop",
                     _ => "entity.puffer_fish.flop",
                 };
-                m.sound(flop, events);
-            }
-            if m.species() == S::Pufferfish && m.alive() && m.extra.size > 0 {
-                // Preserve the existing AI-side audio path. Player damage
-                // and poison are dispatched by the player tick, not fish AI.
-                if let Some(p) = w.selected_player()
-                    && p.alive
-                    && !p.creative
-                    && m.bounds()
-                        .inflate(Vec3::new(0.3, 0.3, 0.3))
-                        .intersects(p.bounds)
-                    && m.ai.no_action_time % 10 == 0
-                {
-                    m.sound("entity.puffer_fish.sting", events);
-                }
+                m.voice(flop, events);
             }
             if m.species() == S::Pufferfish {
                 sting_touching_mobs(m, w, events);
@@ -1306,7 +1292,7 @@ mod pufferfish_sting_tests {
                 Vec3::new(0.5, 64.0, 0.5),
                 0.0,
             );
-            let others = [target.seen(None)];
+            let others = [target.seen(None, &crate::items::Items::empty())];
             let world = MobWorld {
                 goal_host: None,
                 others: &others,
@@ -1369,7 +1355,8 @@ mod pufferfish_sting_tests {
                 .iter()
                 .enumerate()
                 .map(|(i, (name, x))| {
-                    mob(i as u32 + 2, name, Vec3::new(0.5 + x, 64.0, 0.5)).seen(None)
+                    mob(i as u32 + 2, name, Vec3::new(0.5 + x, 64.0, 0.5))
+                        .seen(None, &crate::items::Items::empty())
                 })
                 .collect();
             built = Some((fish, seen));
@@ -1455,7 +1442,7 @@ mod pufferfish_sting_tests {
                 let mut deflated = make_mob(1, "minecraft:pufferfish", Vec3::new(0.5, 64.0, 0.5));
                 deflated.extra.size = 0;
                 let pig = make_mob(2, "minecraft:pig", Vec3::new(0.5, 64.0, 0.5));
-                let seen = [pig.seen(None)];
+                let seen = [pig.seen(None, &crate::items::Items::empty())];
                 let world = MobWorld {
                     goal_host: None,
                     others: &seen,
@@ -1483,7 +1470,7 @@ mod pufferfish_sting_tests {
                 let mut fish = make_mob(4, "minecraft:pufferfish", Vec3::new(0.5, 64.0, 0.5));
                 fish.extra.size = 2;
                 let far_pig = make_mob(5, "minecraft:pig", Vec3::new(5.0, 64.0, 5.0));
-                let seen_far = [far_pig.seen(None)];
+                let seen_far = [far_pig.seen(None, &crate::items::Items::empty())];
                 let world_far = MobWorld {
                     goal_host: None,
                     others: &seen_far,
@@ -1506,7 +1493,7 @@ mod pufferfish_sting_tests {
                 fish.extra.size = 2;
                 let mut invuln_pig = make_mob(2, "minecraft:pig", Vec3::new(0.5, 64.0, 0.5));
                 invuln_pig.invulnerable_flag = true;
-                let seen = [invuln_pig.seen(None)];
+                let seen = [invuln_pig.seen(None, &crate::items::Items::empty())];
                 let world = MobWorld {
                     goal_host: None,
                     others: &seen,
@@ -1539,7 +1526,7 @@ mod pufferfish_sting_tests {
                 let mut cooldown_pig = make_mob(2, "minecraft:pig", Vec3::new(0.5, 64.0, 0.5));
                 cooldown_pig.invulnerable = 20;
                 cooldown_pig.last_hurt = 3.0; // Pufferfish deals 1 + 2 = 3.0 <= 3.0
-                let seen = [cooldown_pig.seen(None)];
+                let seen = [cooldown_pig.seen(None, &crate::items::Items::empty())];
                 let world = MobWorld {
                     goal_host: None,
                     others: &seen,
@@ -1573,7 +1560,7 @@ mod pufferfish_sting_tests {
                 let mut fish = make_mob(1, "minecraft:pufferfish", Vec3::new(0.5, 64.0, 0.5));
                 fish.extra.size = 2;
                 let pig = make_mob(2, "minecraft:pig", Vec3::new(0.5, 64.0, 0.5));
-                let seen = [pig.seen(None)];
+                let seen = [pig.seen(None, &crate::items::Items::empty())];
                 let world = MobWorld {
                     goal_host: None,
                     others: &seen,
@@ -1611,7 +1598,7 @@ mod pufferfish_sting_tests {
                 );
 
                 // World Tick 1 continued: Pig ticks later in the same level tick
-                let fish_seen = [mobs[0].seen(None)];
+                let fish_seen = [mobs[0].seen(None, &crate::items::Items::empty())];
                 let world_for_pig = MobWorld {
                     goal_host: None,
                     others: &fish_seen,
@@ -1640,7 +1627,7 @@ mod pufferfish_sting_tests {
                 noai_fish.extra.size = 2;
                 let mut noai_pig = make_mob(2, "minecraft:pig", Vec3::new(0.5, 64.0, 0.5));
                 noai_pig.no_ai = true;
-                let seen = [noai_pig.seen(None)];
+                let seen = [noai_pig.seen(None, &crate::items::Items::empty())];
                 let world = MobWorld {
                     goal_host: None,
                     others: &seen,
@@ -1652,7 +1639,7 @@ mod pufferfish_sting_tests {
                 apply_brain_events(&mut mobs, level, &mut events, 0);
                 assert_eq!(mobs[1].health, 7.0);
                 assert_eq!(mobs[1].extra.effects[0].duration, 120);
-                let fish_seen = [mobs[0].seen(None)];
+                let fish_seen = [mobs[0].seen(None, &crate::items::Items::empty())];
                 let world_for_pig = MobWorld {
                     goal_host: None,
                     others: &fish_seen,
@@ -1675,7 +1662,10 @@ mod pufferfish_sting_tests {
                 fish.extra.size = 2;
                 let pig_a = make_mob(2, "minecraft:pig", Vec3::new(0.6, 64.0, 0.5));
                 let pig_b = make_mob(3, "minecraft:pig", Vec3::new(0.4, 64.0, 0.5));
-                let seen = [pig_a.seen(None), pig_b.seen(None)];
+                let seen = [
+                    pig_a.seen(None, &crate::items::Items::empty()),
+                    pig_b.seen(None, &crate::items::Items::empty()),
+                ];
                 let world = MobWorld {
                     goal_host: None,
                     others: &seen,
@@ -1778,3 +1768,5 @@ mod squid_tests {
 
 #[cfg(test)]
 mod countdown_tests;
+#[cfg(test)]
+mod pufferfish_sound_tests;

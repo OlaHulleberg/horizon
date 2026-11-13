@@ -13,6 +13,10 @@ pub const DEFAULT_CAPACITY: u32 = 4096;
 
 /// The stages a frame draws primitives at, in frame order (`RenderLevelStage`).
 pub const STAGES: usize = 5;
+/// world_primitives.wgsl after what it shares with the frame's other shaders (`frame_stored`).
+pub(super) fn shader() -> String {
+    include_str!("../hdr_light.wgsl").to_owned() + include_str!("world_primitives.wgsl")
+}
 
 /// A frame's primitives, camera-relative, as the game tessellated them: quads of 4 vertices
 /// from the shared atlas (plain colours on its white texel, text on its glyphs, beams on the
@@ -83,11 +87,12 @@ struct AtlasGroup {
 pub type Upload<'u> = &'u mut dyn FnMut(&wgpu::Buffer, &[u8]);
 
 impl WorldPrimitives {
-    /// Pipelines drawing into `color_format` over a reversed Depth32Float depth.
-    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
+    /// Pipelines drawing into `color_format` over a reversed Depth32Float depth, decoding their
+    /// colours where the frame holds linear light (`linear`).
+    pub fn new(device: &wgpu::Device, (color_format, linear): (wgpu::TextureFormat, bool)) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("World primitives"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("world_primitives.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(shader().into()),
         });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("World primitives"),
@@ -176,7 +181,10 @@ impl WorldPrimitives {
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(entry[1]),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &super::linear_blend::frame_constants(color_format, linear),
+                        ..Default::default()
+                    },
                     targets: &[Some(wgpu::ColorTargetState {
                         format: color_format,
                         blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -535,6 +543,7 @@ mod tests {
 
     #[test]
     fn uploads_preserve_ranges_and_reuse_high_water_storage() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
             eprintln!("no GPU adapter: skipped");
             return;
@@ -554,7 +563,8 @@ mod tests {
             view_formats: &[],
         });
         let atlas_view = atlas.create_view(&Default::default());
-        let mut primitives = WorldPrimitives::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+        let mut primitives =
+            WorldPrimitives::new(&device, (wgpu::TextureFormat::Rgba8Unorm, false));
         let view_proj = Mat4::IDENTITY;
         let red = quad(view_proj, [0.0, 0.0, 32.0, 32.0], 2.0, RED);
         let blue = quad(view_proj, [32.0, 32.0, 64.0, 64.0], 2.0, BLUE);
@@ -714,6 +724,7 @@ mod tests {
     /// depth-tested quad in front of the wall shows.
     #[test]
     fn depth_tested_primitives_hide_behind_walls_and_see_through_ones_do_not() {
+        let _gpu = crate::gfx::test_gpu::lock();
         let Some((device, queue)) = device() else {
             eprintln!("no GPU adapter: skipped");
             return;
@@ -794,7 +805,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut primitives = WorldPrimitives::new(&device, format);
+        let mut primitives = WorldPrimitives::new(&device, (format, false));
         let atlas_view = atlas.create_view(&Default::default());
         assert!(primitives.prepare(
             &device,

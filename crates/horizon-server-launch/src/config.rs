@@ -4,9 +4,12 @@
 //! start the supervisor writes them into `server.properties`, which the game reads exactly as vanilla's
 //! server does; what the game changes there itself (`/whitelist on`) is copied back afterwards.
 
-use horizon_platform::server_files::{
-    java_properties::{Properties, date_string, now_millis},
-    properties::{DIFFICULTIES, GAME_MODES, ServerProperties, SystemEntropy},
+use horizon_platform::java_properties::{Properties, date_string, now_millis};
+use horizon_platform::server_files::biome_regions::BiomeRegions;
+#[cfg(test)]
+use horizon_platform::server_files::biome_regions::MissingRegions;
+use horizon_platform::server_files::properties::{
+    DIFFICULTIES, GAME_MODES, ServerProperties, SystemEntropy,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
@@ -29,6 +32,10 @@ enforce_whitelist = false    # kick online players taken off the whitelist
 view_distance = 10           # chunks sent around each player
 simulation_distance = 10     # chunks around each player where mobs, crops and redstone tick
 max_view_distance = 0        # past view_distance, saved chunks only, up to this (never generated; 0: off)
+max_viewed_loaded_chunks = 2048             # chunks a mod may keep loaded for one player in another level (0: none; at most 2048 for now)
+max_viewed_ticking_chunks = 441             # of them, ticking (one player's simulation area at distance 10)
+max_viewed_loaded_chunks_per_level = 16384  # the same for all players together, per level
+max_viewed_ticking_chunks_per_level = 3528  # ticking, all players together, per level
 admin_feedback_to_ops = true # operators see each other's commands ([name: ...], vanilla); false: only the log
 accept_older_clients = false # true: 26.2 clients join too, their packets translated (docs/hosting.md)
 
@@ -48,6 +55,7 @@ path = ""                    # the game program; empty: the one installed beside
 resources = ""               # the prepared game files; empty: resources/ here, else the usual places
 restart_on_crash = true      # start the game again when it crashes
 low_memory = false           # true: no transparent huge pages, ~60 MB less idle for ~1 % more tick time
+parallel_tick = false        # reserved: parallel phases are currently disabled in this fork
 
 [backups]
 every = "6h"                 # automatic backups while the server runs: 30m, 6h, 1d...; "0" turns them off
@@ -107,10 +115,16 @@ enabled = true               # false pauses it and keeps the webhook
 # Fights follow 26.3's rules. For 1.8.9's (no attack cooldown or sweep, 1.8 weapon damage; docs/pvp.md):
 # [combat]
 # legacy = true
+
+# A world's biome regions from mods are fixed when it is made (docs/design/mod-api/mod-biome-regions.md).
+# When a mod with one is gone, the server refuses to start until you choose. To change it:
+# [biome_regions]
+# missing = "vanilla"        # generate vanilla's biomes where the missing mods' regions were; "refuse": don't start
+# adopt_installed = true     # new chunks use the installed mods' regions (the world keeps its saved weights)
 "##;
 
 /// Each typed setting: its section, its name, and the vanilla key it writes.
-pub const TYPED: [(&str, &str, &str); 17] = [
+pub const TYPED: [(&str, &str, &str); 21] = [
     ("server", "motd", "motd"),
     ("server", "port", "server-port"),
     ("server", "bind", "server-ip"),
@@ -121,6 +135,26 @@ pub const TYPED: [(&str, &str, &str); 17] = [
     ("server", "view_distance", "view-distance"),
     ("server", "simulation_distance", "simulation-distance"),
     ("server", "max_view_distance", "horizon-max-view-distance"),
+    (
+        "server",
+        "max_viewed_loaded_chunks",
+        "horizon-max-viewed-loaded-chunks",
+    ),
+    (
+        "server",
+        "max_viewed_ticking_chunks",
+        "horizon-max-viewed-ticking-chunks",
+    ),
+    (
+        "server",
+        "max_viewed_loaded_chunks_per_level",
+        "horizon-max-viewed-loaded-chunks-per-level",
+    ),
+    (
+        "server",
+        "max_viewed_ticking_chunks_per_level",
+        "horizon-max-viewed-ticking-chunks-per-level",
+    ),
     (
         "server",
         "admin_feedback_to_ops",
@@ -175,6 +209,10 @@ pub struct Config {
     /// The game reads this section itself (docs/pvp.md); written only when it isn't the default.
     #[serde(default, skip_serializing_if = "Combat::is_default")]
     pub combat: Combat,
+    /// The game reads this section itself (game/interface/dedicated/biome_regions.rs); written only when it
+    /// isn't the default.
+    #[serde(default, skip_serializing_if = "BiomeRegions::is_default")]
+    pub biome_regions: BiomeRegions,
 }
 
 /// `[combat]`: `legacy = true` resolves the players' melee hits by 1.8.9's rules (no attack cooldown or sweep,
@@ -262,6 +300,13 @@ pub struct Server {
     pub simulation_distance: u32,
     /// Horizon's far ring (docs/hosting.md): saved chunks sent past `view_distance`, up to this; 0 is off.
     pub max_view_distance: u32,
+    /// Viewed levels (docs/hosting.md): the chunks mods may keep loaded for one player in one other
+    /// level (fixed at 2048 for this protocol revision: the game lowers a higher value), the ticking
+    /// ones among them, and the same for all players together in one level.
+    pub max_viewed_loaded_chunks: u32,
+    pub max_viewed_ticking_chunks: u32,
+    pub max_viewed_loaded_chunks_per_level: u32,
+    pub max_viewed_ticking_chunks_per_level: u32,
     /// Whether operators get each other's command feedback (`[name: ...]`, vanilla's broadcastToAdmins);
     /// false leaves it to the console's log, so nobody in game sees an operator's commands.
     pub admin_feedback_to_ops: bool,
@@ -290,6 +335,8 @@ pub struct Engine {
     pub restart_on_crash: bool,
     /// The game without transparent huge pages (docs/hosting.md): less memory, slightly slower ticks.
     pub low_memory: bool,
+    /// The game's parallel tick phases (`HORIZON_PARALLEL_TICK=1`), for hosts that cannot set the variable.
+    pub parallel_tick: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -474,7 +521,8 @@ impl Backups {
         if every == "0" || every.is_empty() {
             return Ok(None);
         }
-        let (number, unit) = every.split_at(every.len() - 1);
+        let unit_at = every.char_indices().last().map_or(0, |(i, _)| i);
+        let (number, unit) = every.split_at(unit_at);
         let n: u64 = number.trim().parse().map_err(|_| {
             format!("backups.every is {every:?}: use a number and m, h or d, like \"6h\"")
         })?;
@@ -488,7 +536,10 @@ impl Backups {
                 ));
             }
         };
-        Ok((n > 0).then(|| std::time::Duration::from_secs(n * secs)))
+        let total = n
+            .checked_mul(secs)
+            .ok_or_else(|| format!("backups.every is {every:?}: too long"))?;
+        Ok((n > 0).then(|| std::time::Duration::from_secs(total)))
     }
 }
 
@@ -519,6 +570,10 @@ impl Default for Server {
             view_distance: 10,
             simulation_distance: 10,
             max_view_distance: 0,
+            max_viewed_loaded_chunks: 2048,
+            max_viewed_ticking_chunks: 441,
+            max_viewed_loaded_chunks_per_level: 2048 * 8,
+            max_viewed_ticking_chunks_per_level: 441 * 8,
             admin_feedback_to_ops: true,
             accept_older_clients: false,
         }
@@ -542,6 +597,7 @@ impl Default for Engine {
             resources: String::new(),
             restart_on_crash: true,
             low_memory: false,
+            parallel_tick: false,
         }
     }
 }
@@ -582,7 +638,7 @@ impl Config {
         Self::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
     }
 
-    fn check(&self) -> Result<(), String> {
+    pub(crate) fn check(&self) -> Result<(), String> {
         let w = &self.world;
         if !GAME_MODES.contains(&w.game_mode.as_str()) {
             return Err(format!(
@@ -598,7 +654,14 @@ impl Config {
                 DIFFICULTIES.join(", ")
             ));
         }
-        if w.name.is_empty() || w.name.contains(['/', '\\']) || w.name == ".." {
+        // Not the server folder itself, nor one of the supervisor's own folders in it.
+        if w.name.is_empty()
+            || w.name.contains(['/', '\\'])
+            || matches!(
+                w.name.as_str(),
+                "." | ".." | "backups" | "logs" | ".horizon"
+            )
+        {
             return Err(format!(
                 "world.name \"{}\" must be a folder name, without slashes",
                 w.name
@@ -656,8 +719,20 @@ impl Config {
             &date_string(now_millis()),
             false,
         );
-        std::fs::write(path, text)?;
+        replace(&path, &text)?;
         Ok(written)
+    }
+
+    /// The level `op` gives a new operator: `op-permission-level` as the game reads it at its next start,
+    /// that is `server.properties` with this configuration's keys written over it (as
+    /// [`Config::write_properties`] does). 4, vanilla's default, when the keys cannot be read.
+    pub fn op_permission_level(&self, dir: &Path) -> i32 {
+        let mut properties = read_properties(&dir.join(PROPERTIES)).unwrap_or_default();
+        for (key, value) in self.vanilla() {
+            properties.put(&key, value);
+        }
+        ServerProperties::new(properties, &mut SystemEntropy::default())
+            .map_or(4, |p| p.op_permission_level)
     }
 
     /// A configuration from a vanilla `server.properties`: typed settings from their keys, and every other
@@ -712,6 +787,7 @@ pub fn render(config: &Config) -> String {
         ("engine", "resources"),
         ("engine", "restart_on_crash"),
         ("engine", "low_memory"),
+        ("engine", "parallel_tick"),
         ("backups", "every"),
         ("backups", "keep"),
         ("updates", "keep"),
@@ -731,7 +807,13 @@ pub fn render(config: &Config) -> String {
         set(&mut doc, section, field, &table[section][field]);
     }
     let mut text = doc.to_string();
-    for section in ["anticheat", "chat_filter", "prune_chunks", "combat"] {
+    for section in [
+        "anticheat",
+        "chat_filter",
+        "prune_chunks",
+        "combat",
+        "biome_regions",
+    ] {
         if let Some(settings) = table.get(section) {
             let mut only = toml::Table::new();
             only.insert(section.into(), settings.clone());
@@ -760,6 +842,7 @@ pub fn sync_back(dir: &Path, written: &[(String, String)]) -> Result<Vec<String>
     if changed.is_empty() {
         return Ok(Vec::new());
     }
+    let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
     let path = dir.join(FILE);
     let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("{e}"))?;
@@ -776,8 +859,42 @@ pub fn sync_back(dir: &Path, written: &[(String, String)]) -> Result<Vec<String>
     }
     let updated = doc.to_string();
     Config::parse(&updated)?;
-    std::fs::write(&path, updated).map_err(|e| e.to_string())?;
+    replace(&path, &updated).map_err(|e| e.to_string())?;
     Ok(changed.iter().map(|(k, _)| (*k).to_owned()).collect())
+}
+
+/// Held while `server.toml` is read, changed and written back, so two of this process's writers
+/// (management clients, the API, the supervisor's [`sync_back`]) don't drop each other's change.
+static WRITING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Writes `text` to `path` through a new file renamed over it: a reader (or a crash) sees the old
+/// file or the new one, never an empty or half-written one. An empty `server.toml` reads as every
+/// default, and the next start would write those into `server.properties`. Another process (the
+/// CLI's `config set`) has its own temporary file.
+pub(crate) fn replace(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .map_or_else(Default::default, |n| n.to_string_lossy());
+    let tmp = path.with_file_name(format!(
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = (|| {
+        let mut file = std::fs::File::create(&tmp)?;
+        std::io::Write::write_all(&mut file, text.as_bytes())?;
+        file.sync_all()?;
+        if let Ok(meta) = std::fs::metadata(path) {
+            std::fs::set_permissions(&tmp, meta.permissions())?;
+        }
+        std::fs::rename(&tmp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// Sets one typed setting in `server.toml` (`whitelist on`), keeping the owner's comments.
@@ -788,6 +905,7 @@ pub fn update(dir: &Path, section: &str, field: &str, value: toml::Value) -> Res
 /// Sets settings in `server.toml`, keeping the owner's comments; nothing is written unless the result is
 /// a valid configuration.
 pub fn update_all(dir: &Path, changes: &[(String, String, toml::Value)]) -> Result<(), String> {
+    let _one = WRITING.lock().unwrap_or_else(|e| e.into_inner());
     let path = dir.join(FILE);
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("{e}"))?;
@@ -796,7 +914,7 @@ pub fn update_all(dir: &Path, changes: &[(String, String, toml::Value)]) -> Resu
     }
     let updated = doc.to_string();
     Config::parse(&updated)?;
-    std::fs::write(&path, updated).map_err(|e| e.to_string())
+    replace(&path, &updated).map_err(|e| e.to_string())
 }
 
 pub fn read_properties(path: &Path) -> Result<Properties, String> {
@@ -889,6 +1007,9 @@ mod tests {
         );
         assert_eq!(interval("0").unwrap(), None);
         assert!(interval("6 hours").is_err());
+        assert!(interval("6é").is_err());
+        assert!(interval("é").is_err());
+        assert!(interval(&format!("{}d", u64::MAX)).is_err());
     }
 
     #[test]
@@ -983,17 +1104,42 @@ mod tests {
     }
 
     #[test]
+    fn biome_regions_refuse_missing_mods_unless_their_section_says() {
+        assert_eq!(
+            Config::default().biome_regions.missing,
+            MissingRegions::Refuse
+        );
+        assert!(!Config::default().biome_regions.adopt_installed);
+        let set = Config::parse(&format!(
+            "{TEMPLATE}\n[biome_regions]\nmissing = \"vanilla\"\nadopt_installed = true\n"
+        ))
+        .unwrap();
+        assert_eq!(set.biome_regions.missing, MissingRegions::Vanilla);
+        assert!(set.biome_regions.adopt_installed);
+        // Kept when the file is written again, and left out while default.
+        assert_eq!(Config::parse(&render(&set)).unwrap(), set);
+        let off = render(&Config::default());
+        assert!(!off.lines().any(|l| l.trim() == "[biome_regions]"), "{off}");
+        assert!(Config::parse("[biome_regions]\nmissing = \"skip\"\n").is_err());
+    }
+
+    #[test]
     fn defaults_are_vanilla() {
         // Every typed default is what vanilla 26.3 writes for a missing key.
         let vanilla =
             ServerProperties::new(Properties::default(), &mut SystemEntropy::default()).unwrap();
         for (key, value) in Config::default().vanilla() {
             // Horizon's own, which vanilla doesn't have: their defaults behave as vanilla does
-            // (the far ring off, operators told of each other's commands, other releases turned away).
+            // (the far ring off, operators told of each other's commands, other releases turned away,
+            // and caps on viewed areas, which only a mod asks for).
             if key.starts_with("horizon-") {
                 let vanilla_like = match key.as_str() {
                     "horizon-admin-feedback-to-ops" => "true",
                     "horizon-accept-older-clients" => "false",
+                    "horizon-max-viewed-loaded-chunks" => "2048",
+                    "horizon-max-viewed-ticking-chunks" => "441",
+                    "horizon-max-viewed-loaded-chunks-per-level" => "16384",
+                    "horizon-max-viewed-ticking-chunks-per-level" => "3528",
                     _ => "0",
                 };
                 assert_eq!(value, vanilla_like, "{key}");
@@ -1075,6 +1221,49 @@ mod tests {
         assert!(Config::parse("[server]\nprot = 1\n").is_err());
         assert!(Config::parse("[properties]\nmotd = \"x\"\n").is_err());
         assert!(Config::parse("[world]\nname = \"../x\"\n").is_err());
+        for folder in [".", "..", "backups", "logs", ".horizon"] {
+            let text = format!("[world]\nname = \"{folder}\"\n");
+            assert!(Config::parse(&text).is_err(), "{folder}");
+        }
+    }
+
+    #[test]
+    fn settings_changed_at_once_are_all_kept() {
+        let dir =
+            std::env::temp_dir().join(format!("horizon-server-at-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(FILE), TEMPLATE).unwrap();
+        // Eight writers at once, as eight management clients each setting another key.
+        std::thread::scope(|scope| {
+            for n in 0..8i64 {
+                let dir = &dir;
+                scope.spawn(move || {
+                    update(
+                        dir,
+                        "properties",
+                        &format!("horizon-test-{n}"),
+                        toml::Value::Integer(n),
+                    )
+                    .unwrap()
+                });
+            }
+        });
+        let c = Config::load(&dir).unwrap();
+        for n in 0..8i64 {
+            assert_eq!(
+                c.properties.get(&format!("horizon-test-{n}")),
+                Some(&toml::Value::Integer(n)),
+                "horizon-test-{n} kept"
+            );
+        }
+        // No temporary file is left beside it.
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, [std::ffi::OsString::from(FILE)]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

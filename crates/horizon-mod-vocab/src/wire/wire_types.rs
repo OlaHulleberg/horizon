@@ -215,6 +215,22 @@ impl Wire for crate::ItemResource {
         Ok(Self::of(&input.take()?))
     }
 }
+impl Wire for crate::StoragePage {
+    layout_fields!("entries" => Vec<(crate::ItemResource, u64)>, "limit" => u64);
+    const LAYOUT_SEED: u64 = crate::wire::layout_seed(stringify!(crate::StoragePage));
+    const MIN: usize = 12;
+    fn put(&self, out: &mut Writer) {
+        let (entries, limit) = self.wire_parts();
+        out.put(&entries.to_vec());
+        out.put(&(limit as u64));
+    }
+    fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
+        // The host's cap bounds what a guest's encoded length may allocate.
+        let entries = input.list_with(crate::MAX_STORAGE_PAGE, Wire::take)?;
+        let limit = input.take()?;
+        Self::from_wire(entries, limit).ok_or(WireError::Invalid("a storage page past its limit"))
+    }
+}
 impl Wire for crate::FluidResource {
     layout_fields!("stack" => crate::FluidStack);
     const LAYOUT_SEED: u64 = crate::wire::layout_seed(stringify!(crate::FluidResource));
@@ -248,14 +264,17 @@ impl Wire for crate::LoadedMods {
     }
 }
 impl Wire for crate::RegistrationContext {
-    const LAYOUT_SEED: u64 = crate::wire::layout_seed("RegistrationContext.instance_dir.v1");
-    const MIN: usize = <Option<crate::InstanceDirectory> as Wire>::MIN;
+    const LAYOUT_SEED: u64 = crate::wire::layout_seed("RegistrationContext.runtime.v2");
+    const MIN: usize = <Option<crate::InstanceDirectory> as Wire>::MIN
+        + <Option<crate::RuntimeEnvironment> as Wire>::MIN;
     fn put(&self, out: &mut Writer) {
         out.put(&self.instance_dir);
+        out.put(&self.runtime);
     }
     fn take(input: &mut Reader<'_>) -> Result<Self, WireError> {
         let mut context = Self::new();
         context.instance_dir = input.take()?;
+        context.runtime = input.take()?;
         Ok(context)
     }
 }
@@ -263,6 +282,27 @@ impl Wire for crate::RegistrationContext {
 #[cfg(test)]
 mod resource_wire_tests {
     use super::*;
+    #[test]
+    fn registration_runtime_crosses_wire_without_guest_backend() {
+        for dist in [crate::Dist::Client, crate::Dist::DedicatedServer] {
+            for enabled in [false, true] {
+                let mut native = crate::RegistrationContext::new();
+                native.runtime = Some(crate::RuntimeEnvironment::new(
+                    dist,
+                    "26.3".into(),
+                    "nightly-test".into(),
+                    enabled,
+                ));
+                let mut out = Writer::new();
+                out.put(&native);
+                let guest: crate::RegistrationContext = Reader::new(out.bytes()).take().unwrap();
+                assert_eq!(guest.dist(), dist);
+                assert_eq!(guest.game_version(), "26.3");
+                assert_eq!(guest.horizon_version(), "nightly-test");
+                assert_eq!(guest.game_tests_enabled(), enabled);
+            }
+        }
+    }
 
     #[test]
     fn wire_tokens_and_package_inventory() {
@@ -295,8 +335,19 @@ mod resource_wire_tests {
             crate::PackageKind::Content,
             crate::Side::Both,
             vec!["test".into()],
-            vec!["other".into()],
-        );
+            vec![crate::PackageDependency::new(
+                "other".into(),
+                "^1".into(),
+                true,
+            )],
+        )
+        .with_details(crate::PackageDetails {
+            name: "Test".into(),
+            homepage: Some("https://example.org".into()),
+            runtime: Some(crate::PackageRuntime::Wasm),
+            properties: [("tier".into(), crate::PropertyValue::Integer(3))].into(),
+            ..Default::default()
+        });
         let mut out = Writer::new();
         out.put(&package);
         let decoded: crate::PackageInfo = Reader::new(out.bytes()).take().unwrap();
@@ -305,6 +356,16 @@ mod resource_wire_tests {
         assert_eq!(decoded.kind(), crate::PackageKind::Content);
         assert_eq!(decoded.side(), crate::Side::Both);
         assert!(decoded.depends_on("other"));
+        assert_eq!(decoded.dependencies()[0].version(), "^1");
+        assert!(decoded.dependencies()[0].optional());
+        assert_eq!(decoded.name(), "Test");
+        assert_eq!(decoded.homepage(), Some("https://example.org"));
+        assert_eq!(decoded.runtime(), Some(crate::PackageRuntime::Wasm));
+        assert_eq!(
+            decoded.property("tier"),
+            Some(&crate::PropertyValue::Integer(3))
+        );
+        assert_eq!(decoded.property("missing"), None);
         for end in 0..out.bytes().len() {
             assert!(
                 Reader::new(&out.bytes()[..end])
@@ -624,7 +685,7 @@ impl Wire for crate::ModBlockEntity {
 }
 
 impl Wire for crate::ItemPlace {
-    layout_fields!("tag" => u32, "0:PlayerSlot.player" => u128, "0:PlayerSlot.slot" => i32, "1:PlayerHand.player" => u128, "1:PlayerHand.hand" => crate::Hand, "2:PlayerCursor.menu" => crate::MenuRef, "3:BlockEntity.level" => crate::LevelRef, "3:BlockEntity.pos" => [i32;3], "3:BlockEntity.side" => Option<crate::Direction>, "3:BlockEntity.slot" => usize, "4:ItemEntity.id" => u32, "5:EntitySlot.entity" => u32, "5:EntitySlot.slot" => usize, "6:Nested.parent" => Box<crate::ItemPlace>, "6:Nested.slot" => usize, "7:MenuSlot.menu" => crate::MenuRef, "7:MenuSlot.slot" => usize, "8:Mod.provider" => String, "8:Mod.key" => u64, "9:Equipment.entity" => u32, "9:Equipment.slot" => crate::EquipmentSlot);
+    layout_fields!("tag" => u32, "0:PlayerSlot.player" => u128, "0:PlayerSlot.slot" => i32, "1:PlayerHand.player" => u128, "1:PlayerHand.hand" => crate::Hand, "2:PlayerCursor.menu" => crate::MenuRef, "3:BlockEntity.level" => crate::LevelRef, "3:BlockEntity.pos" => [i32;3], "3:BlockEntity.side" => Option<crate::Direction>, "3:BlockEntity.slot" => usize, "4:ItemEntity.id" => u32, "5:EntitySlot.entity" => u32, "5:EntitySlot.slot" => usize, "6:Nested.parent" => Box<crate::ItemPlace>, "6:Nested.slot" => usize, "7:MenuSlot.menu" => crate::MenuRef, "7:MenuSlot.slot" => usize, "8:Mod.provider" => String, "8:Mod.key" => u64, "9:Equipment.entity" => u32, "9:Equipment.slot" => crate::EquipmentSlot, "10:Scratch.0" => u64, "11:Strict.0" => Box<crate::ItemPlace>, "12:OneByOne.0" => Box<crate::ItemPlace>, "13:InfiniteMaterials.player" => u128, "13:InfiniteMaterials.inner" => Box<crate::ItemPlace>);
     const LAYOUT_SEED: u64 = crate::wire::layout_seed(stringify!(crate::ItemPlace));
     const MIN: usize = 4;
     fn put(&self, out: &mut Writer) {
@@ -686,6 +747,23 @@ impl Wire for crate::ItemPlace {
                     out.put_str(provider);
                     out.put(key)
                 }
+                Scratch(id) => {
+                    out.put(&10u32);
+                    out.put(id)
+                }
+                Strict(inner) => {
+                    out.put(&11u32);
+                    out.put(inner)
+                }
+                OneByOne(inner) => {
+                    out.put(&12u32);
+                    out.put(inner)
+                }
+                InfiniteMaterials { player, inner } => {
+                    out.put(&13u32);
+                    out.put(player);
+                    out.put(inner)
+                }
             }
         });
     }
@@ -730,6 +808,13 @@ impl Wire for crate::ItemPlace {
                 8 => Mod {
                     provider: crate::wire::intern(&input.take::<String>()?)?,
                     key: input.take()?,
+                },
+                10 => Scratch(input.take()?),
+                11 => Strict(input.take()?),
+                12 => OneByOne(input.take()?),
+                13 => InfiniteMaterials {
+                    player: input.take()?,
+                    inner: input.take()?,
                 },
                 n => return Err(WireError::Tag(n)),
             })

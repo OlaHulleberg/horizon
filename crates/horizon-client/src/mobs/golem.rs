@@ -545,12 +545,16 @@ pub fn iron_anim(m: &Mob, s: &State, p: &mut Poses) {
 }
 
 pub fn register_snow(m: &mut Mob) {
+    // `new WaterAvoidingRandomStrollGoal(this, 1.0, 1.0000001E-5F)`: the probability of a plain
+    // stroll is the constructor's third argument, not the default 0.001.
+    let mut stroll = Stroll::avoiding_water(1.0);
+    stroll.water_avoiding = Some(1.000_000_1e-5);
     let g = &mut m.ai.goals;
     g.add(
         1,
         super::witch::RangedAttack::new(1.25, 20, 20, 10.0, snowball_attack),
     );
-    g.add(2, Stroll::avoiding_water(1.0));
+    g.add(2, stroll);
     g.add(3, LookAtPlayer::new(6.0));
     g.add(4, RandomLookAround::default());
     m.ai.targets.add(
@@ -572,12 +576,7 @@ fn snowball_attack(m: &mut Mob, who: Who, _power: f32, cx: &mut Cx) {
     let yo = (xd * xd + zd * zd).sqrt() * f64::from(0.2_f32);
     let mut p = Projectile::new(ProjectileKind::Snowball, start, Some(Who::Mob(m.id)));
     // SnowGolem.rangedAttackUncertainty: 12 on every difficulty.
-    p.shoot(
-        &mut crate::random_source::entity(),
-        [xd, yd + yo - start.y, zd],
-        1.6,
-        12.0,
-    );
+    p.shoot_own([xd, yd + yo - start.y, zd], 1.6, 12.0);
     cx.events.push(MobEvent::Projectile(p));
     let pitch = 0.4 / (m.random.next_float() * 0.4 + 0.8);
     cx.events.push(MobEvent::Sound(
@@ -659,7 +658,7 @@ mod tests {
     }
 
     fn villager_at(id: u32, at: Vec3) -> crate::mobs::Seen {
-        mob(id, Species::Villager, at).seen(None)
+        mob(id, Species::Villager, at).seen(None, &crate::items::Items::empty())
     }
 
     fn pick(w: &MobWorld) -> Option<u32> {
@@ -954,7 +953,7 @@ mod tests {
             let mut kind = (*m.kind).clone();
             kind.category = "monster".into();
             m.kind = Arc::new(kind);
-            golem_prey(&m.seen(None))
+            golem_prey(&m.seen(None, &crate::items::Items::empty()))
         };
         assert!(prey(Species::Zombie));
         assert!(!prey(Species::Creeper));
@@ -969,29 +968,35 @@ mod tests {
     fn a_creeper_that_hurts_an_iron_golem_is_never_fought_back() {
         let creeper = mob(2, Species::Creeper, Vec3::new(1.5, 64.0, 0.5));
         let zombie = mob(3, Species::Zombie, Vec3::new(1.5, 64.0, 0.5));
-        with_test_world(&[creeper.seen(None), zombie.seen(None)], |w, _| {
-            let mut golem = mob(1, Species::IronGolem, Vec3::new(0.5, 64.0, 0.5));
-            let mut goal = HurtByTarget::new();
-            let mut events = Vec::new();
-            let mut test_level = crate::health::TestLevel::new(0);
-            let level = &mut test_level.level();
-            let mut cx = Cx {
-                w,
-                level,
-                events: &mut events,
-            };
+        with_test_world(
+            &[
+                creeper.seen(None, &crate::items::Items::empty()),
+                zombie.seen(None, &crate::items::Items::empty()),
+            ],
+            |w, _| {
+                let mut golem = mob(1, Species::IronGolem, Vec3::new(0.5, 64.0, 0.5));
+                let mut goal = HurtByTarget::new();
+                let mut events = Vec::new();
+                let mut test_level = crate::health::TestLevel::new(0);
+                let level = &mut test_level.level();
+                let mut cx = Cx {
+                    w,
+                    level,
+                    events: &mut events,
+                };
 
-            golem.ai.last_hurt_by = Some(Who::Mob(2));
-            golem.ai.last_hurt_by_time = 1;
-            assert!(!goal.can_use(&mut golem, &mut cx));
-            assert_eq!(golem.ai.target, None, "a creeper is refused");
+                golem.ai.last_hurt_by = Some(Who::Mob(2));
+                golem.ai.last_hurt_by_time = 1;
+                assert!(!goal.can_use(&mut golem, &mut cx));
+                assert_eq!(golem.ai.target, None, "a creeper is refused");
 
-            golem.ai.last_hurt_by = Some(Who::Mob(3));
-            golem.ai.last_hurt_by_time = 2;
-            assert!(goal.can_use(&mut golem, &mut cx));
-            goal.start(&mut golem, &mut cx);
-            assert_eq!(golem.ai.target, Some(Who::Mob(3)));
-        });
+                golem.ai.last_hurt_by = Some(Who::Mob(3));
+                golem.ai.last_hurt_by_time = 2;
+                assert!(goal.can_use(&mut golem, &mut cx));
+                goal.start(&mut golem, &mut cx);
+                assert_eq!(golem.ai.target, Some(Who::Mob(3)));
+            },
+        );
     }
 
     /// A village golem (not built by a player) still goes after the player
@@ -1068,7 +1073,11 @@ mod created_golem_tests {
                 Vec3::new(0.5, 64.0, 2.5),
                 0.0,
             );
-            out = Some((golem(1, true), golem(2, false), zombie.seen(None)));
+            out = Some((
+                golem(1, true),
+                golem(2, false),
+                zombie.seen(None, &crate::items::Items::empty()),
+            ));
         });
         out
     }
@@ -1178,5 +1187,36 @@ mod crack_sound_tests {
             "40 to 30 stays at the same crack"
         );
         assert_eq!(cracks(level, &mut m, 10.0), 1, "30 to 20 crosses 0.25");
+    }
+}
+
+#[cfg(test)]
+mod snow_golem_stroll_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// A snow golem of a made-up type: only its goals matter here.
+    fn snow_golem() -> Mob {
+        let mut kind = crate::mobs::sensor_scan_tests::kind();
+        Arc::make_mut(&mut kind).id = "minecraft:snow_golem".into();
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    /// `SnowGolem.registerGoals` adds `new WaterAvoidingRandomStrollGoal(this, 1.0, 1.0000001E-5F)`
+    /// (the bytecode's float constant): the chance of a plain stroll instead of a land one is
+    /// that, not the two-argument constructor's default 0.001.
+    #[test]
+    fn a_snow_golem_strolls_with_the_rare_probability() {
+        let mut m = snow_golem();
+        // The made-up type brings goals of its own.
+        m.ai.goals.clear();
+        register_snow(&mut m);
+        let goals = format!("{:?}", m.ai.goals);
+        let rare = format!("water_avoiding: {:?}", Some(1.000_000_1e-5_f32));
+        let default = format!("water_avoiding: {:?}", Some(0.001_f32));
+        assert!(goals.contains(&rare), "{goals}");
+        assert!(!goals.contains(&default), "{goals}");
+        // One stroll goal, not two.
+        assert_eq!(goals.matches("water_avoiding:").count(), 1, "{goals}");
     }
 }

@@ -1,6 +1,8 @@
 //! Item stack components beyond count and damage: enchantments, stored
 //! (book) enchantments, `repair_cost`, `custom_name`, `potion_contents` and
 //! `trim`, with their NBT form in vanilla's `components` compound.
+#[path = "item_data/ingredient_components.rs"]
+pub mod ingredient_components;
 use crate::items::{ItemInfo, ItemStack};
 use horizon_core::nbt::{JavaString, Tag};
 
@@ -41,8 +43,8 @@ pub fn modifier_rows(tag: &Tag) -> Vec<ModifierRow> {
         .iter()
         .filter_map(|e| {
             Some(ModifierRow {
-                attribute: text(e.get("type"))?,
-                id: text(e.get("id"))?,
+                attribute: horizon_world::datafix::dynamic::namespaced(&text(e.get("type"))?),
+                id: horizon_world::datafix::dynamic::namespaced(&text(e.get("id"))?),
                 amount: float(e.get("amount"))?,
                 operation: text(e.get("operation"))?,
                 slot: text(e.get("slot")).unwrap_or_else(|| "any".to_owned()),
@@ -301,8 +303,15 @@ impl StackData {
             "minecraft:trim" => {
                 self.trim = tag.as_ref().and_then(trim::from_nbt);
             }
-            // The stack's damage is outside its data; a name keeps its own reading.
-            "minecraft:damage" | "minecraft:custom_name" => self.set_other(id, tag),
+            // The scalar lives on ItemStack; retain explicit zero presence here
+            // so a non-durable prototype can carry its own durability.
+            "minecraft:damage" => {
+                self.explicit_zero_damage = tag.as_ref().is_some_and(|value| {
+                    horizon_world::datafix::dynamic::as_int(Some(value), 0) == 0
+                });
+                self.set_other(id, tag);
+            }
+            "minecraft:custom_name" => self.set_other(id, tag),
             _ if MODELLED.contains(&id) => {
                 let mut saved = match components_tag(0, Some(self)) {
                     Some(Tag::Compound(c)) => c,
@@ -515,11 +524,11 @@ impl ItemStack {
         info: Option<&'a ItemInfo>,
     ) -> Option<&'a crate::items::ItemConsumable> {
         if let Some(data) = self.data() {
-            if let Some(consumable) = &data.consumable {
-                return Some(&consumable.value);
-            }
             if data.other("!minecraft:consumable").is_some() {
                 return None;
+            }
+            if let Some(consumable) = &data.consumable {
+                return Some(&consumable.value);
             }
         }
         info.and_then(|item| item.consumable.as_ref())
@@ -1074,10 +1083,16 @@ fn template_from(tag: &Tag) -> Option<ItemStack> {
         Tag::String(id) => Some(ItemStack::new(&id.to_string_lossy(), 1)),
         _ => {
             let id = tag.get("id").and_then(string)?;
+            // `ItemStackTemplate.CODEC`: `count` is `ExtraCodecs.intRange(1, 99)`, so a
+            // template outside it does not decode.
+            let count = tag.get("count").and_then(int).unwrap_or(1);
+            if !(1..=99).contains(&count) {
+                return None;
+            }
             let (damage, extra) = decode_components(tag.get("components"));
             Some(ItemStack {
                 item: Arc::from(id.as_str()),
-                count: tag.get("count").and_then(int).unwrap_or(1).max(1) as u32,
+                count: count as u32,
                 damage,
                 extra,
             })
@@ -1260,17 +1275,27 @@ fn encode_stack_components(stack: &ItemStack, include_damage: bool) -> Option<Ta
 /// Context-free callers and the live `components_tag` view stay unchanged.
 pub fn encode_components_with_items(stack: &ItemStack, items: &crate::items::Items) -> Option<Tag> {
     let mut components = encode_components(stack)?;
+    let Some(prototype) = items.get(&stack.item) else {
+        return Some(components);
+    };
     // PatchedDataComponentMap.set removes values equal to the prototype.
-    if let Some(prototype) = items.get(&stack.item)
-        && prototype
-            .components
-            .iter()
-            .any(|id| id == "minecraft:max_stack_size")
+    let same_stack_size = prototype
+        .components
+        .iter()
+        .any(|id| id == "minecraft:max_stack_size")
         && matches!(components.get("minecraft:max_stack_size"), Some(Tag::Int(size))
-            if *size > 0 && *size as u32 == prototype.max_stack)
-        && let Tag::Compound(entries) = &mut components
-    {
-        entries.remove(&JavaString::from("minecraft:max_stack_size"));
+            if *size > 0 && *size as u32 == prototype.max_stack);
+    // A durable prototype carries DAMAGE 0 (`Item.Properties.durability`), so the
+    // explicit zero `components_tag` keeps for a stack-declared MAX_DAMAGE equals it.
+    let same_damage =
+        prototype.max_damage > 0 && matches!(components.get("minecraft:damage"), Some(Tag::Int(0)));
+    if let Tag::Compound(entries) = &mut components {
+        if same_stack_size {
+            entries.remove(&JavaString::from("minecraft:max_stack_size"));
+        }
+        if same_damage {
+            entries.remove(&JavaString::from("minecraft:damage"));
+        }
         if entries.is_empty() {
             return None;
         }
@@ -3532,5 +3557,24 @@ mod written_book_tests {
             ..book
         };
         assert_eq!(written_book_tag(&unresolved).get("resolved"), None);
+    }
+
+    /// `ItemStackTemplate.CODEC` reads `count` with `intRange(1, 99)`: outside it
+    /// the template is rejected, absent it is 1.
+    #[test]
+    fn a_template_count_outside_one_to_ninety_nine_is_rejected() {
+        let template = |count: Option<i32>| {
+            let mut fields = vec![("id", Tag::String("minecraft:stone".into()))];
+            if let Some(count) = count {
+                fields.push(("count", Tag::Int(count)));
+            }
+            template_from(&Tag::compound(fields)).map(|s| s.count)
+        };
+        assert_eq!(template(None), Some(1));
+        assert_eq!(template(Some(1)), Some(1));
+        assert_eq!(template(Some(99)), Some(99));
+        assert_eq!(template(Some(0)), None);
+        assert_eq!(template(Some(100)), None);
+        assert_eq!(template(Some(-1)), None);
     }
 }

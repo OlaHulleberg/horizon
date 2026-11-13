@@ -28,6 +28,66 @@ use std::{
 
 use horizon_core::nbt::{Compound, JavaString, Tag};
 
+// A borrowed comparison view preserves Java's UTF-16 ordering without building keys.
+trait AttachmentKeyView {
+    fn namespace(&self) -> Utf16Units<'_>;
+    fn name(&self) -> Utf16Units<'_>;
+}
+enum Utf16Units<'a> {
+    Owned(std::iter::Copied<std::slice::Iter<'a, u16>>),
+    Borrowed(std::str::EncodeUtf16<'a>),
+}
+impl Utf16Units<'_> {
+    fn cmp(self, other: Self) -> std::cmp::Ordering {
+        // Select the concrete iterators once, not for every UTF-16 unit.
+        match (self, other) {
+            (Self::Owned(left), Self::Owned(right)) => left.cmp(right),
+            (Self::Owned(left), Self::Borrowed(right)) => left.cmp(right),
+            (Self::Borrowed(left), Self::Owned(right)) => left.cmp(right),
+            (Self::Borrowed(left), Self::Borrowed(right)) => left.cmp(right),
+        }
+    }
+}
+impl AttachmentKeyView for (JavaString, JavaString) {
+    fn namespace(&self) -> Utf16Units<'_> {
+        Utf16Units::Owned(self.0.0.iter().copied())
+    }
+    fn name(&self) -> Utf16Units<'_> {
+        Utf16Units::Owned(self.1.0.iter().copied())
+    }
+}
+impl AttachmentKeyView for (&str, &str) {
+    fn namespace(&self) -> Utf16Units<'_> {
+        Utf16Units::Borrowed(self.0.encode_utf16())
+    }
+    fn name(&self) -> Utf16Units<'_> {
+        Utf16Units::Borrowed(self.1.encode_utf16())
+    }
+}
+impl PartialEq for dyn AttachmentKeyView + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+impl Eq for dyn AttachmentKeyView + '_ {}
+impl PartialOrd for dyn AttachmentKeyView + '_ {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for dyn AttachmentKeyView + '_ {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.namespace()
+            .cmp(other.namespace())
+            .then_with(|| self.name().cmp(other.name()))
+    }
+}
+impl<'a> std::borrow::Borrow<dyn AttachmentKeyView + 'a> for (JavaString, JavaString) {
+    fn borrow(&self) -> &(dyn AttachmentKeyView + 'a) {
+        self
+    }
+}
+
 // no wire: owned by the lower runtime crate, which cannot depend on mod_api's derive;
 // mod_api supplies the explicit tagged Wire implementation, including bounded static text.
 /// An attachment operation could not be completed.
@@ -882,17 +942,31 @@ impl Attachments {
         name: &str,
     ) -> Result<Option<&Arc<AttachmentEntry>>, AttachmentError> {
         self.check_namespace(namespace)?;
-        Ok(self.entries.get(&(namespace.into(), name.into())))
+        Ok(self
+            .entries
+            .get(&(namespace, name) as &dyn AttachmentKeyView))
     }
     /// Whether a value is stored, saved or set, without decoding or inserting it.
     fn holds(&self, namespace: &str, name: &str) -> bool {
-        self.entries.contains_key(&(namespace.into(), name.into()))
+        self.entries
+            .contains_key(&(namespace, name) as &dyn AttachmentKeyView)
     }
     /// Refuse a namespace whose saved form isn't a compound: nothing under it can be read or
     /// written without losing it.
     fn check_namespace(&self, namespace: &str) -> Result<(), AttachmentError> {
-        match self.raw.as_ref().and_then(|raw| raw.get(&namespace.into())) {
-            Some(tag) if !matches!(tag, Tag::Compound(_)) => Err(AttachmentError::InvalidNamespace),
+        thread_local! {
+            static NAMESPACE: std::cell::RefCell<JavaString> = Default::default();
+        }
+        let invalid = self.raw.as_ref().is_some_and(|raw| {
+            NAMESPACE.with_borrow_mut(|key| {
+                key.0.clear();
+                key.0.extend(namespace.encode_utf16());
+                raw.get(key)
+                    .is_some_and(|tag| !matches!(tag, Tag::Compound(_)))
+            })
+        });
+        match invalid {
+            true => Err(AttachmentError::InvalidNamespace),
             _ => Ok(()),
         }
     }
@@ -919,7 +993,18 @@ impl Attachments {
     }
     fn store(&mut self, namespace: &str, name: &str, value: Decoded, write: AttachmentWrite) {
         let sync = value.policy.sync;
-        let key: (JavaString, JavaString) = (namespace.into(), name.into());
+        // UTF-8 byte length is an upper bound on UTF-16 units. Reserve once
+        // instead of repeatedly growing the short key buffers during encoding.
+        let [owned_namespace, owned_name] = [namespace, name].map(|text| {
+            let mut units = Vec::with_capacity(text.len());
+            if text.is_ascii() {
+                units.extend(text.bytes().map(u16::from));
+            } else {
+                units.extend(text.encode_utf16());
+            }
+            JavaString(units)
+        });
+        let key = (owned_namespace, owned_name);
         self.write_entry(
             &key,
             Some(Arc::new(AttachmentEntry {
@@ -1780,5 +1865,43 @@ mod tests {
         host.0.take_sync_changes();
         SYNCED.sync_data(&mut host, Holder::Level).unwrap();
         assert_eq!(host.0.take_sync_changes(), [change("synced", Some(4))]);
+    }
+}
+
+#[cfg(test)]
+mod borrowed_key_tests {
+    use super::*;
+    #[test]
+    fn borrowed_order_matches_java_units() {
+        let samples = [
+            "", "a", "aa", "z", "é", "\u{d7ff}", "\u{e000}", "\u{ffff}", "😀", "𐀀", "a😀",
+        ];
+        for a in samples {
+            for b in samples {
+                for c in samples {
+                    for d in samples {
+                        let owned: (JavaString, JavaString) = (a.into(), b.into());
+                        let other: (JavaString, JavaString) = (c.into(), d.into());
+                        let borrowed = (a, b);
+                        let right = (c, d);
+                        assert_eq!(
+                            (&borrowed as &dyn AttachmentKeyView).cmp(&right),
+                            owned.cmp(&other)
+                        );
+                        assert_eq!(
+                            (&owned as &dyn AttachmentKeyView).cmp(&right),
+                            owned.cmp(&other)
+                        );
+                    }
+                }
+            }
+        }
+        // Saved Java names can contain unpaired surrogates as well.
+        let malformed = (JavaString(vec![0xd800]), JavaString(vec![0xdc00]));
+        let valid = ("𐀀", "");
+        assert_eq!(
+            (&malformed as &dyn AttachmentKeyView).cmp(&valid),
+            malformed.cmp(&(valid.0.into(), valid.1.into()))
+        );
     }
 }

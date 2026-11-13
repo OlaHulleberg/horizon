@@ -224,7 +224,7 @@ fn snapshot(out: &mut impl Write, player: &PlayerMotion) -> Result<()> {
                 0f64.to_bits(),
                 if *bubble { 0.2f64 } else { 1.0 }.to_bits()
             )),
-            MotionEvent::Drown => Some("broadcast 67".into()),
+            MotionEvent::Drown(_) => Some("broadcast 67".into()),
             // The oracle marks every getAdvancements call (ENTER_BLOCK.trigger) so.
             MotionEvent::EnterBlock { .. } => Some("hurt-criterion".into()),
             MotionEvent::Waypoint { receiver, enabled } => Some(format!(
@@ -354,7 +354,7 @@ pub fn main() -> Result<()> {
                         jump: mask & 16 != 0,
                         shift: mask & 32 != 0,
                         sprint: mask & 64 != 0,
-                        analog: None,
+                        ..Default::default()
                     })?;
                 }
                 "movement_statistics" => world.check_movement_statistics(vector(&op["value"]))?,

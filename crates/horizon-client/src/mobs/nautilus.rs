@@ -691,7 +691,7 @@ pub fn from_nbt(m: &mut Mob, tag: &horizon_core::nbt::Tag) {
     use horizon_core::nbt::Tag;
     m.extra.owner = crate::save::uuid_from_tag(tag.get("Owner"));
     m.extra.tame = m.extra.owner.is_some();
-    m.extra.sitting = crate::entity_nbt::flag(tag, "Sitting");
+    crate::mobs::tame::restore_sitting(m, crate::entity_nbt::flag(tag, "Sitting"));
     if let Some(Tag::String(v)) = tag.get("variant") {
         let v = v.to_string().unwrap_or_default();
         m.extra.variant = u8::from(v.trim_start_matches("minecraft:") == "warm");
@@ -898,7 +898,8 @@ mod hostile_target_tests {
             |_, _| {},
             |_, types| {
                 let kind = Arc::new(types.types["minecraft:pufferfish"].clone());
-                fish = Some(Mob::new(2, kind, fish_at, 0.0).seen(None));
+                fish =
+                    Some(Mob::new(2, kind, fish_at, 0.0).seen(None, &crate::items::Items::empty()));
             },
         );
         let fish = fish?;

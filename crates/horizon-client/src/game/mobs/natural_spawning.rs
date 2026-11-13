@@ -21,7 +21,7 @@ use horizon_client::{
 use horizon_core::{
     geometry::{Aabb, Vec3},
     position::BlockPos,
-    random::{LegacyRandom, RandomSource, WorldgenRandom, XoroshiroRandom},
+    random::{LegacyRandom, LevelRandom, RandomSource, WorldgenRandom, XoroshiroRandom},
 };
 use horizon_world::dimension_type::DimensionFacts;
 use mod_api::{SpawnCheck, SpawnFlags, SpawnLimits};
@@ -451,7 +451,8 @@ impl GameLevel<'_, '_> {
     }
     /// The handle of this pass's level, which the spawn checks are told.
     fn level_ref(&self) -> mod_api::LevelRef {
-        mod_api::LevelRef::new(self.game.lend_epoch(), self.game.dim.key())
+        self.game
+            .level_ref(self.game.lend_epoch(), self.game.dim.key())
     }
     /// The mob the position check of this spawn created, when one did and it
     /// is the one asked for (`entity` at `position`, facing `yaw`): the spawn
@@ -1239,7 +1240,10 @@ impl<'a> Game<'a> {
             *self.world.inhabited.entry(key).or_insert(0) += 1;
         }
         laps.lap("sn_inhabited");
-        let mut random = std::mem::replace(&mut self.world.random, LegacyRandom::new(0));
+        let mut random = std::mem::replace(
+            &mut self.world.random,
+            horizon_core::random::LevelRandom::for_level(LegacyRandom::new(0)),
+        );
         let mut pending = Vec::new();
         let last_state;
         let extras = {
@@ -1287,13 +1291,14 @@ impl<'a> Game<'a> {
                     if !level.can_spawn_in_chunk(chunk.0, chunk.1) {
                         continue;
                     }
-                    let mut spawn = |l: &GameLevel, r: &SpawnRequest, rng: &mut LegacyRandom| {
+                    let mut spawn = |l: &GameLevel, r: &SpawnRequest, rng: &mut LevelRandom| {
                         let spawned = l.finalize_spawned(r, &mut pending, rng);
                         if let Some(s) = &spawned {
                             l.pending.borrow_mut().push(s.bounds);
                         }
                         spawned
                     };
+                    horizon_threads::work::set_chunk(chunk.0, chunk.1);
                     spawn_selection::spawn_for_chunk(
                         &level,
                         &mut random,
@@ -1309,6 +1314,7 @@ impl<'a> Game<'a> {
             let rides = std::mem::take(&mut *level.rides.borrow_mut());
             (created, rides)
         };
+        horizon_threads::work::clear_work();
         spawn_selection::attempt_counters(true);
         laps.lap("sn_attempts");
         self.world.random = random;
@@ -1333,8 +1339,9 @@ impl<'a> Game<'a> {
         let Some(terrain) = self.end.locator() else {
             return;
         };
-        // `FlatLevelSource.spawnOriginalMobs` is empty: a superflat world places no packs.
-        if terrain.is_flat() {
+        // `FlatLevelSource.spawnOriginalMobs` is empty: a superflat world places no packs, and
+        // neither does a mod's chunk generator, whose own `spawnOriginalMobs` the API has none of.
+        if !terrain.noise_ground() {
             return;
         }
         // `NoiseGeneratorSettings.disableMobGeneration`: the shipped End preset
@@ -1559,7 +1566,7 @@ mod tests {
             // A contained chunk must actually reach the spawning pass, so an
             // empty category list cannot satisfy the rejected-chunk assertion.
             game.border.set_size(64.0);
-            game.world.random = LegacyRandom::new(12345);
+            game.world.random.set_seed(12345);
             game.spawn_natural();
             assert_ne!(
                 game.world.random.next_long(),
@@ -1567,7 +1574,7 @@ mod tests {
             );
             game.world.inhabited.clear();
             game.border.set_size(2.0);
-            game.world.random = LegacyRandom::new(12345);
+            game.world.random.set_seed(12345);
             game.spawn_natural();
             // No shuffle draw for one candidate, and no attempt draws for a
             // rejected chunk. Inhabited time still advances before the gate.
@@ -1852,7 +1859,7 @@ mod tests {
                 };
                 match answer {
                     None => go(),
-                    Some(a) => mod_api::testing::with_mods(
+                    Some(a) => mod_platform::testing::with_mods(
                         vec![mod_api::ModEntry::new(
                             "spawn-checks",
                             Box::new(ChecksMod(a)),
@@ -2003,7 +2010,7 @@ mod tests {
         let out = if mods.is_empty() {
             go()
         } else {
-            mod_api::testing::with_mods(mods.into(), go)
+            mod_platform::testing::with_mods(mods.into(), go)
         };
         let heard = log.lock().unwrap().clone();
         (out, heard)
@@ -2144,7 +2151,7 @@ mod tests {
             let tick = |game: &mut Game<'_>, extra: Option<(&str, Tag)>| {
                 let (mobs, entities, tracked) =
                     (game.mobs.len(), game.next_entity, game.persist.uuids.len());
-                game.world.random = LegacyRandom::new(7);
+                game.world.random.set_seed(7);
                 let mut entity = Compound::default();
                 entity.insert("id".into(), Tag::String(SULFUR_CUBE.into()));
                 if let Some((name, value)) = extra {
@@ -2234,7 +2241,7 @@ mod tests {
             let tick = |game: &mut Game<'_>| {
                 let (mobs, entities, tracked) =
                     (game.mobs.len(), game.next_entity, game.persist.uuids.len());
-                game.world.random = LegacyRandom::new(9);
+                game.world.random.set_seed(9);
                 let mut entity = Compound::default();
                 entity.insert("id".into(), Tag::String(SULFUR_CUBE.into()));
                 let mut spawner = TrialSpawner {
@@ -2323,14 +2330,14 @@ mod tests {
                 .cloned()
                 .unwrap();
             let run = |game: &mut Game<'_>, answer: Option<FinalizeAnswer>| {
-                game.world.random = LegacyRandom::new(5);
+                game.world.random.set_seed(5);
                 let mut mob = Mob::new(1, kind.clone(), Vec3::new(8.5, 64.0, 8.5), 0.0);
                 let go = |game: &mut Game<'_>, mob: &mut Mob| {
                     game.finalize_with(mob, Reason::Natural, None)
                 };
                 let outcome = match answer {
                     None => go(game, &mut mob),
-                    Some(a) => mod_api::testing::with_mods(
+                    Some(a) => mod_platform::testing::with_mods(
                         vec![mod_api::ModEntry::new("finalize", Box::new(FinalizeMod(a)))].into(),
                         || go(game, &mut mob),
                     ),
@@ -2385,7 +2392,7 @@ mod tests {
             "count-finalize",
             Box::new(CountFinalize(heard.clone())),
         )];
-        mod_api::testing::with_mods(mods.into(), || {
+        mod_platform::testing::with_mods(mods.into(), || {
             with_game(|game| {
                 let at = [8.5, 64.0, 8.5];
                 let count = || heard.load(std::sync::atomic::Ordering::Relaxed);
@@ -2437,7 +2444,7 @@ mod tests {
             "record-finalize",
             Box::new(RecordFinalize(heard.clone())),
         )];
-        mod_api::testing::with_mods(mods.into(), || {
+        mod_platform::testing::with_mods(mods.into(), || {
             with_game(|game| {
                 game.ui.difficulty = 2;
                 let at = [8.5, 64.0, 8.5];
@@ -2492,7 +2499,7 @@ mod tests {
             "despawns",
             Box::new(Despawns(answer.clone(), asked.clone())),
         )];
-        mod_api::testing::with_mods(mods.into(), || {
+        mod_platform::testing::with_mods(mods.into(), || {
             with_game(|game| {
                 let id = game
                     .spawn_mob(
@@ -2654,7 +2661,7 @@ mod tests {
             return;
         }
         let entries = vec![mod_api::ModEntry::new("clusters", Box::new(ClusterMod))];
-        mod_api::__private::install(entries.into());
+        mod_platform::__private::install(entries.into());
         crate::game::api_values::install_parts(&[mod_api::ModEntry::new(
             "clusters",
             Box::new(ClusterMod),

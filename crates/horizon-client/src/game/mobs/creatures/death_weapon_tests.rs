@@ -137,7 +137,7 @@ fn weapon_case(item: &str, enchantment: &str, level: u32, projectile: bool, swap
             }),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             let attacker_kind = match item {
                 "minecraft:bow" => "minecraft:skeleton",
                 "minecraft:crossbow" => "minecraft:pillager",
@@ -169,6 +169,7 @@ fn weapon_case(item: &str, enchantment: &str, level: u32, projectile: bool, swap
                     }
                 };
                 let mut shot = Projectile::new(kind, Vec3::ZERO, Some(Who::Mob(41)));
+                shot.id = 912;
                 let arrow = shot.arrow.as_mut().unwrap();
                 if trident {
                     arrow.pickup_item = weapon;
@@ -185,6 +186,7 @@ fn weapon_case(item: &str, enchantment: &str, level: u32, projectile: bool, swap
                 victim.health = 20.0;
                 victim.last_damage = None;
                 game.mobs.push(victim);
+                damage.kind = game.projectile_damage_kind(&shot);
                 assert!(game.damage_projectile_with_weapon(&shot, 70, 100.0, damage, None));
                 victim = game.mobs.iter().find(|mob| mob.id == 70).unwrap().clone();
                 drop(shot);
@@ -198,28 +200,36 @@ fn weapon_case(item: &str, enchantment: &str, level: u32, projectile: bool, swap
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn death_weapon_a_longbow_power_ii_survives_hand_change() {
-    weapon_case("minecraft:bow", "minecraft:power", 2, true, false);
+    crate::game::native_entity_refs::tests::run_on_guest_stack(|| {
+        weapon_case("minecraft:bow", "minecraft:power", 2, true, false);
+    });
 }
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn death_weapon_b_crossbow_piercing_i() {
-    weapon_case("minecraft:crossbow", "minecraft:piercing", 1, true, false);
+    crate::game::native_entity_refs::tests::run_on_guest_stack(|| {
+        weapon_case("minecraft:crossbow", "minecraft:piercing", 1, true, false);
+    });
 }
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn death_weapon_c_trident_loyalty_ii() {
-    weapon_case("minecraft:trident", "minecraft:loyalty", 2, true, false);
+    crate::game::native_entity_refs::tests::run_on_guest_stack(|| {
+        weapon_case("minecraft:trident", "minecraft:loyalty", 2, true, false);
+    });
 }
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
 fn death_weapon_d_sharpness_v_sword_reads_live_axe() {
-    weapon_case(
-        "minecraft:diamond_sword",
-        "minecraft:sharpness",
-        5,
-        false,
-        true,
-    );
+    crate::game::native_entity_refs::tests::run_on_guest_stack(|| {
+        weapon_case(
+            "minecraft:diamond_sword",
+            "minecraft:sharpness",
+            5,
+            false,
+            true,
+        );
+    });
 }
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
@@ -252,7 +262,7 @@ fn death_weapon_e_fall_has_no_weapon() {
             }),
         )]
         .into();
-        mod_api::testing::with_mods(mods, || {
+        mod_platform::testing::with_mods(mods, || {
             let ty = game
                 .res
                 .mob_types()

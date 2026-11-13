@@ -14,7 +14,7 @@ use horizon_client::{
     mesher::Vertex,
     vault::{Vault, VaultEvent, VaultLevel, VaultPlayer, VaultState},
 };
-use horizon_core::random::LegacyRandom;
+use horizon_core::random::{LegacyRandom, LevelRandom};
 
 type Pos = (i32, i32, i32);
 
@@ -102,7 +102,10 @@ impl Game<'_> {
             current,
             ominous,
         } = self.take_vault(key)?;
-        let mut random = std::mem::replace(&mut self.world.random, LegacyRandom::new(0));
+        let mut random = std::mem::replace(
+            &mut self.world.random,
+            LevelRandom::for_level(LegacyRandom::new(0)),
+        );
         let mut sequences = std::mem::take(&mut self.rand_sequences);
         let loot = self.server_loot.get();
         let players = Players {

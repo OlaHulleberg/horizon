@@ -170,9 +170,16 @@ pub(crate) fn run(
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     let mut child = command.spawn()?;
-    let deadline = Instant::now() + timeout;
+    let started = Instant::now();
     let result = loop {
-        match child.try_wait() {
+        // Check the deadline before polling: even a completed child must not turn
+        // an already-expired budget into success because the parent was descheduled.
+        let status = if started.elapsed() >= timeout {
+            Ok(None)
+        } else {
+            child.try_wait()
+        };
+        match status {
             Ok(Some(status)) => {
                 break if status.success() {
                     Ok(())
@@ -180,7 +187,7 @@ pub(crate) fn run(
                     Err(io::Error::other(format!("compiler exited {status}")))
                 };
             }
-            Ok(None) if Instant::now() < deadline => {
+            Ok(None) if started.elapsed() < timeout => {
                 std::thread::sleep(std::time::Duration::from_millis(10))
             }
             outcome => {
@@ -209,12 +216,6 @@ pub(crate) fn run(
     Ok(())
 }
 
-/// Ten times the largest of five child compiles on this Linux worker:
-/// 3.774374929 seconds for verify_2604_wasm.wasm (67,998,240 bytes),
-/// Linux x86_64, AMD Ryzen 7 5700X; no environment variables needed to start.
-#[cfg(unix)]
-pub(crate) const TIMEOUT: std::time::Duration = std::time::Duration::from_nanos(37_743_749_290);
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -238,14 +239,10 @@ mod tests {
         fs::hard_link(&original, &input.0).unwrap();
         assert!(compile(&input.0, &key).is_err());
         fs::remove_file(&input.0).unwrap();
-        rustix::fs::mknodat(
-            rustix::fs::CWD,
-            &input.0,
-            rustix::fs::FileType::Fifo,
-            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
-            0,
-        )
-        .unwrap();
+        // rustix has no FIFO call on Apple targets; mkfifo is in every Unix libc.
+        let fifo = std::ffi::CString::new(input.0.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: fifo is a NUL-terminated path that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
         assert!(compile(&input.0, &key).is_err());
         fs::remove_file(&input.0).unwrap();
         let replacement = Input::new(&root, b"different bytes").unwrap();

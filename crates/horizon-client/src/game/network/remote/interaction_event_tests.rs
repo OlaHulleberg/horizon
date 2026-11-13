@@ -77,6 +77,10 @@ struct Controls {
     clicks: usize,
     click_hands: Vec<Hand>,
     use_item_packets: usize,
+    /// The click is the host's own, not the fixture guest's: skip the guest identity asserts.
+    host_click: bool,
+    /// Each `use_item` event: side, hand, `player` and `player_entity_id`.
+    item_users: Vec<(LogicalSide, Hand, u128, i32)>,
     /// How many `set_creative_mode_slot` packets the client sent.
     creative_slot_packets: usize,
     expect_empty_item_phase: bool,
@@ -156,7 +160,7 @@ impl Hooks for Observer {
         assert_eq!(side(&host), event.click.side);
         assert_eq!(event.click.pos, [0, 64, 0]);
         assert_eq!(event.click.hit.face, [0, 1, 0]);
-        if event.click.side == LogicalSide::Server {
+        if event.click.side == LogicalSide::Server && !self.0.lock().unwrap().host_click {
             assert_eq!(event.click.player, 12);
             assert_eq!(event.click.player_entity_id, 12);
         }
@@ -203,7 +207,7 @@ impl Hooks for Observer {
     fn right_click_item(&self, host: HostSide<'_>, event: &mut RightClickItemEvent<'_>) -> Flow {
         assert_eq!(side(&host), event.click.side);
         assert_eq!(event.click.pos, [0, 64, 3]);
-        if event.click.side == LogicalSide::Server {
+        if event.click.side == LogicalSide::Server && !self.0.lock().unwrap().host_click {
             assert_eq!(event.click.player, 12);
             assert_eq!(event.click.player_entity_id, 12);
         }
@@ -247,11 +251,17 @@ impl ItemPart for Observer {
         self.0.lock().unwrap().steps.push(Step::UseOnPart);
         Flow::Cancel
     }
-    fn use_item(&self, _: HostSide<'_>, event: &mut UseItemEvent<'_>) -> Option<Answer> {
+    fn use_item(&self, host: HostSide<'_>, event: &mut UseItemEvent<'_>) -> Option<Answer> {
         if let Some(hand) = self.0.lock().unwrap().expected_hand {
             assert_eq!(event.hand, hand);
         }
         let mut state = self.0.lock().unwrap();
+        state.item_users.push((
+            side(&host),
+            event.hand,
+            event.player,
+            event.player_entity_id,
+        ));
         state.steps.push(Step::ItemPart);
         if state.part_pass {
             None
@@ -321,7 +331,7 @@ fn right_click_block_forced_item_use_reaches_empty_hand_on_both_sides() {
     )]
     .into();
     crate::game::api_values::install_parts(&mods).unwrap();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         for client in [false, true] {
             with_interaction_game(client, |game| {
                 game.inventory[game.selected] = None;
@@ -393,7 +403,7 @@ fn right_click_block_explicit_allow_overrides_sneak_skip_on_both_sides() {
     )]
     .into();
     crate::game::api_values::install_parts(&mods).unwrap();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         for client in [false, true] {
             with_interaction_game(client, |game| {
                 let registry = game.pack.assets.registry;
@@ -460,7 +470,7 @@ fn phase_events_replace_the_behaviour_before_its_part_on_both_sides() {
     )]
     .into();
     crate::game::api_values::install_parts(&mods).unwrap();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         for client in [false, true] {
             with_interaction_game(client, |game| {
                 let side = if client {
@@ -683,7 +693,7 @@ fn canceled_item_results_keep_the_stack_wrappers_side_effects() {
     )]
     .into();
     crate::game::api_values::install_parts(&mods).unwrap();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         let cooling_stack = |item: &str| {
             let mut stack = ItemStack::new(item, 1);
             stack.data_mut().set_other(
@@ -795,7 +805,7 @@ fn a_spectator_fires_right_click_block_on_the_client_and_its_cancel_answers() {
     )]
     .into();
     crate::game::api_values::install_parts(&mods).unwrap();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_interaction_game(true, |game| {
             game.set_mode_id(3);
             assert!(game.spectator());
@@ -843,7 +853,7 @@ fn a_spectators_passing_block_click_skips_item_use_for_both_hands() {
     )]
     .into();
     crate::game::api_values::install_parts(&mods).unwrap();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_interaction_game(true, |game| {
             game.set_mode_id(3);
             assert!(game.spectator());
@@ -910,7 +920,7 @@ fn air_event_skips_the_item_and_consuming_results_end_the_click() {
     )]
     .into();
     crate::game::api_values::install_parts(&mods).unwrap();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         for client in [false, true] {
             with_interaction_game(client, |game| {
                 let side = if client {
@@ -1041,7 +1051,7 @@ fn before_block_cancellation_pass_continues_but_fail_and_consuming_results_stop(
     )]
     .into();
     crate::game::api_values::install_parts(&mods).unwrap();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         for client in [false, true] {
             with_interaction_game(client, |game| {
                 let side = if client {
@@ -1130,7 +1140,7 @@ fn on_item_use_first_runs_before_the_block_and_ends_the_click() {
     )]
     .into();
     crate::game::api_values::install_parts(&mods).unwrap();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_interaction_game(false, |game| {
             let registry = game.pack.assets.registry;
             let stone = registry.default_state("minecraft:stone").unwrap();
@@ -1210,7 +1220,7 @@ fn an_item_used_from_the_off_hand_reaches_the_use_hooks_on_the_server() {
     )]
     .into();
     crate::game::api_values::install_parts(&mods).unwrap();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_interaction_game(false, |game| {
             let side = LogicalSide::Server;
             game.offhand = Some(ItemStack::new("minecraft:stick", 1));
@@ -1343,7 +1353,7 @@ fn a_server_client_fires_use_item_finish_when_the_server_completes_the_use() {
     )]
     .into();
     crate::game::api_values::install_parts(&mods).unwrap();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_interaction_game(true, |game| {
             let offhand = super::super::shield::OFFHAND_SLOT;
             // (slot, creative, used stack, replacement, what the listener sees, what the slot
@@ -1521,7 +1531,7 @@ fn a_creative_hand_replaced_by_a_finish_listener_is_not_sent_as_a_creative_slot(
     )]
     .into();
     crate::game::api_values::install_parts(&mods).unwrap();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_interaction_game(true, |game| {
             let offhand = super::super::shield::OFFHAND_SLOT;
             let packets = |observer: &Observer| observer.0.lock().unwrap().creative_slot_packets;
@@ -1589,7 +1599,7 @@ fn item_use_overlap_matrix_on_the_server() {
     )]
     .into();
     crate::game::api_values::install_parts(&mods).unwrap();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         with_interaction_game(false, |game| {
             let stone = game
                 .pack
@@ -1703,7 +1713,7 @@ fn resource_gated_unknown_held_item_forced_use_predicts_pass_without_a_swing() {
     )]
     .into();
     crate::game::api_values::install_parts(&mods).unwrap();
-    mod_api::testing::with_mods(mods, || {
+    mod_platform::testing::with_mods(mods, || {
         for client in [true, false] {
             with_interaction_game(client, |game| {
                 let stone = game
@@ -1752,5 +1762,42 @@ fn resource_gated_unknown_held_item_forced_use_predicts_pass_without_a_swing() {
                 );
             });
         }
+    });
+}
+
+#[test]
+#[ignore = "requires prepared game resources"]
+fn a_server_client_keeps_a_bundle_use_until_the_server_completes_it() {
+    let observer = Observer::default();
+    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
+        "finish_observer",
+        Box::new(observer.clone()),
+    )]
+    .into();
+    crate::game::api_values::install_parts(&mods).unwrap();
+    mod_platform::testing::with_mods(mods, || {
+        with_interaction_game(true, |game| {
+            game.inventory[game.selected] = Some(ItemStack::new("minecraft:bundle", 1));
+            // The use starts at tick 0, which records the item in use.
+            game.using = Some((game.selected, 0));
+            // 200 client ticks: the use is still on, waiting for the server.
+            for _ in 0..200 {
+                game.remote_tick_using();
+            }
+            assert_eq!(game.using, Some((game.selected, 200)));
+            game.remote_tick_using();
+            assert_eq!(game.using, Some((game.selected, 201)));
+            // Entity event 9 arrives late: the client-side finish fires once.
+            game.remote_complete_using();
+            assert_eq!(game.using, None);
+            assert_eq!(
+                observer.0.lock().unwrap().finishes,
+                [(
+                    LogicalSide::Client,
+                    Hand::Main,
+                    Some(("minecraft:bundle".to_owned(), 1))
+                )]
+            );
+        });
     });
 }

@@ -45,6 +45,8 @@ pub(crate) struct TestLevel {
     pub day_time: i64,
     pub events: Vec<LevelEvent>,
     pub block_light: HashMap<BlockPos, i32>,
+    /// `getBrightness(SKY, pos)` everywhere; `None` is 15, full daylight.
+    pub sky_light: Option<i32>,
     /// `Level.isClientSide`.
     pub client_side: bool,
     pub cake_answer: Option<bool>,
@@ -71,8 +73,19 @@ pub(crate) struct TestLevel {
     pub connect: HashMap<(ConnectionKind, BlockStateId), bool>,
     /// The kinds and directions `adjust_connects_to` was asked about.
     pub connection_asks: std::cell::RefCell<Vec<(ConnectionKind, Direction)>>,
-    /// What `before_fire_odds` answers for a state.
-    pub fire_odds: HashMap<BlockStateId, (i32, i32)>,
+    /// What `before_fire_odds` answers for a state, from one face or, keyed `None`, from any.
+    pub fire_asks: std::cell::RefCell<Vec<(BlockStateId, BlockPos, Direction)>>,
+    pub source_asks: std::cell::RefCell<Vec<(BlockStateId, BlockPos)>>,
+    pub lava_asks: std::cell::RefCell<Vec<(BlockStateId, BlockPos, Direction)>>,
+    pub caught_states: Vec<BlockStateId>,
+    pub fire_odds: HashMap<(BlockStateId, Option<Direction>), (i32, i32)>,
+    /// What `before_is_fire_source` and `before_ignited_by_lava` answer for a state.
+    pub fire_sources: HashMap<BlockStateId, bool>,
+    pub lava_ignites: HashMap<BlockStateId, bool>,
+    /// Positions where `allow_block_burn` refuses, as a `block_burn` listener would.
+    pub unburnable: HashSet<BlockPos>,
+    /// Every `on_caught_fire`: position, old state, face and the level events before it.
+    pub caught_fire: Vec<(BlockPos, BlockStateId, Direction, usize)>,
     /// What `before_smoke_source` answers for a state.
     pub smoke_sources: HashMap<BlockStateId, bool>,
     /// What `recheck_container_openers` answers at a position: the opener
@@ -113,11 +126,20 @@ impl TestLevel {
             day_time: 0,
             events: Vec::new(),
             block_light: HashMap::new(),
+            sky_light: None,
             client_side: false,
             tick_ready: true,
             block_events_ready: true,
             guarded: HashSet::new(),
+            fire_asks: Default::default(),
+            source_asks: Default::default(),
+            lava_asks: Default::default(),
+            caught_states: Vec::new(),
             fire_odds: HashMap::new(),
+            fire_sources: HashMap::new(),
+            lava_ignites: HashMap::new(),
+            unburnable: HashSet::new(),
+            caught_fire: Vec::new(),
             smoke_sources: HashMap::new(),
             openers: HashMap::new(),
             opener_rechecks: Vec::new(),
@@ -251,6 +273,9 @@ impl LevelAccess for TestLevel {
     fn block_light(&self, pos: BlockPos) -> i32 {
         self.block_light.get(&pos).copied().unwrap_or(0)
     }
+    fn sky_light(&self, _pos: BlockPos) -> i32 {
+        self.sky_light.unwrap_or(15)
+    }
     fn emit(&mut self, event: LevelEvent) {
         self.events.push(event);
     }
@@ -274,10 +299,47 @@ impl LevelAccess for TestLevel {
             .chain(destroy.iter().copied())
             .any(|p| self.guarded.contains(&p))
     }
-    fn before_fire_odds(&self, state: BlockStateId, odds: &mut Option<(i32, i32)>) {
-        if let Some(&answer) = self.fire_odds.get(&state) {
+    fn before_fire_odds(
+        &self,
+        state: BlockStateId,
+        pos: BlockPos,
+        face: Direction,
+        odds: &mut Option<(i32, i32)>,
+    ) {
+        self.fire_asks.borrow_mut().push((state, pos, face));
+        let answer = self.fire_odds.get(&(state, Some(face)));
+        let answer = answer.or_else(|| self.fire_odds.get(&(state, None)));
+        if let Some(&answer) = answer {
             *odds = Some(answer);
         }
+    }
+    fn before_is_fire_source(&self, state: BlockStateId, pos: BlockPos, source: &mut Option<bool>) {
+        self.source_asks.borrow_mut().push((state, pos));
+        *source = self.fire_sources.get(&state).copied();
+    }
+    fn before_ignited_by_lava(
+        &self,
+        state: BlockStateId,
+        pos: BlockPos,
+        face: Direction,
+        ignites: &mut Option<bool>,
+    ) {
+        self.lava_asks.borrow_mut().push((state, pos, face));
+        *ignites = self.lava_ignites.get(&state).copied();
+    }
+    fn allow_block_burn(&self, pos: BlockPos) -> bool {
+        !self.unburnable.contains(&pos)
+    }
+    fn on_caught_fire(
+        &mut self,
+        _: &mut Ticks,
+        state: BlockStateId,
+        pos: BlockPos,
+        face: Direction,
+    ) {
+        let before = self.events.len();
+        self.caught_states.push(self.block_state(pos));
+        self.caught_fire.push((pos, state, face, before));
     }
     fn before_smoke_source(&self, state: BlockStateId, smoke: &mut Option<bool>) {
         if let Some(&answer) = self.smoke_sources.get(&state) {
@@ -310,13 +372,13 @@ impl LevelAccess for TestLevel {
         !self.refuse_portals
     }
 }
-struct World<'f> {
+pub(super) struct World<'f> {
     f: &'f Fixture,
-    level: TestLevel,
-    ticks: Ticks,
+    pub(super) level: TestLevel,
+    pub(super) ticks: Ticks,
 }
 impl<'f> World<'f> {
-    fn new(f: &'f Fixture) -> Self {
+    pub(super) fn new(f: &'f Fixture) -> Self {
         let mut ticks = Ticks::new(0);
         for x in -4..4 {
             for z in -4..4 {
@@ -329,10 +391,10 @@ impl<'f> World<'f> {
             ticks,
         }
     }
-    fn b(&self) -> &'f Behaviours {
+    pub(super) fn b(&self) -> &'f Behaviours {
         &self.f.behaviours
     }
-    fn id(&self, name: &str, props: &[(&str, &str)]) -> BlockStateId {
+    pub(super) fn id(&self, name: &str, props: &[(&str, &str)]) -> BlockStateId {
         let state = BlockState {
             name: format!("minecraft:{name}"),
             properties: props
@@ -345,7 +407,7 @@ impl<'f> World<'f> {
             .resolve(&state)
             .unwrap_or_else(|_| panic!("unknown state {name} {props:?}"))
     }
-    fn set(&mut self, pos: BlockPos, state: BlockStateId) -> bool {
+    pub(super) fn set(&mut self, pos: BlockPos, state: BlockStateId) -> bool {
         self.f.behaviours.set_block(
             &mut self.level,
             &mut self.ticks,
@@ -355,10 +417,10 @@ impl<'f> World<'f> {
         )
     }
     /// Raw storage write without updates (world generation).
-    fn put(&mut self, pos: BlockPos, state: BlockStateId) {
+    pub(super) fn put(&mut self, pos: BlockPos, state: BlockStateId) {
         self.level.blocks.insert(pos, state);
     }
-    fn get(&self, pos: BlockPos) -> BlockStateId {
+    pub(super) fn get(&self, pos: BlockPos) -> BlockStateId {
         self.level.block_state(pos)
     }
     fn name(&self, pos: BlockPos) -> String {
@@ -384,7 +446,7 @@ impl<'f> World<'f> {
             .cloned()
             .unwrap_or_default()
     }
-    fn tick(&mut self) {
+    pub(super) fn tick(&mut self) {
         self.level.time += 1;
         self.f
             .behaviours
@@ -400,7 +462,7 @@ impl<'f> World<'f> {
             .behaviours
             .tick_block_entities(&mut self.level, &mut self.ticks);
     }
-    fn floor(&mut self, y: i32, radius: i32, block: &str) {
+    pub(super) fn floor(&mut self, y: i32, radius: i32, block: &str) {
         let state = self.id(block, &[]);
         for x in -radius..=radius {
             for z in -radius..=radius {
@@ -498,6 +560,28 @@ fn block_observation_follows_successful_commits_only() {
         Observation::Block(pos, stone, b.air())
     );
 }
+
+/// `LevelReader.getMaxLocalRawBrightness`: 15 outside the +-30,000,000 gate,
+/// where no chunk is there to answer, and the raw brightness inside it. With
+/// the sky light at 0 the two answers differ, so the gate is what is measured.
+#[test]
+fn max_local_raw_brightness_is_full_outside_the_gate() {
+    let Some(f) = fixture() else {
+        return;
+    };
+    let b = &f.behaviours;
+    let mut level = TestLevel::new(b);
+    level.sky_light = Some(0);
+    let mut ticks = Ticks::new(0);
+    let sim = b.sim(&mut level, &mut ticks);
+    let at = |x: i32, z: i32| sim.max_local_raw_brightness(BlockPos::new(x, 64, z));
+    // `x >= -30000000 && z >= -30000000 && x < 30000000 && z < 30000000`.
+    assert_eq!((at(-30_000_000, 0), at(29_999_999, 0)), (0, 0));
+    assert_eq!((at(-30_000_001, 0), at(30_000_000, 0)), (15, 15));
+    assert_eq!((at(0, -30_000_000), at(0, 29_999_999)), (0, 0));
+    assert_eq!((at(0, -30_000_001), at(0, 30_000_000)), (15, 15));
+}
+
 #[test]
 fn neighbor_observation_follows_dispatch_order() {
     use std::cell::RefCell;
@@ -4183,70 +4267,6 @@ fn survive_hooks_answer_for_the_block() {
 }
 
 #[test]
-fn a_level_can_answer_how_a_block_burns() {
-    let mut w = world!();
-    w.floor(0, 10, "stone");
-    let glass = w.id("glass", &[]);
-    let planks = w.id("oak_planks", &[]);
-    let burn = |w: &mut World, fire: BlockPos| {
-        w.set(fire.offset(0, -1, 0), w.id("netherrack", &[]));
-        w.set(fire.offset(1, 0, 0), glass);
-        w.set(fire.offset(-1, 0, 0), planks);
-        w.set(fire, w.id("fire", &[]));
-        for _ in 0..4000 {
-            w.tick();
-        }
-    };
-    // Vanilla's table: glass never burns, planks do.
-    let fire = BlockPos::new(0, 1, 0);
-    burn(&mut w, fire);
-    assert_eq!(w.get(fire.offset(1, 0, 0)), glass, "glass doesn't burn");
-    assert_ne!(w.get(fire.offset(-1, 0, 0)), planks, "planks burn");
-
-    // The level's answer wins over the table, either way.
-    w.level.fire_odds.insert(glass, (30, 60));
-    w.level.fire_odds.insert(planks, (0, 0));
-    let fire = BlockPos::new(0, 1, 6);
-    burn(&mut w, fire);
-    assert_ne!(w.get(fire.offset(1, 0, 0)), glass, "flammable glass burns");
-    assert_eq!(
-        w.get(fire.offset(-1, 0, 0)),
-        planks,
-        "fireproof planks don't"
-    );
-
-    // Fire in the air beside a block stays only while the block's ignite
-    // odds are above zero, and burn odds of zero never destroy the block.
-    let lit_beside = |w: &mut World, at: BlockPos, ticks: usize| {
-        w.set(at.offset(1, 0, 0), glass);
-        w.set(at, w.id("fire", &[]));
-        for _ in 0..ticks {
-            w.tick();
-        }
-        w.get(at)
-    };
-    let fire = w.id("fire", &[]);
-    w.level.fire_odds.clear();
-    let at = BlockPos::new(-6, 5, 0);
-    assert_ne!(
-        w.b().block(lit_beside(&mut w, at, 45)),
-        w.b().block(fire),
-        "fire beside plain glass goes out"
-    );
-    w.level.fire_odds.insert(glass, (5, 0));
-    let at = BlockPos::new(-6, 5, 6);
-    assert_eq!(
-        w.b().block(lit_beside(&mut w, at, 45)),
-        w.b().block(fire),
-        "fire stands beside glass that ignites"
-    );
-    for _ in 0..4000 {
-        w.tick();
-    }
-    assert_eq!(w.get(at.offset(1, 0, 0)), glass, "and never burns it away");
-}
-
-#[test]
 fn a_level_can_answer_what_makes_a_campfire_signal() {
     let mut w = world!();
     let (stone, hay) = (w.id("stone", &[]), w.id("hay_block", &[]));
@@ -4722,4 +4742,8 @@ fn a_shulker_lid_updates_the_shapes_and_redstone_of_its_neighbours() {
             (BlockPos::new(x, y, z), state, b.block(state), false)
         );
     }
+}
+#[cfg(test)]
+mod sticky {
+    include!("tests/sticky.rs");
 }

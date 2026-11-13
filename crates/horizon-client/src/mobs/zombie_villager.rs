@@ -218,7 +218,7 @@ mod tests {
 
     fn zombie_villager() -> Mob {
         let mut m = Mob::new(42, kind(), Vec3::new(1.25, 2.0, 3.75), 0.0);
-        m.random = LegacyRandom::new(0);
+        m.random.set_seed(0);
         m
     }
 
@@ -355,6 +355,7 @@ mod tests {
             dragon: None,
             leash_boats: &[],
             who_lookup: None,
+            foreign: None,
             others_grid: None,
             others_index: None,
             passenger_objects: &[],

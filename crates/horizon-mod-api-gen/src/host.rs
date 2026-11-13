@@ -282,6 +282,7 @@ fn area_tiers(camel: &str, file: syn::File) -> Result<BTreeMap<Tier, Vec<Entry>>
                         | "Levels"
                         | "Messages"
                         | "Players"
+                        | "RuntimeLevels"
                         | "RenderAssets"
                         | "InstanceGroups"
                 )
@@ -491,6 +492,9 @@ pub(super) fn game_forwarders(root: &Path) -> Result<String, String> {
                     match result_error(&entry.sig.output) {
                         Some(error) if outer_type(error, "LevelReadError") => format!(
                             "{call}.try_into_api().unwrap_or(Err(mod_api::LevelReadError::Unavailable))"
+                        ),
+                        Some(error) if outer_type(error, "GameRuleReadError") => format!(
+                            "{call}.try_into_api().expect(\"game rule values convert infallibly\")"
                         ),
                         Some(_) => format!(
                             "{call}.try_into_api().unwrap_or_else(|error| Err(error.into_write_error().into()))"
@@ -737,7 +741,7 @@ fn refusal(sig: &syn::Signature, name: &str) -> Result<Option<&'static str>, Str
         Some("bool") => Some("false"),
         // A read that answers `Result`: its refusal is the error a host without a backend answers.
         Some("Result") => Some("Err(mod_api::NoBackend::no_backend())"),
-        Some("u32" | "i32" | "u16" | "u8" | "usize") => Some("0"),
+        Some("u64" | "u32" | "i32" | "u16" | "u8" | "usize") => Some("0"),
         // A registry key's metadata: a read the goal view only forwards.
         Some("String") => None,
         _ => {

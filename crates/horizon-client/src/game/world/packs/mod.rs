@@ -33,25 +33,17 @@ pub fn packs_dir() -> PathBuf {
         .unwrap_or_default()
         .join("resourcepacks")
 }
-mod folder;
-
-/// `Util.getPlatform().openPath`: the system file manager on the folder.
+/// `Blaze3D.openPath`: the desktop's handler on the folder (the default file manager).
 pub fn open_folder(dir: &Path) {
-    if let Err(e) = folder::command(dir).and_then(|mut command| command.spawn()) {
+    if let Err(e) = horizon_client::desktop::open_path(dir) {
         log::warn!("Horizon: could not open {}: {e}", dir.display());
     }
 }
-/// `Util.getPlatform().openUri`: the system browser on the link.
+/// `Blaze3D.openUri`: the system browser on the link.
 pub fn open_uri(uri: &str) {
-    // URLs need Windows' registered protocol handler, not Explorer's path
-    // handling. ShellExecute also preserves the URL as one Unicode value,
-    // without interpolating its query string into a command interpreter.
-    #[cfg(windows)]
-    if let Err(error) = open::that_detached(uri) {
+    if let Err(error) = horizon_client::desktop::open_uri(uri) {
         log::warn!("Horizon: could not open URI {uri}: {error}");
     }
-    #[cfg(not(windows))]
-    open_folder(Path::new(uri));
 }
 /// The resource root to load from: the selection and a server's packs, which go on top
 /// (`Pack.Position.TOP`, fixed), laid over `base`. `base` is the mods' content root
@@ -100,6 +92,7 @@ fn info(p: &Pack) -> PackInfo {
         required: false,
         position: Position::Top,
         fixed: false,
+        hidden: false,
     }
 }
 /// A pack from `DownloadedPackSource.loadRequestedPacks`: fixed at the top of
@@ -124,6 +117,7 @@ fn downloaded_info(p: &Pack) -> PackInfo {
         required: true,
         position: Position::Top,
         fixed: true,
+        hidden: false,
     }
 }
 /// The vanilla pack: required, at the bottom (`BuiltInPackSource`), with the
@@ -143,6 +137,7 @@ fn vanilla_info(vanilla: &Path) -> PackInfo {
         required: true,
         position: Position::Bottom,
         fixed: false,
+        hidden: false,
     }
 }
 /// Packs the Resource Packs screen lists: folder and built-in packs, then any
@@ -166,6 +161,35 @@ pub(super) fn pack_configs(vanilla: &Path) -> std::collections::BTreeMap<String,
         .map(|p| (p.id, p.polytone_configs))
         .collect()
 }
+
+/// The confirmation's callback, shared by the startup menu and in-game options.
+pub(super) fn import_resource_packs(
+    ui: &mut horizon_client::options_ui::OptionsUi,
+    vanilla: &Path,
+    server: &[Pack],
+    paths: &[PathBuf],
+    additional: &[Pack],
+) {
+    let dir = packs_dir();
+    let mut failed = false;
+    for path in paths {
+        match packs::copy_pack(path, &dir) {
+            Ok(()) => log::info!("Horizon: added resource pack {}", path.display()),
+            Err(error) => {
+                log::warn!(
+                    "Horizon: could not copy resource pack {}: {error}",
+                    path.display()
+                );
+                failed = true;
+            }
+        }
+    }
+    ui.update_pack_infos(pack_infos(vanilla, server, additional));
+    ui.pack_configs = pack_configs(vanilla);
+    if failed {
+        ui.resource_error = Some(Text::translate("pack.copyFailure", &[]).plain());
+    }
+}
 /// The player changed Pack Options: `chosen` replaces their choices for `entries`, kept in
 /// `polytone-configs.json`.
 pub(super) fn save_pack_options(
@@ -181,6 +205,20 @@ pub(super) fn save_pack_options(
     packs::set_polytone_choices(all);
 }
 impl Game<'_> {
+    pub(super) fn drop_pack_file(&mut self, path: &Path) {
+        let size = self.gui_size();
+        let handled = self.screen == super::Screen::Options
+            && self
+                .ui
+                .options
+                .drop_resource_pack(path.to_path_buf(), &self.gui.atlas, size);
+        if !handled
+            && self.title_input_active()
+            && let Some(title) = &mut self.title
+        {
+            title.drop_file(path.to_path_buf());
+        }
+    }
     pub(super) fn resource_pack_infos(&mut self) -> Vec<PackInfo> {
         let additional = self.discover_mod_packs(mod_api::PackType::ClientResources);
         pack_infos(&self.vanilla_root(), &self.server_packs.active, &additional)
@@ -445,6 +483,9 @@ impl Game<'_> {
             language,
         } = staged;
         let loop_context = self.prepare_loop_context(&root)?;
+        // Refresh modifiers from the newly staged packs, including removals.
+        let tab_modifiers = horizon_client::polytone_creative_tabs::TabModifier::read_all(&root);
+        self.creative_screen.set_pack_modifiers(tab_modifiers);
         let standalone_geometry =
             super::native_block_entity_draw::StandaloneGeometry::new(&pack, &gui);
         // Keep the working GPU resources, and hand its window surface over.
@@ -505,7 +546,11 @@ impl Game<'_> {
         self.options.resources = root.clone();
         self.falling_vertices.get_mut().clear();
         self.pack = pack;
-        self.gui = gui;
+        let skip = self
+            .settings
+            .extras
+            .skip_modded_splashes_if_vanilla_modified;
+        self.gui = gui.with_splashes(&self.pack.source, &self.vanilla_root(), skip);
         self.standalone_geometry = standalone_geometry;
         self.instance_groups.borrow_mut().clear();
         // The new atlas's skin and map slots are blank: players and maps
@@ -610,6 +655,7 @@ impl Game<'_> {
         self.creative_screen.invalidate_build();
         super::client_reload::apply_client_reload(&self.mod_phase, client_applies);
         self.install_loop_context(loop_context);
+        self.resolve_entity_renderers();
         self.texture_atlases_stitched();
         self.native_model_baking_completed();
         self.native_client_resources_reloaded();
@@ -657,11 +703,13 @@ pub(super) fn stage_pack(
     // The sound events, the GUI sprites' metadata and the language are read here too, not in
     // the frame that applies the reload (about 20 ms of it).
     let (render, atlas, panorama, (sounds, ui_metadata, language)) = std::thread::scope(|s| {
-        let atlas = s.spawn(|| {
+        let atlas = super::resource_load::named_scope(s, "pack-assets", || {
             HudAtlas::build_over_with_image(&source, &source, mod_image).map_err(|e| e.to_string())
         });
-        let panorama = s.spawn(|| horizon_client::gfx::panorama::Faces::load(&source, &source));
-        let small = s.spawn(|| {
+        let panorama = super::resource_load::named_scope(s, "pack-assets", || {
+            horizon_client::gfx::panorama::Faces::load(&source, &source)
+        });
+        let small = super::resource_load::named_scope(s, "pack-assets", || {
             (
                 horizon_client::sound_events::SoundRegistry::load(&source),
                 horizon_client::ui::read_metadata(&source),
@@ -684,6 +732,8 @@ pub(super) fn stage_pack(
     let gui = UiResources {
         atlas,
         panorama: Arc::new(panorama.unwrap_or_else(|p| std::panic::resume_unwind(p))),
+        // `Game::apply_staged_pack` fills it with the client's setting.
+        splashes: Arc::from(""),
     };
     progress.set(2);
     let mut pack = PackResources::load(
@@ -801,7 +851,7 @@ impl PackReload {
     ) -> std::io::Result<Self> {
         let progress = super::Progress::with(&RELOAD_LINES);
         let worker = progress.clone();
-        let handle = std::thread::Builder::new()
+        let handle = horizon_guest_stack::builder()
             .name("pack-reload".into())
             .spawn(move || stage(&worker))?;
         Ok(Self {
@@ -885,8 +935,8 @@ mod tests {
         ) {
             return;
         }
-        use mod_api::testing::with_mods;
         use mod_api::{FluidModel, Hooks, ModEntry, RegisterFluidModelsEvent, RegistrationContext};
+        use mod_platform::testing::with_mods;
         use std::sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -955,7 +1005,7 @@ mod tests {
                                 assert_eq!(layers.contains_key(id), expected == Some(id), "{id}");
                             }
                         };
-                        mod_api::__private::with_test_packages(&["reload_boundary"], || {
+                        mod_platform::__private::with_test_packages(&["reload_boundary"], || {
                             reload(Some("reload_boundary:block/oil_0"));
                             generation.store(1, Ordering::SeqCst);
                             reload(Some("reload_boundary:block/oil_1"));

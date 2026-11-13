@@ -15,7 +15,7 @@ mixins = "MIXINS"
 [[native.mixin]]
 id = "ported_block_entity_tick"
 kind = "HEAD"
-target = "horizon_client::game::api_values::super::Game<'_>::api_block_entity_tick"
+target = "horizon_client::game::block_entity_tick_reply::Game<'_>::api_block_entity_tick"
 helper = "src/mixins/tick.rs"
 bindings = [
   { name = "game", ty = "&mut crate::game::Game<'_>", value = "&mut *self" },
@@ -60,5 +60,5 @@ bindings = [{ name = "dedicated", ty = "bool", value = "dedicated" }]
 [[native.mixin]]
 id = "trait_block_state"
 kind = "HEAD"
-target = "horizon_client::game::<GameLevel<'_> as LevelAccess>::block_state"
+target = "horizon_client::game::level_access::<GameLevel<'_> as LevelAccess>::block_state"
 helper = "src/mixins/trait.rs"

@@ -64,12 +64,32 @@ transaction, refusing rather than recomputing on mismatch. Authoritative evaluat
 still runs independently of prediction. Dispenser and pickup retain their candidate
 iteration and other vanilla checks, using the same read adapter and stack data rule.
 
+Maintainer ruling on the revision recheck: on the native path the synchronous read-only
+borrow is the accepted equivalent of the recheck. The predicate is asked and its answer
+applied under one immutable borrow, through a Host adapter that offers observations only
+(no commands, storage writes, scheduling or random draws), so nothing can change in
+between and a revision token would compare a value with itself. The recheck stays required
+wherever deciding and applying are separated in time or state: (1) the prepared wasm
+crossing (#3549), where a payload prepared once is reused across candidates: a stack
+mutation invalidates it and a stale preparation refuses; (2) any path that keeps an answer
+beyond the call (a cache, a predicted answer applied later). A stale or missing entity
+handle refuses on every path.
+
 Native lends the prepared values. Wasm uses the shared-memory Wire boundary: prepare
 the stack and read-view payload once in guest storage, then send only call-scoped
 handles, slot and scalar answer per candidate. No engine pointers cross; release
 handles at decision end. This requires a reusable prepared Wire call path, not the
 ordinary owned-stack encode/decode on every slot. Unsupported capabilities refuse at
 registration/load with a named reason on both targets; no silent wasm skip.
+The generator layer of #3549 implements prepared ownership per participating guest instance,
+borrowed token-based asks, generation/release checks and load/registration refusal for missing
+prepared exports. Slot and entity-kind names are prepared outside traversal and asks carry IDs.
+Gameplay integration is still pending: ordinary wasm callbacks create their own preparation;
+the decision-barrier PR must hoist that scope across candidates, invalidate on scoped mutable
+access (revision) and replacement/removal (identity generation), and refuse stale apply decisions.
+Pickup scope is one mob's attempt. Native's synchronous immutable borrow needs no revision
+recheck. No-listener paths retain their data answer without a new entity lookup. Only the
+Host observations listed above belong to the prepared-read budget; other reads may allocate.
 
 The required engine/bridge budget **per candidate** is 0 heap allocations, 0 stack or
 component payload clones/copies, and only bounded scalar/handle copies, including
@@ -78,5 +98,9 @@ stack mutations invalidate preparation. A counting allocator/no-allocation scope
 around warmed traversal must cover both menus, multiple slots, component-rich stacks,
 unrelated subscribed items, entity reads, and native/wasm dispatch. Check refusal
 leaves the source and all other slots unchanged, stale revisions refuse, and data-only
-stack overrides work. Mod-authored allocations are outside the bridge budget. These
-are acceptance tests to implement, not tests run for this docs-only proposal.
+stack overrides work. Mod-authored allocations are outside the bridge budget. Generator
+loopback tests now cover retained stack identity, payload-size-independent scalar asks,
+native/guest answers and token refusals; runtime tests cover memory-copy counts and
+missing-export load refusal. Whole-operation allocation budgets, prepared Host reads,
+source mutation barriers and gameplay apply checks remain acceptance work for the
+follow-up decision-barrier PR.
