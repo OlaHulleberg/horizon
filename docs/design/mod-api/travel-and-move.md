@@ -95,8 +95,9 @@ revision in the same transaction as listener writes. A changed precondition
 refuses the decision and rolls back that transaction; never recompute against
 changed state mid-callback. `entity_move`, ruled hostless (#2414), reduces to
 result validation: the armed gate holds the requested delta, a listener result
-that passes the budget replaces it, anything malformed or cancelled falls back
-to it, and a panic keeps it while its poison disables the listener. Both take
+that passes the budget replaces it, malformed output falls back to it, and
+cancellation skips the invocation. A panic keeps the requested delta while its
+poison disables that listener for this hook for the session. Both take
 the existing path without snapshots, allocations or mod scans when nobody
 subscribes — dispatch only to subscribed mods, resolved once.
 

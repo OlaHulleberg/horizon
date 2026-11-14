@@ -243,7 +243,7 @@ fn vehicle_put_back(game: &crate::game::Game<'_>, rx: &std::sync::mpsc::Receiver
 /// threshold let the small cancel through before, and the guest's client
 /// walked on.
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_cancelled_small_step_sends_the_guest_a_correction() {
     hosted_guest(
         "entity-move-small-cancel",
@@ -267,7 +267,7 @@ fn a_cancelled_small_step_sends_the_guest_a_correction() {
 /// A walk's step (0.2) a listener replaces with half (0.1): the decision is
 /// not the request, so the correction goes out however small the difference.
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_replaced_small_step_sends_the_guest_a_correction() {
     hosted_guest(
         "entity-move-small-replace",
@@ -294,7 +294,7 @@ fn a_replaced_small_step_sends_the_guest_a_correction() {
 /// the request bit for bit; a decimal like 0.2 differs in the last bit of
 /// the packet's arithmetic and would be a real replacement.
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_replacement_equal_to_the_request_sends_no_correction() {
     hosted_guest(
         "entity-move-small-equal",
@@ -323,7 +323,7 @@ fn a_replacement_equal_to_the_request_sends_no_correction() {
 /// A small step with no listener: vanilla's own check, no correction — the
 /// fix must not correct ordinary walking.
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_small_step_with_no_listener_sends_no_correction() {
     hosted_guest(
         "entity-move-small-plain",
@@ -353,7 +353,7 @@ fn a_small_step_with_no_listener_sends_no_correction() {
 /// place and the driver's client gets the vehicle put-back — the same ruling
 /// at the vehicle Player site, under the quarter-block threshold.
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_cancelled_small_vehicle_move_sends_the_driver_a_correction() {
     hosted_guest(
         "entity-move-boat-small-cancel",
@@ -380,7 +380,7 @@ fn a_cancelled_small_vehicle_move_sends_the_driver_a_correction() {
 /// A boat's small move a listener replaces with half: the put-back goes to
 /// the driver whatever the difference.
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_replaced_small_vehicle_move_sends_the_driver_a_correction() {
     hosted_guest(
         "entity-move-boat-small-replace",
@@ -409,7 +409,7 @@ fn a_replaced_small_vehicle_move_sends_the_driver_a_correction() {
 /// above, the step is 0.125 so the listener's write is the request bit for
 /// bit.
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_vehicle_replacement_equal_to_the_request_sends_no_correction() {
     hosted_guest(
         "entity-move-boat-small-equal",
@@ -438,7 +438,7 @@ fn a_vehicle_replacement_equal_to_the_request_sends_no_correction() {
 /// the distance test alone (review round 1), so the cancel sends the creative
 /// guest back all the same.
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_cancelled_move_of_a_creative_guest_sends_the_correction() {
     hosted_guest_starting(
         "entity-move-creative-cancel",
@@ -465,7 +465,7 @@ fn a_cancelled_move_of_a_creative_guest_sends_the_correction() {
 /// too is a decision that is not the request, and the creative exemption is
 /// not its to spare (review round 1).
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_replaced_move_of_a_creative_guest_sends_the_correction() {
     hosted_guest_starting(
         "entity-move-creative-replace",
@@ -493,7 +493,7 @@ fn a_replaced_move_of_a_creative_guest_sends_the_correction() {
 /// but that exemption is the distance test's — an overridden move is refused
 /// from wherever it starts (review round 1).
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_cancelled_move_from_an_obstructed_start_sends_the_correction() {
     // The harness's floor fills y=99 with stone; a start at that height
     // stands the guest inside it, its old box overlapping the blocks.
@@ -523,7 +523,7 @@ fn a_cancelled_move_from_an_obstructed_start_sends_the_correction() {
 /// step - five blocks, far over the quarter-block threshold - goes through
 /// uncorrected.
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_big_step_of_a_creative_guest_without_a_listener_sends_no_correction() {
     hosted_guest_starting(
         "entity-move-creative-plain",
@@ -556,7 +556,7 @@ fn a_big_step_of_a_creative_guest_without_a_listener_sends_no_correction() {
 /// too (review round 1), so the driver's put-back goes out from wherever the
 /// vehicle starts.
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_cancelled_vehicle_move_from_an_obstructed_start_sends_the_put_back() {
     // The harness's floor fills y=99 with stone; summoning the boat at that
     // height leaves it inside it, its old box overlapping the blocks.

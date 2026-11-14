@@ -234,3 +234,14 @@ fn a_trapped_wasm_listener_after_a_replacement_keeps_the_requested_delta() {
         );
     });
 }
+
+pub(super) struct EntityMoveHooks;
+impl EntityMoveHooks {
+    pub(super) fn entity_move(
+        &self,
+        context: &dyn LoopContext,
+        event: &mut mod_api::EntityMoveEvent<'_>,
+    ) -> mod_api::Flow {
+        guest_listener(context, event)
+    }
+}

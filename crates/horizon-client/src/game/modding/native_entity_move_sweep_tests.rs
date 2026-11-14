@@ -157,7 +157,7 @@ fn family_of(handle: super::entity::EntityHandle) -> String {
 /// causes. The backstop the clippy ban cannot give, because a forgotten
 /// family moves without any resolve call (review round 1).
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn every_walk_family_of_the_entity_lists_fires_its_case() {
     mod_platform::__private::initialize().unwrap();
     // The registration phase owns the general type the General case loads;
@@ -331,7 +331,7 @@ fn every_walk_family_of_the_entity_lists_fires_its_case() {
 /// Arrows in flight are vanilla `setPos` movers: their own tick fires
 /// nothing; a piston push fires once with the piston cause (#2414 point 3).
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn an_arrow_in_flight_fires_nothing_and_a_piston_push_fires_once() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -372,7 +372,7 @@ fn an_arrow_in_flight_fires_nothing_and_a_piston_push_fires_once() {
 /// need their own fixtures - a rod cast and a hosted connection - and stay
 /// for the live run.)
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn the_off_walk_movers_fire_too() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -481,7 +481,7 @@ fn the_off_walk_movers_fire_too() {
 /// cause: the goal's tick moves the dolphin by itself, beside travel's own
 /// move, exactly the two `Entity.move` invocations vanilla makes.
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_drowning_dolphins_goal_move_fires_too() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(

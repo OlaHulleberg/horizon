@@ -1482,7 +1482,7 @@ mod order_tests {
     /// per-tick budget, which a spent one would have clamped to almost
     /// nothing.
     #[test]
-    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+    #[ignore = "daily"]
     fn a_cancelled_push_spends_none_of_the_piston_budget() {
         use mod_api::{EntityMoveEvent, Flow, Hooks, LoopContext};
         struct Gate(std::sync::Arc<std::sync::atomic::AtomicBool>);

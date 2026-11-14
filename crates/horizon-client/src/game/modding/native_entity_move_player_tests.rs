@@ -27,7 +27,7 @@ impl Hooks for CancelAll {
 /// guest keeps its position, the hook heard the player cause, and a
 /// `PlayerPosition` correction went out (`awaiting_teleport` is set).
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_cancelled_player_packet_sends_the_guest_a_correction() {
     let causes = Arc::new(Mutex::new(Vec::new()));
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
@@ -162,7 +162,7 @@ fn a_cancelled_player_packet_sends_the_guest_a_correction() {
 /// where the boat was) — the same ruling the hub's own packet gets, at the
 /// vehicle Player-cause site (#2414).
 #[test]
-#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+#[ignore = "daily"]
 fn a_cancelled_vehicle_packet_sends_the_guest_a_correction() {
     let causes = Arc::new(Mutex::new(Vec::new()));
     let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
