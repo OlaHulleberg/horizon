@@ -24,11 +24,14 @@ class GateFailuresTests(unittest.TestCase):
                 cargo.write_text(f"#!{sys.executable}\n"
                                  "import json, os, sys\n"
                                  "with open(os.environ['CALLS'], 'a') as f: f.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+                                 "assert os.environ['RUSTC_WRAPPER'] == os.environ['GITHUB_WORKSPACE'] + '/tools/ci/test-compile-lock.sh'\n"
+                                 "assert os.environ['HORIZON_TEST_RUSTC_WRAPPER'] == '/configured/compiler-cache.sh'\n"
                                  "mode = os.environ['MODE']\n"
                                  "sys.exit(0 if mode == 'green' or (sys.argv[1] == 'build' and mode == 'red-build-success') else 1)\n")
                 cargo.chmod(0o755)
                 env = dict(os.environ, PATH=directory + os.pathsep + os.environ["PATH"],
-                           JOBS="-j2", MODE=mode, CALLS=str(root / "calls"))
+                           JOBS="-j2", MODE=mode, CALLS=str(root / "calls"),
+                           GITHUB_WORKSPACE=str(ROOT), RUSTC_WRAPPER="/configured/compiler-cache.sh")
                 result = subprocess.run(["bash", "-e", "-o", "pipefail", "-c", step["run"]],
                                         env=env, capture_output=True, text=True, timeout=5)
                 self.assertEqual(result.returncode, expected, result.stderr)
