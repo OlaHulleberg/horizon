@@ -1848,6 +1848,9 @@ pub mod tests {
         fn item_container_slots(&self, stack: &ItemStack) -> Option<Vec<Option<ItemStack>>> {
             (stack.damage() == 1).then(|| vec![None; 27])
         }
+        fn item_bundle_slots(&self, _: &ItemStack) -> Option<Vec<Option<ItemStack>>> {
+            None
+        }
     }
     #[cfg(test)]
     impl Backend for HeldItem {}
