@@ -5,41 +5,13 @@ use std::collections::{HashMap, HashSet};
 // no wire: in-process testing harness state, not a mod boundary payload.
 /// The registries a test reads: each item's default components (its item report), the items
 /// that hold slots of their own, and the mods loaded beside the one under test.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct FakeRegistries {
     components: HashMap<(String, String), Tag>,
     containers: HashMap<String, usize>,
     loaded: HashSet<String>,
     fluid_sounds: HashMap<String, (&'static str, &'static str)>,
-}
-
-impl Default for FakeRegistries {
-    fn default() -> Self {
-        if crate::parts::installed().is_none() {
-            let mut input = crate::__private::parts_installation::InstalledInput::default();
-            input
-                .registry_keys
-                .entity_types
-                .request("horizon", "minecraft:player")
-                .unwrap();
-            crate::parts::install_input(input);
-        }
-        let mut ids: Vec<_> = crate::parts::requested_keys()
-            .entity_types
-            .entries
-            .iter()
-            .map(|entry| entry.id.as_str())
-            .collect();
-        ids.push("minecraft:player");
-        crate::content::registry_keys::resolve_entity_types(ids).unwrap();
-        Self {
-            components: HashMap::new(),
-            containers: HashMap::new(),
-            loaded: HashSet::new(),
-            fluid_sounds: HashMap::new(),
-        }
-    }
 }
 
 impl FakeRegistries {

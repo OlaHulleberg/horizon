@@ -220,6 +220,46 @@ impl FakeHost {
     pub fn new() -> Self {
         Self::default()
     }
+    /// Freeze the current load's entity-type table after declaring the fake world's entities.
+    /// Includes requested mod keys, the player type and every kind in this host's level.
+    /// Repeated setup may use already resolved kinds, but cannot extend the frozen table.
+    pub fn resolve_entity_types(&mut self) -> Result<(), Vec<String>> {
+        if crate::parts::installed().is_none() {
+            crate::parts::install_input(
+                crate::__private::parts_installation::InstalledInput::default(),
+            );
+        }
+        let mut ids: Vec<_> = crate::parts::requested_keys()
+            .entity_types
+            .entries
+            .iter()
+            .map(|entry| entry.id.as_str())
+            .collect();
+        ids.push("minecraft:player");
+        ids.extend(
+            self.level
+                .entities
+                .values()
+                .map(|entity| entity.kind.as_str()),
+        );
+        if crate::parts::installed()
+            .is_some_and(|installed| installed.resolved_entity_types.get().is_some())
+        {
+            let errors: Vec<_> = ids
+                .into_iter()
+                .filter(|id| crate::content::registry_keys::resolved_entity_type_key(id).is_none())
+                .map(|id| {
+                    format!("fake entity kind {id} was not declared before entity-type resolution")
+                })
+                .collect();
+            return if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors)
+            };
+        }
+        crate::content::registry_keys::resolve_entity_types(ids)
+    }
     /// Player `uuid` online as entity `entity` in the level, joined if missing.
     pub fn join(&mut self, uuid: u128, entity: u32) -> &mut FakePlayer {
         self.players.join(uuid, entity, self.level.level())
