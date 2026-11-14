@@ -5,7 +5,7 @@
 //! small cancel through. Built on the real hub: a hosted guest, a packet in
 //! its inbox, the hub's own collide path.
 use crate::game::game_tests::tests::server_game;
-use horizon_client::lan::guest::InboxItem;
+use horizon_client::lan::guest::{InboxItem, SURVIVAL};
 use horizon_client::lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig};
 use horizon_core::position::ChunkPos;
 use horizon_protocol::packets::configuration::ClientInformation;
@@ -49,6 +49,20 @@ fn hosted_guest<R>(
     mods: mod_api::Mods,
     body: impl FnOnce(&mut crate::game::Game<'_>, std::sync::mpsc::Receiver<Out>, [f64; 3]) -> R,
 ) -> R {
+    hosted_guest_starting(net, [0.5, 100.0, 0.5], SURVIVAL, boat, mods, body)
+}
+
+/// [`hosted_guest`] with the guest's start and game mode of the test's
+/// choosing: the round-1 outcomes need a guest standing inside a block and a
+/// creative one, on the same harness as the ordinary walks.
+fn hosted_guest_starting<R>(
+    net: &str,
+    starting: [f64; 3],
+    mode: i32,
+    boat: bool,
+    mods: mod_api::Mods,
+    body: impl FnOnce(&mut crate::game::Game<'_>, std::sync::mpsc::Receiver<Out>, [f64; 3]) -> R,
+) -> R {
     mod_platform::testing::with_mods(mods, || {
         let mut resources = None;
         let mut game = server_game(&mut resources);
@@ -74,11 +88,14 @@ fn hosted_guest<R>(
         assert!(game.run_command("forceload add 0 0"));
         assert!(game.run_command("tick freeze"));
         let at = if boat {
-            assert!(game.run_command("summon minecraft:oak_boat 0.5 100 0.5"));
+            assert!(game.run_command(&format!(
+                "summon minecraft:oak_boat {} {} {}",
+                starting[0], starting[1], starting[2]
+            )));
             let start = game.boats[0].position;
             [start.x, start.y, start.z]
         } else {
-            [0.5, 100.0, 0.5]
+            starting
         };
         game.lan_host(
             crate::game::lan::LanSettings {
@@ -137,6 +154,12 @@ fn hosted_guest<R>(
             guest.vehicle_good = Some(at);
         }
         game.lan.as_mut().unwrap().hub.guests.push(guest);
+        game.lan
+            .as_mut()
+            .unwrap()
+            .hub
+            .guests
+            .update(0, |g| g.game_mode = mode);
         game.sync_tick_chunks();
         game.ticked_entities_through = game.next_entity;
         body(&mut game, rx, at)
@@ -405,6 +428,157 @@ fn a_vehicle_replacement_equal_to_the_request_sends_no_correction() {
             assert!(
                 !vehicle_put_back(game, &rx),
                 "a vehicle replacement equal to the request sends no correction"
+            );
+        },
+    );
+}
+
+/// A creative guest a listener cancels: the refusal of an overridden move is
+/// independent of vanilla's creative exemption — that exemption belongs to
+/// the distance test alone (review round 1), so the cancel sends the creative
+/// guest back all the same.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_cancelled_move_of_a_creative_guest_sends_the_correction() {
+    hosted_guest_starting(
+        "entity-move-creative-cancel",
+        [0.5, 100.0, 0.5],
+        horizon_client::lan::guest::CREATIVE,
+        false,
+        mods(CancelAll),
+        |game, _rx, at| {
+            guest_walks(game, 0.2);
+            let g = &game.lan.as_ref().unwrap().hub.guests[0];
+            assert_eq!(
+                g.position, at,
+                "the cancelled move of a creative guest did not move it"
+            );
+            assert!(
+                guest_corrected(game),
+                "the cancelled move of a creative guest sent the correction"
+            );
+        },
+    );
+}
+
+/// A creative guest a listener replaces with half the step: the replacement
+/// too is a decision that is not the request, and the creative exemption is
+/// not its to spare (review round 1).
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_replaced_move_of_a_creative_guest_sends_the_correction() {
+    hosted_guest_starting(
+        "entity-move-creative-replace",
+        [0.5, 100.0, 0.5],
+        horizon_client::lan::guest::CREATIVE,
+        false,
+        mods(ReplaceEach([0.1, 0.0, 0.0])),
+        |game, _rx, at| {
+            guest_walks(game, 0.2);
+            let g = &game.lan.as_ref().unwrap().hub.guests[0];
+            assert_eq!(
+                g.position, at,
+                "the replaced move of a creative guest did not move it"
+            );
+            assert!(
+                guest_corrected(game),
+                "the replaced move of a creative guest sent the correction"
+            );
+        },
+    );
+}
+
+/// A guest that starts inside a block (its old box obstructed) a listener
+/// cancels: vanilla would hold the correction back from an obstructed start,
+/// but that exemption is the distance test's — an overridden move is refused
+/// from wherever it starts (review round 1).
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_cancelled_move_from_an_obstructed_start_sends_the_correction() {
+    // The harness's floor fills y=99 with stone; a start at that height
+    // stands the guest inside it, its old box overlapping the blocks.
+    hosted_guest_starting(
+        "entity-move-stuck-cancel",
+        [0.5, 99.0, 0.5],
+        SURVIVAL,
+        false,
+        mods(CancelAll),
+        |game, _rx, at| {
+            guest_walks(game, 0.2);
+            let g = &game.lan.as_ref().unwrap().hub.guests[0];
+            assert_eq!(
+                g.position, at,
+                "the cancelled move of a stuck guest did not move it"
+            );
+            assert!(
+                guest_corrected(game),
+                "the cancelled move from an obstructed start sent the correction"
+            );
+        },
+    );
+}
+
+/// A creative guest with no listener keeps vanilla's behaviour: the creative
+/// exemption still holds for the distance test (review round 1), so a big
+/// step - five blocks, far over the quarter-block threshold - goes through
+/// uncorrected.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_big_step_of_a_creative_guest_without_a_listener_sends_no_correction() {
+    hosted_guest_starting(
+        "entity-move-creative-plain",
+        [0.5, 100.0, 0.5],
+        horizon_client::lan::guest::CREATIVE,
+        false,
+        Vec::new().into(),
+        |game, _rx, at| {
+            assert!(
+                !guest_corrected(game),
+                "nothing corrected the guest before its step"
+            );
+            guest_walks(game, 5.0);
+            let g = &game.lan.as_ref().unwrap().hub.guests[0];
+            assert_eq!(
+                g.position,
+                [at[0] + 5.0, at[1], at[2]],
+                "the creative guest's big step went through, as vanilla allows"
+            );
+            assert!(
+                !guest_corrected(game),
+                "a big step of a creative guest with no listener sends no correction"
+            );
+        },
+    );
+}
+
+/// A boat that starts inside a block (its old box obstructed) a listener
+/// cancels: the vehicle site's free-old-box exemption is the distance test's
+/// too (review round 1), so the driver's put-back goes out from wherever the
+/// vehicle starts.
+#[test]
+#[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
+fn a_cancelled_vehicle_move_from_an_obstructed_start_sends_the_put_back() {
+    // The harness's floor fills y=99 with stone; summoning the boat at that
+    // height leaves it inside it, its old box overlapping the blocks.
+    hosted_guest_starting(
+        "entity-move-boat-stuck-cancel",
+        [0.5, 99.0, 0.5],
+        SURVIVAL,
+        true,
+        mods(CancelAll),
+        |game, rx, at| {
+            driver_moves_vehicle(game, 0.2);
+            assert!(
+                [
+                    game.boats[0].position.x,
+                    game.boats[0].position.y,
+                    game.boats[0].position.z
+                ] == at,
+                "the cancelled vehicle move of a stuck boat did not move it"
+            );
+            assert!(
+                vehicle_put_back(game, &rx),
+                "the cancelled vehicle move from an obstructed start sent the put-back"
             );
         },
     );

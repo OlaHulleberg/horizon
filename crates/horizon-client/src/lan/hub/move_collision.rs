@@ -121,13 +121,16 @@ where
     // discrepancy. A decision that is not the request fails whatever the
     // distance (#2414, ruling 5): a cancel or a replacement always sends the
     // guest a correction, so a walk's small step cannot slip under the
-    // threshold and keep going.
-    let fail = !g.creative()
-        && (overridden
-            || done.is_some_and(|done| {
-                let (dx, dz) = (requested.x - done.x, requested.z - done.z);
-                dx * dx + dz * dz > 0.0625
-            }));
+    // threshold and keep going. Vanilla's exemptions - a creative guest, and
+    // the unobstructed-start check below - belong to the distance test alone
+    // (review round 1): an overridden move is refused for a creative guest
+    // and from an obstructed start too.
+    let moved_wrongly = !g.creative()
+        && done.is_some_and(|done| {
+            let (dx, dz) = (requested.x - done.x, requested.z - done.z);
+            dx * dx + dz * dz > 0.0625
+        });
+    let fail = overridden || moved_wrongly;
     // Entity.move: verticalCollisionBelow, the player "stands on something".
     let stands = done.is_some_and(|done| movement.y < 0.0 && done.y != movement.y);
     if fail {
@@ -140,7 +143,10 @@ where
                 candidate_budget: 1_000_000,
             },
         );
-        if unobstructed.unwrap_or(true) {
+        // An overridden decision is refused from wherever it starts: the
+        // unobstructed-old-box exemption is the distance test's, like
+        // creative above (review round 1).
+        if overridden || unobstructed.unwrap_or(true) {
             return (true, true, stands);
         }
     }

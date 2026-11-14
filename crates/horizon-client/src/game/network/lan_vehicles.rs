@@ -556,7 +556,10 @@ impl Game<'_> {
             let reset = self.vehicle_fall_reset(self.boats[i].fall_distance, old, resolved);
             self.boats.update(i, |boat| boat.fall_distance = reset);
         }
-        if free_before && (wrongly || !free_after) {
+        // An overridden decision is put back from wherever the vehicle starts:
+        // the free-old-box exemption is the distance test's (review round 1),
+        // like the hub's unobstructed-start check.
+        if overridden || (free_before && (wrongly || !free_after)) {
             log::warn!("vehicle {id} moved wrongly");
             back(self.lan.as_mut().unwrap(), old, yaw);
             return;
