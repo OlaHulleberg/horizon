@@ -157,17 +157,19 @@ fn registered_kind_stale_result_takes_nothing_after_grid_change() {
                 recipes: &recipes,
                 ..*base
             };
-            let mut menu = Menu::new(Kind::Crafting);
-            menu.set_slot(&env, 1, Some(ItemStack::new("test:input", 2)));
-            assert!(menu.slot(0).is_some());
-            menu.containers[GRID][0] = Some(ItemStack::new("test:rest", 2));
-            menu.click(&env, 0, 0, Input::Pickup).unwrap();
-            assert_eq!(
-                menu.containers[GRID][0],
-                Some(ItemStack::new("test:rest", 2))
-            );
-            assert!(menu.carried.is_none());
-            assert!(calls.lock().unwrap().is_empty());
+            for kind in [Kind::Crafting, mod_crafting_table()] {
+                let mut menu = Menu::new(kind);
+                menu.set_slot(&env, 1, Some(ItemStack::new("test:input", 2)));
+                assert_eq!(menu.slot(0), Some(&ItemStack::new("test:output", 3)));
+                menu.containers[GRID][0] = Some(ItemStack::new("test:rest", 2));
+                menu.click(&env, 0, 0, Input::Pickup).unwrap();
+                assert_eq!(
+                    menu.containers[GRID][0],
+                    Some(ItemStack::new("test:rest", 2))
+                );
+                assert!(menu.carried.is_none());
+                assert!(calls.lock().unwrap().is_empty());
+            }
         });
     });
 }
@@ -180,32 +182,34 @@ fn registered_kind_reload_removing_last_recipe_rejects_cached_result() {
                 recipes: &recipes,
                 ..*base
             };
-            let mut menu = Menu::new(Kind::Crafting);
-            menu.set_slot(&old, 1, Some(ItemStack::new("test:input", 2)));
-            assert!(menu.slot(0).is_some());
-            let root = tempfile::tempdir().unwrap();
-            std::fs::create_dir_all(root.path().join("data/minecraft/recipe")).unwrap();
-            let reloaded = Recipes::from_sources(
-                root.path(),
-                base.items,
-                &PackOverlay::NONE,
-                Vec::new(),
-                &crate::test_resources::server_load(),
-            )
-            .unwrap();
-            assert!(reloaded.crafting.is_empty());
-            let current = Env {
-                recipes: &reloaded,
-                ..*base
-            };
-            menu.click(&current, 0, 0, Input::Pickup).unwrap();
-            assert!(menu.carried.is_none());
-            assert_eq!(menu.slot(1).unwrap().count, 2);
-            assert!(calls.lock().unwrap().is_empty());
-            assert_eq!(
-                mod_api::__private::parts_installation::crafting_recipe_kinds(),
-                ["test:literal"]
-            );
+            for kind in [Kind::Crafting, mod_crafting_table()] {
+                let mut menu = Menu::new(kind);
+                menu.set_slot(&old, 1, Some(ItemStack::new("test:input", 2)));
+                assert_eq!(menu.slot(0), Some(&ItemStack::new("test:output", 3)));
+                let root = tempfile::tempdir().unwrap();
+                std::fs::create_dir_all(root.path().join("data/minecraft/recipe")).unwrap();
+                let reloaded = Recipes::from_sources(
+                    root.path(),
+                    base.items,
+                    &PackOverlay::NONE,
+                    Vec::new(),
+                    &crate::test_resources::server_load(),
+                )
+                .unwrap();
+                assert!(reloaded.crafting.is_empty());
+                let current = Env {
+                    recipes: &reloaded,
+                    ..*base
+                };
+                menu.click(&current, 0, 0, Input::Pickup).unwrap();
+                assert!(menu.carried.is_none());
+                assert_eq!(menu.slot(1), Some(&ItemStack::new("test:input", 2)));
+                assert!(calls.lock().unwrap().is_empty());
+                assert_eq!(
+                    mod_api::__private::parts_installation::crafting_recipe_kinds(),
+                    ["test:literal"]
+                );
+            }
         });
     });
 }

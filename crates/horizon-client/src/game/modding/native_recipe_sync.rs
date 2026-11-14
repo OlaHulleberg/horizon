@@ -104,15 +104,16 @@ impl Game<'_> {
                     .map(|entry| (entry.id.clone(), (*entry.json).clone()))
             })
             .collect();
-        sources.retain(|(_, json)| {
-            !json["type"]
-                .as_str()
-                .is_some_and(|kind| registered.contains(kind))
+        let written_ids: std::collections::HashSet<_> =
+            written.iter().map(|(id, _)| id.as_str()).collect();
+        sources.retain(|(id, json)| {
+            !written_ids.contains(id.as_str())
+                && !json["type"]
+                    .as_str()
+                    .is_some_and(|kind| registered.contains(kind))
         });
-        for (id, json) in written {
-            sources.retain(|(name, _)| name != &id);
-            sources.push((id, json));
-        }
+        drop(written_ids);
+        sources.extend(written);
         sources.sort_by_cached_key(|(id, _)| crate::crafting::registration_key(id));
         if let Some(host) = self.lan.as_mut() {
             host.hub.update_guest(conn, |g| {

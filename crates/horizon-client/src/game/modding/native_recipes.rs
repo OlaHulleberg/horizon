@@ -176,8 +176,15 @@ impl Game<'_> {
                 let Some((id, output)) = matched.filter(|(_, output)| output.count > 0) else {
                     return Ok(None);
                 };
-                let mut placed =
-                    recipes.remainders(id, grid, size, &|s| self.crafting_remainder(s));
+                let mut placed = if matches!(
+                    recipes.recipe(id),
+                    Some(horizon_client::crafting::Recipe::Mod(_))
+                ) {
+                    recipes
+                        .mod_remainders_rect(id, grid, size, w, h, &|s| self.crafting_remainder(s))
+                } else {
+                    recipes.remainders(id, grid, size, &|s| self.crafting_remainder(s))
+                };
                 let remainders = (0..w * h)
                     .map(|i| placed[at(i)].take().try_into_api().map_err(|_| InvalidItem))
                     .collect::<Result<Vec<_>, _>>()?;

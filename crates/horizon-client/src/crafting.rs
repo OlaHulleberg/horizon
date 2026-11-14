@@ -1461,10 +1461,10 @@ impl ResolvedSources {
         context: &horizon_world::native_load_context::LoadContext,
     ) -> Result<Self> {
         let context = context.with_fluid_tags(horizon_items::items::fluid_tag_list(root, overlay)?);
-        Ok(Self::resolve(
+        Self::resolve(
             horizon_items::recipe_sources::sources(root, overlay)?,
             &context,
-        ))
+        )
     }
     /// `load`, an unreadable recipe folder leaving no recipes.
     pub fn load_or_empty(
@@ -1483,9 +1483,14 @@ impl ResolvedSources {
     pub fn resolve(
         mut sources: Vec<(String, Value)>,
         context: &horizon_world::native_load_context::LoadContext,
-    ) -> Self {
+    ) -> Result<Self> {
         // Every consumer keeps vanilla's resource-file registration order.
         sources.sort_by_cached_key(|(name, _)| registration_key(name));
+        for (name, file) in &sources {
+            if let Some(serializer) = file["type"].as_str() {
+                mod_kinds::recipe_type(name, serializer)?;
+            }
+        }
         let listened = mod_api::__private::listened(mod_api::HookId::Ingredient);
         let recipes = sources
             .into_iter()
@@ -1553,11 +1558,11 @@ impl ResolvedSources {
                 })
             })
             .collect();
-        Self {
+        Ok(Self {
             recipes,
             property_additions: PropertyAdditions::ask(context),
             ..Self::default()
-        }
+        })
     }
 }
 
@@ -1608,7 +1613,7 @@ impl Recipes {
             root,
             items,
             overlay,
-            &ResolvedSources::resolve(sources, context),
+            &ResolvedSources::resolve(sources, context)?,
         )
     }
     /// The tables from the condition-selected recipes of one owning load. Unknown serializers

@@ -109,3 +109,38 @@ fn read_only_machine_serializer_reports_separate_type_without_crafting() {
         },
     );
 }
+
+#[test]
+fn unknown_serializer_refuses_before_unclaimed_ingredient_is_dropped() {
+    mod_platform::testing::with_mods(Vec::new().into(), || {
+        let file: Value = serde_json::from_str(
+            r#"{"type":"minecraft:future_serializer","ingredient":{"type":"absent:ingredient"}}"#,
+        )
+        .unwrap();
+        let sources = vec![("minecraft:future".into(), file)];
+        let context = crate::test_resources::server_load();
+        let error = ResolvedSources::resolve(sources.clone(), &context)
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            error,
+            "recipe data/minecraft/recipe/future.json, unregistered recipe serializer minecraft:future_serializer"
+        );
+        let root = tempfile::tempdir().unwrap();
+        let error = Recipes::from_sources(
+            root.path(),
+            &Items::empty(),
+            &PackOverlay::NONE,
+            sources,
+            &context,
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert_eq!(
+            error,
+            "recipe data/minecraft/recipe/future.json, unregistered recipe serializer minecraft:future_serializer"
+        );
+    });
+}

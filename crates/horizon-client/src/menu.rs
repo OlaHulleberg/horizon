@@ -1692,9 +1692,7 @@ impl Menu {
     fn may_pickup(&self, env: &Env, s: usize) -> bool {
         match self.state.slots[s].role {
             Role::Inert | Role::Hidden => false,
-            Role::CraftResult if matches!(self.state.kind, Kind::Inventory | Kind::Crafting) => {
-                self.crafting_result_is_current(env, s)
-            }
+            Role::CraftResult => self.crafting_result_is_current(env, s),
             // AnvilMenu.mayPickup: the levels to pay, and a price.
             Role::CombineResult if self.state.kind == Kind::Anvil => {
                 (self.state.creative || self.state.levels >= self.state.data[0])

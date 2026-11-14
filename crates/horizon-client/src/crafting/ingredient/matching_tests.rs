@@ -144,7 +144,7 @@ fn empty_ingredient_recipes_retain_predicates_but_not_placement() {
             "key":{"A":"minecraft:stone"},"result":{"id":"minecraft:stick"}
         }),
     ));
-    let resolved = ResolvedSources::resolve(sources, &load);
+    let resolved = ResolvedSources::resolve(sources, &load).unwrap();
     let root = std::env::temp_dir();
     let recipes = Recipes::from_resolved(&root, &items, &PackOverlay::NONE, &resolved).unwrap();
     let stations = crate::stations::StationRecipes::from_sources(&root, &items, &resolved);
