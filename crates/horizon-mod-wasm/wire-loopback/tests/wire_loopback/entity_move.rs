@@ -135,3 +135,102 @@ fn wire_loopback_entity_move_carries_the_guests_decision() {
         let _ = &context;
     }
 }
+
+/// A native listener that replaces every delta with `[0.0, 0.0, 2.0]`: the
+/// earlier listener of the trap test below.
+struct NativeReplacer;
+
+#[mod_api::__subscriptions]
+impl mod_api::Hooks for NativeReplacer {
+    fn entity_move(
+        &self,
+        _: &dyn LoopContext,
+        event: &mut mod_api::EntityMoveEvent<'_>,
+    ) -> mod_api::Flow {
+        *event.delta = [0.0, 0.0, 2.0];
+        mod_api::Flow::Continue
+    }
+}
+
+/// A native listener that only counts its calls: the later listener of the
+/// trap test, which must not run on the trapped invocation.
+struct NativeTally(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+#[mod_api::__subscriptions]
+impl mod_api::Hooks for NativeTally {
+    fn entity_move(
+        &self,
+        _: &dyn LoopContext,
+        _: &mut mod_api::EntityMoveEvent<'_>,
+    ) -> mod_api::Flow {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        mod_api::Flow::Continue
+    }
+}
+
+/// A wasm listener whose call fails after an earlier listener replaced the
+/// delta (review round 1): `APPEND_ATTACK` 3 stands in for a trapped or
+/// refused guest call — the reply comes back short, decodes as nothing, and
+/// the generated proxy sees `None`. The isolated dispatch gives it the same
+/// treatment a native panic gets: the **requested** delta is restored — not
+/// the replacer's `[0, 0, 2]` — the trapped listener is switched off for
+/// this hook alone, and no later listener runs on that invocation.
+#[test]
+fn a_trapped_wasm_listener_after_a_replacement_keeps_the_requested_delta() {
+    mod_api::__private::initialize().unwrap();
+    let _phase = mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::World);
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mods = [
+        mod_api::ModEntry::new("replacer", Box::new(NativeReplacer)),
+        mod_api::ModEntry::new(
+            "wire_test",
+            Box::new(WasmMod {
+                group: 0,
+                subscribed: &[Some(mod_api::HookId::EntityMove)],
+                listeners: &[],
+                corrupt: false,
+            }),
+        ),
+        mod_api::ModEntry::new("tally", Box::new(NativeTally(calls.clone()))),
+    ];
+    mod_api::testing::with_mods(std::sync::Arc::from(mods), || {
+        let dispatch = |delta: &mut [f64; 3], canceled: &mut bool| {
+            mod_api::dispatch_entity_move(
+                &Context,
+                7,
+                "minecraft:zombie",
+                mod_api::MoveCause::SelfMovement,
+                delta,
+                canceled,
+            );
+        };
+        let (mut delta, mut canceled) = ([1.0, 0.0, 0.0], false);
+        // The guest's reply loses its last byte: as a trapped or refused
+        // call, nothing decodes.
+        APPEND_ATTACK.set(3);
+        dispatch(&mut delta, &mut canceled);
+        APPEND_ATTACK.set(0);
+        assert_eq!(
+            delta,
+            [1.0, 0.0, 0.0],
+            "the requested delta survived the trap, not the replacer's [0.0, 0.0, 2.0]"
+        );
+        assert!(!canceled, "a trapped listener cancels nothing");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "no listener after the trapped one ran on that invocation"
+        );
+        dispatch(&mut delta, &mut canceled);
+        assert_eq!(
+            delta,
+            [0.0, 0.0, 2.0],
+            "the trapped listener is off: the replacer's delta stands again"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "the later listener runs once the trapped one is switched off"
+        );
+    });
+}
