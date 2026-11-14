@@ -203,40 +203,6 @@ fn listening(hook_id: HookId) -> impl Iterator<Item = (bool, &'static ModEntry)>
             })
     })
 }
-mod runtime {
-    pub(super) struct ListenerScope;
-    impl ListenerScope {
-        pub(super) fn new() -> Self {
-            Self
-        }
-        pub(super) fn enter(
-            &mut self,
-            entry: &'static super::ModEntry,
-            hook: &'static str,
-        ) -> &'static dyn super::Hooks {
-            super::enter_listener(entry, hook).1
-        }
-    }
-    thread_local! {
-        /// The listeners the isolated dispatches poisoned, as (hook ordinal, id) pairs — the
-        /// stand-in for the real runtime's per-hook sets.
-        pub(super) static POISONED: std::cell::RefCell<std::collections::HashSet<(usize, &'static str)>> =
-            std::cell::RefCell::new(std::collections::HashSet::new());
-    }
-    pub(super) fn poison(hook: super::HookId, id: &'static str) {
-        POISONED.with(|poisoned| poisoned.borrow_mut().insert((hook as usize, id)));
-    }
-    pub(super) fn poisoned(hook: super::HookId, id: &str) -> bool {
-        POISONED.with(|poisoned| {
-            poisoned
-                .borrow()
-                .iter()
-                .any(|(poisoned_hook, poisoned_id)| {
-                    *poisoned_hook == hook as usize && *poisoned_id == id
-                })
-        })
-    }
-}
 fn enter_listener(entry: &'static ModEntry, hook: &'static str) -> ((), &'static dyn Hooks) {
     let index = MODS
         .get()
