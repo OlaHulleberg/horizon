@@ -14,6 +14,37 @@ WRAPPER = ROOT / "tools/ci/test-compile-lock.sh"
 
 @unittest.skipIf(os.name == "nt", "requires Bash, flock and pipe readiness")
 class TestCompileLockTests(unittest.TestCase):
+    def test_response_file_and_equals_form_take_the_lock_without_rewriting_arguments(self):
+        import fcntl
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            compiler = root / "fake-rustc"
+            compiler.write_text(f"#!{sys.executable}\n"
+                                "import json, sys\n"
+                                "print(json.dumps(sys.argv[1:]), flush=True)\n"
+                                "sys.exit(7)\n")
+            compiler.chmod(0o755)
+            response = root / "arguments with spaces"
+            response.write_text('--crate-name\nhorizon_client_lib\n--cfg\nfeature="with spaces"\n--test')
+            env = dict(os.environ, RUNNER_TEMP=directory, HORIZON_TEST_RUSTC_WRAPPER="")
+            for args in (["@" + str(response)], ["--crate-name=horizon_client", "--test"]):
+                with self.subTest(args=args), (root / "horizon-lib-test-compile.lock").open("w") as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                    process = subprocess.Popen([WRAPPER, compiler, *args], env=env,
+                                               stdout=subprocess.PIPE, text=True)
+                    try:
+                        self.assertFalse(select.select([process.stdout], [], [], 0.2)[0],
+                                         "compiler bypassed the held test-unit lock")
+                        fcntl.flock(lock, fcntl.LOCK_UN)
+                        output, _ = process.communicate(timeout=5)
+                        self.assertEqual(process.returncode, 7)
+                        self.assertEqual(json.loads(output), args)
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                        process.communicate()
+
     def test_large_test_units_serialize_while_other_calls_pass_through(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
