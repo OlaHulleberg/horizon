@@ -326,10 +326,20 @@ jobs:
       - name: macOS main-stack diagnostics
         if: runner.os == 'macOS'
         run: |
+          echo "LC_MAIN of horizon-client:"
           otool -l "$BIN/horizon-client" | grep -A4 LC_MAIN || true
-          sysctl -n sysctl.proc_translated 2>/dev/null || echo 0
-          ulimit -s || true
+          if [[ "$(lipo -archs "$BIN/horizon-client")" == x86_64 ]]; then
+            translated=$(arch -x86_64 /usr/sbin/sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)
+            stack_limit=$(arch -x86_64 /bin/sh -c 'ulimit -s' || true)
+          else
+            translated=$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)
+            stack_limit=$(ulimit -s || true)
+          fi
+          echo "sysctl.proc_translated (horizon-client architecture): $translated"
+          echo "ulimit -s (horizon-client architecture): $stack_limit"
+          echo "Runner uname -m:"
           uname -m || true
+          echo "Runner arch:"
           arch || true
       - name: Every program starts
         if: ${{ !matrix.musl }}
