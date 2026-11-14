@@ -65,3 +65,11 @@ entity unsheared, and `None` leaves it to the species (a sheep keeps shearing as
 negative amounts repair. It returns the pre-shrink stack only on break, and `None` when
 nothing breaks or the entity or slot is unavailable. Creative players' equipment is
 exempt. The operation does not fire equip effects.
+
+The mob handle also reads `can_open_doors`, `can_pass_doors`, and `can_float`
+and writes them with `set_can_open_doors`, `set_can_pass_doors`, and `set_can_float`.
+Reads take `&dyn Host`; writes take `&mut dyn ServerHost`. Set these navigation
+wishes from `entity_join`; the mob's own setup may set them again. Each setter
+changes only its flag and leaves any current path intact. Reads return `None`
+and writes return `false` for stale handles, clients, mobs held out of the level,
+and mobs without ground or flying navigation (including water and amphibious navigation).
