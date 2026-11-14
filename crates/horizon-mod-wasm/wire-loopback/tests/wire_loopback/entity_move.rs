@@ -8,7 +8,7 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// What the guest's `entity_move` (in `__horizon_mod_hooks` below) heard on
+/// What the guest's generated `entity_move` listener heard on
 /// its last call: entity, kind, cause, and the delta as it arrived.
 pub(super) fn take_heard() -> Option<(u32, String, mod_api::MoveCause, [f64; 3])> {
     HEARD.with_borrow_mut(std::mem::take)
