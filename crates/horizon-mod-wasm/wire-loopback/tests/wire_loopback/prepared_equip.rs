@@ -1,9 +1,8 @@
 //! Real generated host/guest prepared dispatch, using the existing loopback transport.
+use super::prepared as slots;
 use super::*;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[path = "../../../src/prepared.rs"]
-pub(super) mod slots;
 thread_local! {
     static REGISTER_PART: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
     static EXPECTED: RefCell<Option<mod_api::ItemStack>> = const { RefCell::new(None) };
