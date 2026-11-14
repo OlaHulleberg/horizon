@@ -78,12 +78,6 @@ horizon-client game::native_hooks::player_bed_leave::player_bed_leave_tests::bed
 horizon-client game::native_hooks::player_bed_leave::player_bed_leave_tests::guest_missing_bed_death_and_bed_rule_keep_their_distinct_literal_pairs lib daily game-boot
 horizon-client game::native_hooks::player_bed_leave::player_bed_leave_tests::guest_wake_counters_match_the_same_reasons_without_listeners lib daily game-boot
 horizon-client game::native_menus::tests::container_hooks_follow_actual_open_boundaries_without_a_tick lib daily game-boot
-horizon-client game::native_mob_navigation_flags_tests::navigation_flags_closed_door_path_reaches_goal_only_when_passable lib daily resources
-horizon-client game::native_mob_navigation_flags_tests::navigation_flags_literal_values_and_current_path_unchanged lib daily resources
-horizon-client game::native_mob_navigation_flags_tests::navigation_flags_refuse_client lib daily resources
-horizon-client game::native_mob_navigation_flags_tests::navigation_flags_refuse_held_out_of_level lib daily resources
-horizon-client game::native_mob_navigation_flags_tests::navigation_flags_refuse_no_ground_or_flying_navigation lib daily resources
-horizon-client game::native_mob_navigation_flags_tests::navigation_flags_refuse_stale_handle lib daily resources
 horizon-client game::native_passage_cross::tests::a_crossing_into_another_level_is_refused_far_level lib daily resources
 horizon-client game::native_passages::tests::a_destination_level_must_be_open_and_another_level lib daily resources
 horizon-client game::native_passages::tests::a_passage_into_another_level_is_not_sent_to_the_clients lib daily resources
