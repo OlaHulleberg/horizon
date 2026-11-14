@@ -14,6 +14,37 @@ WRAPPER = ROOT / "tools/ci/test-compile-lock.sh"
 
 @unittest.skipIf(os.name == "nt", "requires Bash, flock and pipe readiness")
 class TestCompileLockTests(unittest.TestCase):
+    def test_background_compiler_child_cannot_keep_the_lock_after_compiler_exit(self):
+        import signal
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pid_file = root / "child-pid"
+            compiler = root / "fake-rustc"
+            compiler.write_text(f"#!{sys.executable}\n"
+                                "import os, pathlib, subprocess, sys\n"
+                                "if '--spawn-child' in sys.argv:\n"
+                                "    child = subprocess.Popen(['sleep', '30'], close_fds=False,\n"
+                                "                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+                                "    pathlib.Path(os.environ['CHILD_PID']).write_text(str(child.pid))\n"
+                                "sys.exit(7)\n")
+            compiler.chmod(0o755)
+            env = dict(os.environ, RUNNER_TEMP=directory, CHILD_PID=str(pid_file),
+                       HORIZON_TEST_RUSTC_WRAPPER="")
+            try:
+                first = subprocess.run([WRAPPER, compiler, '--crate-name', 'horizon_client_lib',
+                                        '--test', '--spawn-child'], env=env, timeout=5)
+                self.assertEqual(first.returncode, 7)
+                child_pid = int(pid_file.read_text())
+                os.kill(child_pid, 0)  # Descendant is still alive when the second call runs.
+                second = subprocess.run([WRAPPER, compiler, '--crate-name', 'horizon_client',
+                                         '--test'], env=env, timeout=5)
+                self.assertEqual(second.returncode, 7)
+                os.kill(child_pid, 0)
+            finally:
+                if pid_file.exists():
+                    os.kill(int(pid_file.read_text()), signal.SIGTERM)
+
     def test_response_file_and_equals_form_take_the_lock_without_rewriting_arguments(self):
         import fcntl
 

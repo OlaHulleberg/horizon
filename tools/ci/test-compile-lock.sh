@@ -26,7 +26,7 @@ if [ -n "${HORIZON_TEST_RUSTC_WRAPPER:-}" ]; then
   command=("$HORIZON_TEST_RUSTC_WRAPPER" "$@")
 fi
 if $test_unit && { [ "$crate_name" = horizon_client ] || [ "$crate_name" = horizon_client_lib ]; }; then
-  exec 9> "${RUNNER_TEMP:?}/horizon-lib-test-compile.lock"
-  flock -x 9
+  # Keep the lock in flock's parent, not in compiler/cache daemon descendants.
+  exec flock -x -o "${RUNNER_TEMP:?}/horizon-lib-test-compile.lock" "${command[@]}"
 fi
 exec "${command[@]}"
