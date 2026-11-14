@@ -189,7 +189,7 @@ mod tests {
                 .into_iter()
                 .map(|conn| {
                     let (tx, rx) = std::sync::mpsc::channel();
-                    game.lan.as_ref().unwrap().hub.update_guest(conn, |guest| {
+                    game.lan.as_mut().unwrap().hub.update_guest(conn, |guest| {
                         guest.sender =
                             horizon_client::lan::PlayerSender::new(tx, std::sync::Arc::default());
                     });
