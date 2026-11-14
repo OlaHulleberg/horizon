@@ -538,8 +538,8 @@ impl Game<'_> {
         )
         .unwrap_or(wanted);
         let reached = old.add_vector(resolved);
-        let wrongly = overridden
-            || (target.x - reached.x).powi(2) + (target.z - reached.z).powi(2) > 0.0625;
+        let wrongly =
+            overridden || (target.x - reached.x).powi(2) + (target.z - reached.z).powi(2) > 0.0625;
         let free_before = scene.unobstructed(bounds).unwrap_or(true);
         // isEntityCollidingWithAnythingNew: a box that was free is not there.
         let moved_box = bounds.move_by(target.subtract(old));
