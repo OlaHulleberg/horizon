@@ -323,6 +323,14 @@ jobs:
         run: |
           python3 .workflow-tools/tools/check_glibc.py \
             "$BIN/horizon-client" "$BIN/horizon-ctl" "$BIN/horizon-prepare" "$BIN/horizon-server"
+      - name: macOS main-stack diagnostics
+        if: runner.os == 'macOS'
+        run: |
+          otool -l "$BIN/horizon-client" | grep -A4 LC_MAIN || true
+          sysctl -n sysctl.proc_translated 2>/dev/null || echo 0
+          ulimit -s || true
+          uname -m || true
+          arch || true
       - name: Every program starts
         if: ${{ !matrix.musl }}
         run: |
