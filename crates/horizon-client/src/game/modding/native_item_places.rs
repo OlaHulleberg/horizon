@@ -1820,7 +1820,10 @@ pub(super) mod tests {
                 .push(Minecart::new(500, CartKind::Chest, position));
             let host: &mut dyn ServerHost = game;
             let cart = host.entity(500).unwrap();
-            assert_eq!(cart.kind(host).as_deref(), Some("minecraft:chest_minecart"));
+            assert_eq!(
+                cart.kind(host).map(|kind| kind.id(host)).as_deref(),
+                Some("minecraft:chest_minecart")
+            );
             let items = cart.capability(host, &ENTITY_ITEMS, ()).unwrap();
             assert_eq!(items.size(host), 27);
             let sticks =

@@ -12,7 +12,13 @@ horizon-client game::container_loot::tests::random_selection_streams lib daily r
 horizon-client game::container_loot::tests::seeds_and_fill_listeners lib daily child-process
 horizon-client game::container_loot::tests::transfers_between_containers lib daily child-process
 horizon-client game::dedicated::tests::console_logging_survives_closed_stdout lib daily child-process
+horizon-client game::dispenser::decision_tests::crown_is_prepared_once_for_three_and_eight_dispenser_candidates lib daily resources
 horizon-client game::entity_sections::tests::a_real_mob_tick_tells_inside_each_position_write lib daily resources
+horizon-client game::equip_answers::tests::an_unpreparable_listening_stack_refuses_instead_of_using_the_data_answer lib daily resources
+horizon-client game::equip_answers::tests::local_shift_click_prepares_once_and_preserves_a_refused_helmet lib daily resources
+horizon-client game::equip_answers::tests::menu_replacement_with_an_unsubscribed_item_stays_stale lib daily resources
+horizon-client game::equip_answers::tests::missing_despawned_and_readmitted_entities_refuse_but_no_listener_keeps_data lib daily resources
+horizon-client game::equip_answers::tests::source_mutations_refuse_prepared_equip_without_reconversion_or_callback lib daily resources
 horizon-client game::explosion_detonate::tests::a_nested_blast_keeps_its_own_spared lib daily game-boot
 horizon-client game::explosion_detonate::tests::a_position_taken_out_keeps_its_block lib daily game-boot
 horizon-client game::explosion_detonate::tests::an_added_entity_is_hurt_and_an_empty_handle_is_refused lib daily game-boot
@@ -125,6 +131,7 @@ horizon-client game::remote::tests::predicted_block_notice_tests::local_break_no
 horizon-client game::remote::tests::predicted_block_notice_tests::ordinary_server_write_is_not_predicted lib daily game-boot
 horizon-client game::remote::tests::predicted_block_notice_tests::pre_ack_server_update_stays_unheard_and_unapplied lib daily game-boot
 horizon-client game::remote::tests::predicted_block_notice_tests::unapplied_guesses_are_unheard lib daily game-boot
+horizon-client game::runtime_levels_tests::a_level_the_player_left_in_single_player_still_unloads_and_deletes lib daily resources
 horizon-client game::screen_render_phase_tests::chest_render_phases_cover_panel_but_preserve_items_tooltips_and_carried_stack lib daily resources # HORIZON_TEST_RESOURCES and software Vulkan required.
 horizon-client game::server_reload::tests::datapack_publication_tests::data_map_first_open_uses_staged_membership lib daily game-boot
 horizon-client game::server_reload::tests::datapack_publication_tests::data_map_later_enabled_layer_uses_staged_membership lib daily game-boot
@@ -175,6 +182,7 @@ horizon-client game::transaction_entities_tests::exhausted_ids_stop_the_tick_spa
 horizon-client game::transaction_entities_tests::ids_never_go_back_and_a_stale_handle_names_no_later_entity lib daily child-process
 horizon-client game::transaction_entities_tests::late_id_kinds_spawned_then_aborted_are_removed lib daily child-process
 horizon-client game::transaction_entities_tests::outside_a_transaction_joins_and_leaves_are_told_at_the_call lib daily child-process
+horizon-client game::viewed_worlds::switch::tests::a_level_opened_after_login_is_forgotten_once_left lib daily resources
 horizon-client game::visibility_unwind_tests::visibility_listener_unwind_does_not_block_an_outside_save lib daily child-process
 horizon-client game::wake_time::tests::a_later_listener_reads_and_replaces_the_earlier_adjustment lib daily resources
 horizon-client game::wither_star_tests::a_withers_nether_star_lives_12000_ticks lib daily game-boot

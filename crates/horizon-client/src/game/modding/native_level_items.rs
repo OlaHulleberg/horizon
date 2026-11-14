@@ -207,7 +207,12 @@ mod tests {
         let popped = game
             .level_pop_resource(level, [4, 64, -2], stone())
             .unwrap();
-        assert_eq!(game.entity_kind(popped).as_deref(), Some("minecraft:item"));
+        assert_eq!(
+            game.entity_kind(popped)
+                .map(|kind| kind.id(&game))
+                .as_deref(),
+            Some("minecraft:item")
+        );
         assert_eq!(game.entity_position(popped), Some(at));
         let item = game.dropped.last().unwrap();
         assert_eq!((item.pickup_delay, item.stack.count), (10, 3));

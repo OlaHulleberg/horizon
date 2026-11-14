@@ -152,10 +152,10 @@ pub trait EntitiesBackend {
     #[access(WorldOnly)]
     fn entity_rotation(&self, entity: EntityRef) -> Option<[f32; 2]>;
     /// Side: server.
-    /// The entity's type (`Entity.getType`): `minecraft:zombie`. API
-    /// 373.
+    /// The entity's resolved type key (`Entity.getType`). Compare keys directly;
+    /// request `key.id(host)` explicitly when its canonical name is needed. API 373.
     #[access(WorldOnly)]
-    fn entity_kind(&self, entity: EntityRef) -> Option<String>;
+    fn entity_kind(&self, entity: EntityRef) -> Option<EntityTypeKey>;
     /// Side: server.
     /// The level the entity is in (`Entity.level`): on a client, the
     /// client's level. API 373.

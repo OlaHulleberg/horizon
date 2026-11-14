@@ -2551,7 +2551,10 @@ mod tests {
                 .is_none()
         );
         let item = game.living_drop(wolf, bone.clone(), false, true).unwrap();
-        assert_eq!(game.entity_kind(item).as_deref(), Some("minecraft:item"));
+        assert_eq!(
+            game.entity_kind(item).map(|kind| kind.id(&game)).as_deref(),
+            Some("minecraft:item")
+        );
         let wolf_uuid = game.uuid_for(id);
         let thrown = game.dropped.last().unwrap();
         let eye = game.mobs.iter().find(|m| m.id == id).unwrap().eye_y();

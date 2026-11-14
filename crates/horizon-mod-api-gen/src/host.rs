@@ -4,6 +4,7 @@
 //! forwarding methods and the mob tick's goal view.
 use super::*;
 use heck::ToUpperCamelCase;
+use std::fmt::Write as _;
 
 /// Reads implemented by the scoped goal context over the active mob and its
 /// disjoint live mob loans. Players are read from the game's backend; other
@@ -520,6 +521,62 @@ pub(super) fn game_forwarders(root: &Path) -> Result<String, String> {
                 code.push_str(&format!("{sig} {{ {access} {setup} {call} }}\n"));
             }
             code.push_str("}\n");
+            if matches!(tier, Tier::Host | Tier::Backend | Tier::ClientBackend) {
+                let area_trait = area.trait_name(*tier);
+                writeln!(code,"#[deny(unconditional_recursion)] impl mod_api::prelude::{area_trait} for crate::game::equip_host::EquipHost<'_, '_> {{").unwrap();
+                for entry in entries {
+                    let name = &entry.name;
+                    let sig = entry.sig.to_token_stream();
+                    if entry
+                        .sig
+                        .receiver()
+                        .is_some_and(|receiver| receiver.mutability.is_some())
+                    {
+                        let unused = entry
+                            .sig
+                            .inputs
+                            .iter()
+                            .filter_map(|arg| match arg {
+                                FnArg::Typed(arg) => {
+                                    Some(format!("let _ = {};", arg.pat.to_token_stream()))
+                                }
+                                _ => None,
+                            })
+                            .collect::<String>();
+                        writeln!(code,"{sig} {{ {unused} panic!(\"mutable access through an observation-only equipment Host\") }}").unwrap();
+                        continue;
+                    }
+                    let args = signature_args(&entry.sig, name)?;
+                    let tail = if args.is_empty() {
+                        String::new()
+                    } else {
+                        format!(",{args}")
+                    };
+                    let call = format!(
+                        "<Game<'_> as mod_api::prelude::{area_trait}>::{name}(self.game{tail})"
+                    );
+                    let cached = match name.as_str() {
+                        "entity_kind" => Some(("entity", "self.row.kind")),
+                        "entity_position" => Some(("entity", "self.row.position")),
+                        "living" => Some((
+                            "entity",
+                            "self.row.living.then_some(LivingRef::new(entity))",
+                        )),
+                        "living_health" => Some(("living.entity()", "self.row.health")),
+                        "living_max_health" => Some(("living.entity()", "self.row.max_health")),
+                        "living_alive" => Some(("living.entity()", "self.row.alive")),
+                        "living_equipment" => Some(("living.entity()", "self.equipment(slot)")),
+                        "living_hand_item" => Some((
+                            "living.entity()",
+                            "self.equipment(match hand { Hand::Main => EquipmentSlot::MainHand, Hand::Off => EquipmentSlot::OffHand })",
+                        )),
+                        _ => None,
+                    };
+                    let cached=cached.map(|(entity,value)|format!("if {entity}==self.row.entity {{ mod_api::__private::check_access({name:?},mod_api::__private::LoadAccess::WorldOnly); return {value}; }}")).unwrap_or_default();
+                    writeln!(code, "{sig} {{ {cached} {call} }}").unwrap();
+                }
+                code.push_str("}\n");
+            }
         }
     }
     let parsed = syn::parse_file(&code).map_err(|e| e.to_string())?;
@@ -1345,6 +1402,14 @@ mod tests {
                             .parse_args::<syn::Ident>()
                             .is_ok_and(|lint| lint == "unconditional_recursion")
                 }));
+                // The generator also emits a read-only EquipHost implementation.
+                // This assertion covers Game's complete backend surface.
+                let syn::Type::Path(receiver) = &*item.self_ty else {
+                    panic!("expected named host")
+                };
+                if receiver.path.segments.last().unwrap().ident != "Game" {
+                    continue;
+                }
                 let owner = item
                     .trait_
                     .unwrap()
