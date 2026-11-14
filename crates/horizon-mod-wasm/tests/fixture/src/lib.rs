@@ -5,6 +5,7 @@ static ENTITY_PRE_CALLS: AtomicU32 = AtomicU32::new(0);
 static ENTITY_POST_CALLS: AtomicU32 = AtomicU32::new(0);
 
 pub mod area_macros;
+pub mod bulk_files;
 pub mod capability_registration;
 pub mod cauldron;
 pub mod datapack;
@@ -13,6 +14,7 @@ pub mod interaction;
 pub mod lending;
 pub mod matrix;
 pub mod movement;
+pub mod part_state;
 pub mod projectile_owner;
 pub mod replace;
 pub mod runtime_environment;
@@ -135,6 +137,8 @@ impl Hooks for Mod {
             mod_api::Command::new("wasmentities <targets:entities>"),
             mod_api::Command::new("wasmplayer <target:player>"),
             mod_api::Command::new("wasmcauldron"),
+            mod_api::Command::new("wasmbulkfiles"),
+            mod_api::Command::new("wasmbulkfilesnoworld"),
         ]);
     }
 
@@ -143,6 +147,17 @@ impl Hooks for Mod {
         host: &mut dyn mod_api::ServerHost,
         event: &mut mod_api::RunModCommandEvent<'_>,
     ) -> mod_api::Flow {
+        match event.command.literals.first().map(String::as_str) {
+            Some("wasmbulkfiles") => {
+                bulk_files::check(host);
+                return mod_api::Flow::Cancel;
+            }
+            Some("wasmbulkfilesnoworld") => {
+                bulk_files::no_world(host);
+                return mod_api::Flow::Cancel;
+            }
+            _ => {}
+        }
         if event.command.literals.first().map(String::as_str) == Some("wasmcauldron") {
             cauldron::read(host);
             return mod_api::Flow::Cancel;
@@ -260,6 +275,10 @@ impl Hooks for Mod {
         mod_api::Flow::Continue
     }
 
+    fn blocks(&self, _: &mod_api::RegistrationContext, event: &mut mod_api::BlocksEvent<'_>) {
+        part_state::blocks(event);
+    }
+
     fn register(&self, registrar: &mut dyn mod_api::Registrar, cx: &mod_api::RegistrationContext) {
         runtime_environment::register(cx);
         capability_registration::register(registrar, cx);
@@ -267,6 +286,7 @@ impl Hooks for Mod {
         interaction::register(registrar);
         cauldron::register(registrar);
         tick_reply::register(registrar);
+        part_state::register(registrar);
         registrar.register_custom_stat("steps").unwrap();
         registrar
             .declare_datapack_registry(

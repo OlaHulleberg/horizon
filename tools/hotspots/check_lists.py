@@ -27,8 +27,6 @@ LIMIT = 12
 # until it is removed, so an exemption ends with its list.
 LONG_LISTS = {
     "built.rs": (17, "no planned PR removes it"),
-    # The design of the conflict hotspots, PR F, turns its type lists into one glob per domain; F removes this entry.
-    "domains.rs": (None, "pending removal by PR F of the hotspot design"),
     "game.rs": (24, "no planned PR removes it"),
     # The Parts runtime and lookups of parts/shared.rs that the game reaches through `__private`.
     "parts_shared.rs": (15, "one parts file's game-side names"),

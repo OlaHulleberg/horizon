@@ -1955,16 +1955,6 @@ impl Game<'_> {
     ) {
         self.fire_player_bed_enter(player, name, pos, cancel);
     }
-    /// A server player woke or stood up from the bed at `pos`, after their
-    /// sleeping state changed.
-    pub(in crate::game) fn native_player_bed_leave(
-        &mut self,
-        player: u128,
-        name: &str,
-        pos: [i32; 3],
-    ) {
-        self.fire_player_bed_leave(player, name, pos);
-    }
     /// A server player's book edit or signing packet is about to be applied. `pages` is its page
     /// count; `signing` means the packet has a title. Set `cancel` to drop the edit.
     pub(in crate::game) fn native_player_edit_book(
@@ -2784,28 +2774,23 @@ impl Game<'_> {
         self.fire_lightning_strike(player, pos, cause, cancel);
     }
 
-    /// Enough players have slept through the night in level `dimension`
-    /// and the clock is about to move to the morning (NeoForge's
-    /// `SleepFinishedTimeEvent`, vanilla's `ServerLevel.tick` when it moves
-    /// the clock to `wake_up_from_sleep`): `new_time` comes in as the next
-    /// morning's day time and may be changed to wake everyone at another
-    /// time. A time before `current` (the day time now) is refused, as
-    /// `setTimeAddition` refuses one, and the morning stays. Unlike
-    /// NeoForge, which refuses a bad value as it is set, the check runs once
-    /// after every mod, so a later mod sees the value an earlier one left.
-    /// On the server, only when the `advance_time` rule is on;
-    /// `native_time_skip` then hears the jump to the time chosen here and
-    /// may still cancel it. The players wake and the weather resets as
-    /// usual either way. Set `canceled` and the clock is left where it is, as
-    /// NeoForge's cancel leaves it: `native_time_skip` is not asked either.
+    /// Enough players slept through the night in level `dimension` and the clock is about to
+    /// move to the morning (NeoForge's `SleepFinishedTimeEvent`). `adjustment` comes in as
+    /// `Marker(minecraft:wake_up_from_sleep)` and a mod may set `Absolute`, `Relative` (from
+    /// `current`) or another marker; `new_time` is the vanilla morning, read only (contract 2: in
+    /// version 1 a mod wrote it). Times are the level's own clock's; resolved once after every mod
+    /// (`game/world/wake_time.rs`): a time before `current` or past `i64::MAX`, or a marker the
+    /// clock lacks, moves to the morning. `native_time_skip` then hears the jump and may cancel
+    /// it. Set `canceled` and the clock stays, and `native_time_skip` is not asked.
     pub(in crate::game) fn native_sleep_finished_time(
         &mut self,
         dimension: &str,
         current: i64,
-        new_time: &mut i64,
+        new_time: i64,
+        adjustment: &mut ClockAdjustment,
         canceled: &mut bool,
     ) {
-        self.fire_sleep_finished_time(dimension, current, new_time, canceled);
+        self.fire_sleep_finished_time(dimension, current, new_time, adjustment, canceled);
     }
 
     /// The overworld clock is about to jump, from sleep or `/time`. Set
@@ -3543,18 +3528,6 @@ impl Game<'_> {
     ) {
         self.fire_right_click_block(click, use_block, use_item, cancellation_result, canceled);
     }
-    /// An explosion at `center` in `dimension` (`minecraft:overworld`) is
-    /// about to break `blocks`: `ServerExplosion.explode` with its `toBlow`,
-    /// before any block is hit. Take out the positions to spare; they keep
-    /// their block and get no fire. Entities are hurt as before. Server-side.
-    pub(in crate::game) fn native_explosion_detonate(
-        &mut self,
-        dimension: &str,
-        center: [f64; 3],
-        blocks: &mut Vec<[i32; 3]>,
-    ) {
-        self.fire_explosion_detonate(dimension, center, blocks);
-    }
     /// A player fills (`stack` an empty bucket) or empties a bucket at `pos`:
     /// `BucketItem.use`, where it asks `Level.mayInteract`. Set `canceled`
     /// and the bucket does nothing. Server-side, for every player of the
@@ -3633,15 +3606,6 @@ impl Game<'_> {
         new: bool,
     ) {
         self.fire_chunk_load(dimension, chunk, new);
-    }
-    /// Chunk `chunk` of `dimension` left the world (NeoForge's
-    /// `ChunkEvent.Unload`), with a level that closes for being empty too. Don't
-    /// read its blocks. Its block entities are still there, but changes made in
-    /// this hook aren't saved: as in vanilla, the chunk is saved before it unloads.
-    /// Not told when the world closes, which `native_world_lifecycle` tells.
-    /// Server-side.
-    pub(in crate::game) fn native_chunk_unload(&mut self, dimension: &str, chunk: [i32; 2]) {
-        self.fire_chunk_unload(dimension, chunk);
     }
     /// `player` (`name`) joined the game (NeoForge's
     /// `PlayerLoggedInEvent`): placed in the world and listed in
@@ -3744,24 +3708,6 @@ impl Game<'_> {
     ) {
         self.fire_mod_container_viewers(dimension, pos, viewers, previous);
     }
-    /// `player` (`name`) pressed the swap-hands key: heard before the main and
-    /// off hand items swap (the `SWAP_ITEM_WITH_OFFHAND` player action that
-    /// `ServerGamePacketListenerImpl.handlePlayerAction` answers; Bukkit's
-    /// `PlayerSwapHandItemsEvent`), not for a spectator. Set `cancel` to keep
-    /// the items where they are: the player's client, which swapped them at
-    /// once, gets its slots back. The player's state is swapped in, so
-    /// `native_acting_player`, `native_tell` and the item helpers reach them.
-    /// Once for each press, on a server. Not heard: the same swap made in an
-    /// open inventory (hovering a slot and pressing the key, a menu click) and
-    /// the host of a LAN world.
-    pub(in crate::game) fn native_player_swap_hands(
-        &mut self,
-        player: u128,
-        name: &str,
-        cancel: &mut bool,
-    ) {
-        self.fire_player_swap_hands(player, name, cancel);
-    }
     /// `player` (`name`) opened a menu (NeoForge's `PlayerContainerEvent.Open`,
     /// posted when `ServerPlayer.openMenu` sets the new `containerMenu`): any
     /// menu, vanilla or a mod's. `menu` is the menu type's name
@@ -3770,10 +3716,10 @@ impl Game<'_> {
     /// block it is of in `dimension` (none for a trade, a vehicle's, a mod's
     /// native menu or a mount's inventory, which has no menu type in vanilla
     /// and is told as `horizon:mount_inventory`). The player's own inventory
-    /// is not one. Heard once a tick, so a menu opened and closed again
-    /// inside one tick is not; one that replaces another comes after that
-    /// one's close. The player's state is swapped in. `native_player_container_close`
-    /// follows. Server-side.
+    /// is not one, nor is failed construction. Heard synchronously after construction, the open packet
+    /// is queued and full contents sent, with the new menu already current.
+    /// Replacing a menu follows its close; even inside one tick, open precedes
+    /// `native_player_container_close`. The player's state is swapped in. Server-side.
     pub(in crate::game) fn native_player_container_open(
         &mut self,
         player: u128,

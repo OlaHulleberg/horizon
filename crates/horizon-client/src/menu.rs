@@ -4435,10 +4435,14 @@ pub(crate) mod tests {
                         *amount += 1.0;
                     }
                 },
-                living_breathe: |context, _, _, can_breathe, consume, _| {
+                living_breathe: |context, _, kind, can_breathe, consume, _| {
                     if context.setting("rules_mod", "stack").is_some() {
-                        *can_breathe = false;
-                        *consume += 4;
+                        // A cod breathes on land; a salmon loses all its air at once.
+                        *can_breathe = kind == "minecraft:cod";
+                        *consume = match kind {
+                            "minecraft:salmon" => i32::MAX,
+                            _ => *consume + 4,
+                        };
                     }
                 },
                 farmland_trample: |context, _, _, _, _, cancel| {
@@ -4455,10 +4459,11 @@ pub(crate) mod tests {
                         .setting("rules_mod", "stack")
                         .map(|value| crate::text::Text::literal(&value));
                 },
-                living_drown: |context, _, _, drowning, damage, _, _| {
+                living_drown: |context, _, _, drowning, damage, bubbles, _| {
                     if context.setting("rules_mod", "stack").is_some() {
                         *drowning = true;
                         *damage += 1.0;
+                        *bubbles = 0;
                     }
                 },
                 living_fall: |context, _, _, distance, multiplier, _| {
@@ -4490,6 +4495,9 @@ pub(crate) mod tests {
                 },
                 is_ladder: |context, _, _, _, ladder| {
                     *ladder |= context.setting("rules_mod", "stack").is_some();
+                },
+                makes_open_trapdoor_above_climbable: |context, _, _, _, climbable| {
+                    *climbable |= context.setting("rules_mod", "stack").is_some();
                 },
                 friction: |context, _, kind, _, _, friction| {
                     if context.setting("rules_mod", "stack").is_some() {
@@ -4671,6 +4679,20 @@ pub(crate) mod tests {
         };
         assert!(!ladder(&before));
         assert!(ladder(&after));
+        // So does the block under an open trapdoor.
+        let trapdoor_ladder = |context: &LoopContext| {
+            let mut climbable = false;
+            crate::motion::ladder::native_makes_open_trapdoor_above_climbable(
+                context,
+                horizon_world::registry::BlockStateId(0),
+                horizon_core::position::BlockPos::new(0, 0, 0),
+                horizon_world::registry::BlockStateId(0),
+                &mut climbable,
+            );
+            climbable
+        };
+        assert!(!trapdoor_ladder(&before));
+        assert!(trapdoor_ladder(&after));
         // A block's friction reads it too; an answer that is NaN or outside 0..=2 keeps the
         // block's own.
         let friction = |context: &LoopContext, kind: &str| {
@@ -4788,13 +4810,43 @@ pub(crate) mod tests {
                 "minecraft:zombie",
                 &mut drowning,
                 &mut damage,
-                8,
+                &mut 8,
                 &mut cancel_drown,
             );
             (amount, cancel, can_breathe, consume, drowning, damage)
         };
         assert_eq!(health(&before), (2.0, false, true, 1, false, 2.0));
         assert_eq!(health(&after), (3.0, true, false, 5, true, 3.0));
+        // A listener that lets a cod breathe: on land for 300 ticks it keeps
+        // full air and takes no damage.
+        let mut air = 300;
+        for _ in 0..300 {
+            let hurt =
+                crate::breathing::own_air(&after, 1, "minecraft:cod", &mut air, false, 300, true);
+            assert_eq!(hurt, None);
+        }
+        assert_eq!(air, 300);
+        // A listener that sets `bubble_count` to 0: a drowning player takes the
+        // damage and shows no bubbles (`drown_bubbles` sends nothing for 0).
+        let gasp = crate::breathing::Breath {
+            can_breathe: false,
+            consume: 1,
+            refill: 0,
+        };
+        let mut air = -19;
+        let drowned =
+            crate::breathing::drown(&after, 3, "minecraft:player", &mut air, gasp, true).unwrap();
+        assert_eq!((drowned.damage, drowned.bubbles, air), (Some(3.0), 0, 0));
+        // A listener's `consume` of `i32::MAX` saturates instead of overflowing:
+        // a water animal past -20 only loses air, another kind drowns.
+        let mut air = -19;
+        let hurt =
+            crate::breathing::own_air(&after, 4, "minecraft:salmon", &mut air, false, 300, true);
+        assert_eq!((hurt, air), (None, i32::MIN));
+        let mut air = -19;
+        let hurt =
+            crate::breathing::own_air(&after, 4, "minecraft:salmon", &mut air, false, 6000, false);
+        assert_eq!((hurt, air), (Some(3.0), 0));
         // A server's block menu: the game's `stillValid` answer arrives first and
         // the parts on its mod menu type may change it; a vanilla menu type never
         // asks them, and a menu whose block entity is gone closes without asking.

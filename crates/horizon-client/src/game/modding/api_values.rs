@@ -1,6 +1,8 @@
 // game-module-visibility: pub(crate)
 //! The game-owned conversion boundary between API records and engine values.
 //! Rust's orphan rule prevents foreign From/TryFrom implementations here.
+#[path = "api_values/ingredient.rs"]
+mod ingredient_values;
 use horizon_core::nbt::{Compound, JavaString, Tag};
 use horizon_items::items::{ItemStack as EngineStack, Items};
 use mod_api::item::item_stack::{ItemStack as ApiStack, StackWriteError};
@@ -970,45 +972,6 @@ impl TryIntoApi for crate::crafting::RecipeRule {
     }
 }
 
-impl TryIntoApi for crate::crafting::Ingredient {
-    type Api = mod_api::Ingredient;
-    type Error = StackReadError;
-    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        Ok(mod_api::Ingredient {
-            items: self.items.clone(),
-            order: self.order.clone(),
-            custom: self.custom.clone(),
-            children: self
-                .children
-                .as_ref()
-                .map(|(shape, kids)| Ok((shape.clone(), kids.try_into_api()?)))
-                .transpose()?,
-        })
-    }
-}
-impl TryIntoEngine for mod_api::Ingredient {
-    type Engine = crate::crafting::Ingredient;
-    type Error = StackWriteError;
-    fn try_into_engine(&self, _items: &Items) -> Result<Self::Engine, Self::Error> {
-        Ok(crate::crafting::Ingredient {
-            items: self.items.clone(),
-            order: self.order.clone(),
-            custom: self.custom.clone(),
-            children: self
-                .children
-                .as_ref()
-                .map(|(shape, kids)| {
-                    Ok::<_, StackWriteError>((
-                        shape.clone(),
-                        kids.iter()
-                            .map(|k| k.try_into_engine(_items))
-                            .collect::<Result<_, _>>()?,
-                    ))
-                })
-                .transpose()?,
-        })
-    }
-}
 impl TryIntoApi for crate::crafting::RecipeTemplate {
     type Api = mod_api::RecipeTemplate;
     type Error = StackReadError;
@@ -2555,17 +2518,6 @@ mod item_model_snapshot_tests {
     }
 }
 
-impl TryIntoApi for horizon_mod_package::Side {
-    type Api = mod_api::Side;
-    type Error = std::convert::Infallible;
-    fn try_into_api(&self) -> Result<Self::Api, Self::Error> {
-        Ok(match self {
-            Self::Client => mod_api::Side::Client,
-            Self::Both => mod_api::Side::Both,
-        })
-    }
-}
-
 impl TryIntoApi for horizon_client_core::suggestion::Suggestion {
     type Api = mod_api::Suggestion;
     type Error = std::convert::Infallible;
@@ -2997,6 +2949,19 @@ impl TryIntoApi for horizon_client_core::gamerules::Value {
     }
 }
 
+impl TryIntoEngine for mod_api::GameRuleValue {
+    type Engine = horizon_client_core::gamerules::Value;
+    type Error = ();
+    fn try_into_engine(&self, _: &Items) -> Result<Self::Engine, Self::Error> {
+        match *self {
+            Self::Bool(value) => Ok(Self::Engine::Bool(value)),
+            Self::Int(value) => Ok(Self::Engine::Int(value)),
+            // A kind this game has no rule of.
+            _ => Err(()),
+        }
+    }
+}
+
 #[test]
 fn game_rule_int_snapshot_preserves_full_range() {
     for value in [i32::MIN, -1, 0, 256, i32::MAX] {
@@ -3097,7 +3062,7 @@ pub(in crate::game) mod damage;
 #[path = "api_values/item_properties.rs"]
 mod item_properties;
 #[path = "api_values/loot_values.rs"]
-mod loot_values;
+pub(crate) mod loot_values;
 #[path = "api_values/particle_values.rs"]
 mod particle_values;
 pub(crate) use loot_values::{dispatch_loot_condition, dispatch_loot_function};

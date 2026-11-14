@@ -721,6 +721,7 @@ mod stubs {
     #[derive(Clone, Copy)]
     pub(super) struct BlockId;
     pub(super) struct Ticks;
+    pub(super) struct ClockAdjustment;
     pub(super) struct Compound;
     pub(super) type Dispensed = (Option<super::ItemStack>, i32);
     pub(super) struct LootDrops<'a>(pub &'a ());

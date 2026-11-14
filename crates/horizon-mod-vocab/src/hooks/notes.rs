@@ -47,14 +47,14 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   executable alternative takes precedence over a denied one; equally valid alternatives keep registration order.
   A name vanilla has, or a usage that doesn't parse, is left out with a warning in the log.
 
-- **`run_mod_command`**: `event.command` is an owned `CommandInvocation`
-  with its literal path and named `CommandArgumentValue` values, not raw command text. Integer, number and boolean
+- **`run_mod_command`**: `event.command` is an owned `CommandInvocation` with its literal path, its `dimension` and
+  `position` after `execute in/at`, and named `CommandArgumentValue` values, not raw command text. Integer, number and boolean
   values retain the dispatcher's types; word and greedy text are strings. Player selectors resolve to a single live
   `PlayerRef`, items become component-bearing stacks of one, and block positions resolve source-relative/local
-  coordinates without requiring loaded chunks. A custom argument is `CommandArgumentValue::Custom { kind, value }`,
-  where `kind` is its registered type's id and `value` what its parser returned. Missing optional arguments are
-  absent. Parsing, permission and
-  resolution failures produce feedback without calling listeners. The console resolves from the Overworld spawn's
+  coordinates without requiring loaded chunks. `mod_id` is a loaded package id as a string; `resource:<registry>`
+  is `CommandArgumentValue::Id`, an id that registry holds. A custom argument is `CommandArgumentValue::Custom
+  { kind, value }`: its registered type's id and what its parser returned. Missing optional arguments are absent.
+  Parsing, permission and resolution failures produce feedback without calling listeners. The console resolves from the Overworld spawn's
   block corner with zero rotation and no source entity (`@s` fails). Return `Flow::Cancel` when handled.
 - **`armor_stand_manipulate(player, name, stand_id, slot, cancel)`**: a player takes an item from an armor stand or
   puts one on it, heard after the stand's disabled-slot checks and before anything moves. `slot` is `mainhand`,
@@ -240,7 +240,7 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   block is not `pos`, since a block that refuses the fluid passes it there; the fluid may still go into `pos`.
 - **`player_bed_enter(player, name, pos, cancel)`**: a server player passed the sleep checks and is about to
   enter the bed at its head position. Set `cancel` to keep them out.
-- **`player_bed_leave(player, name, pos)`**: A server player woke or stood up from a bed, after their sleeping state changed. The head position is `pos`.
+- **`player_bed_leave(player, name, pos, wake_immediately, update_level)`**: A server player is getting out of a bed (`PlayerWakeUpEvent`), heard before their sleeping state is cleared, so they still read as sleeping at `pos`, the head position. `update_level` is false for the morning wake of all players and true when the player got up; `wake_immediately` is true for generic stop-sleeping, missing-bed and death wakes, false for morning, explicit leave and bed-rule refusal; the hook owns the full caller table.
 - **`player_edit_book(player, name, pages, signing, cancel)`**: A server player book-and-quill edit or signing packet is about to be applied. `pages` is its page count and `signing` says it has a title. Set `cancel` to drop the packet.
 - **`player_shear_entity(player, name, entity_id, off_hand, cancel)`**: A server player is about to shear a sheep, mooshroom, snow golem or bogged. The hook gives the mob entity id and whether the shears are in the off hand. Set `cancel` to leave the mob and shears unchanged.
 - **`player_advancement_done(player, name, advancement)`**: A server player completed an advancement after its progress was recorded. `advancement` is its identifier, such as `minecraft:story/mine_stone`.
@@ -350,11 +350,11 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   in NeoForge. A visual-only bolt asks nothing. With no listener the cost is one `listened` check per struck entity.
 - **`time_skip(dimension, from, to, cause, cancel)`**: the server clock is about to jump after enough players
   sleep or through `/time set`, `/time add`, or `/time set <marker>`. Set `cancel` to keep the old time.
-- **`sleep_finished_time(dimension, current, new_time)`**: enough players slept through the night and the
-  `advance_time` rule is on (NeoForge's `SleepFinishedTimeEvent`). `new_time` comes in as the next morning's day time;
-  set another to wake everyone then. A time before `current` is refused and the morning stays; the check runs once after
-  every mod, so a later mod sees the value an earlier one set. It runs before `time_skip`, which hears the jump
-  to the time chosen here and may still cancel it; the players wake either way.
+- **`sleep_finished_time(dimension, current, new_time, adjustment)`**: enough players slept and `advance_time`
+  is on (NeoForge's `SleepFinishedTimeEvent`). `adjustment`, a `ClockAdjustment`, starts as vanilla's
+  `wake_up_from_sleep` marker; a mod may set `Absolute`, `Relative` or another `Marker`, read with
+  `level_clock_marker_time`. `new_time`: the morning, read only (contract 2). Level's own clock, resolved after every mod;
+  a time before `current` or past `i64::MAX`, or a marker that clock lacks (only the Overworld's has any), moves to the morning.
 - **`world_border_bounds_changed()`**: `/worldborder set` or `/worldborder add` changed the border size or started a timed size change.
 - **`world_border_center_changed()`**: `/worldborder center` moved the border center. It hears successful commands only.
 - **`spawn_change(pos, angle)`**: `/setworldspawn` moved the world's spawn point, after its position and rotation are applied.
@@ -397,10 +397,10 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
 - **`player_jump(player, name)`**: accepted guest movement made the server player jump from the ground, after movement simulation finishes. The guest's state is swapped in.
 - **`player_kicked(player, name, reason)`**: a guest was kicked after the hub recorded the rendered disconnect reason and sent the disconnect. The guest's state is swapped in, unless the guest was already removed in the same poll (a kick and the disconnect arriving together): the hook still fires, without it.
 - **`player_level_change(player, name, from, to)`**: a server player's experience change altered their level, after the new level was applied. The guest's state is swapped in when the player is a guest.
-- **`player_swap_hands(player, name, cancel)`**: a player pressed the swap-hands key (not a spectator), heard
-  before the main and off hand items swap. Set `cancel` and they stay where they are; the player's client, which swapped
-  them at once, gets its slots back. The player's state is swapped in, so `host.players().acting_player`, `PlayerRef::tell` and the item
-  helpers reach them. Not heard: the same swap from an open inventory (hovering a slot and pressing the key) and the host of a LAN world.
+- **`player_swap_hands(player, name, to_main_hand, to_off_hand, cancel)` (version 2)**: a player pressed the swap-hands key (not a spectator), heard
+  before the main and off hand items swap. `to_main_hand` starts as the off hand's stack and `to_off_hand` as the main hand's; the hands get what the listeners leave, and the client gets both slots when they changed. Set `cancel` and they stay where they are; the player's client
+  is sent both slots again. The player's state is swapped in, so `host.players().acting_player`, `PlayerRef::tell` and the item
+  helpers reach them. Heard for a server's players, the single-player owner and a LAN host. Not heard: the same swap from an open inventory (hovering a slot and pressing the key).
 - Services: `host.players().server_players()` returns online player handles in connection order;
   `player.tell(host, text)` sends a system line to one player, also the acting player inside their hook;
   `host.messages().broadcast(text)`, to every player and the server's
@@ -519,8 +519,8 @@ For mods that run where the world is simulated: a dedicated server, a LAN host, 
   key, value, flags)`; set `handled` to skip the block's own random tick.
 - **`tick_block(ticks, dimension, pos, state, handled)`** (on `GameLevel`): a due scheduled tick of a block
   that is still there (`ServerLevel.tickBlock`), before its own `tick`; the same contract as `random_tick`.
-- **`explosion_detonate(dimension, center, blocks)`**: the positions an explosion is about to break,
-  before any is hit; take out the ones to spare. Entity damage is unchanged.
+- **`explosion_detonate(dimension, center, blocks, entities)`**: the positions an explosion is about to
+  break and the entities in its box, before any is hit; take out the ones to spare (not hurt, not pushed).
 - **`explosion_knockback(dimension, center, blocks, entity, knockback_velocity)`**: a server explosion's
   calculated velocity, before it is added to the entity. Replace `knockback_velocity` to change the push;
   `entity` is None for a player, whom `host.players().acting_player` names. The player packet uses the same replacement. Wind bursts are heard too.
@@ -1140,16 +1140,15 @@ criterion resources; the private advancement world remains solely in the native 
 
 ### Explosions
 
-`crates/horizon-client/src/game/modding/native_explosions.rs`: a helper for server mods, for the level in place, on a server only. It
-names the level it means by its `dimension` (`minecraft:overworld`), as `native_set_block` does, and is refused when another
-level is in place.
+`crates/horizon-client/src/game/modding/native_explosions.rs`: for server mods, in the level in place; the full contract,
+with the causing-entity table, is the book's "Setting off an explosion" (how-to/world/block-experience-and-explosions.md).
 
-- `LevelRef::explode(host, center, radius, fire, interaction)` sets off an explosion as `Level.explode` with no source entity
-  does: blocks break (`explosion_detonate` sees them first and can spare some), entities are hurt and pushed, `fire`
-  lights some of the surrounding air, and nearby players hear and see it. `interaction` is `ExplosionInteraction::None`
-  (no block breaks), `Block` (drops by `block_explosion_drop_decay`) or `Tnt` (by `tnt_explosion_drop_decay`). It answers false,
-  doing nothing, for an unavailable level, a chunk that isn't loaded, or a radius outside `0 < radius <= 32`
-  (TNT is 4, vanilla's largest is 7).
+- `LevelRef::explode(host, source, center, radius, fire, interaction)` is `Level.explode(source, ...)` in vanilla's order.
+  The causing entity comes from `source`, never the caller: a primed TNT's owner, a living entity itself, a projectile's
+  living owner, else none; with both the damage is `minecraft:player_explosion` and a kill credits the cause.
+  `interaction` is `None`, `Block`, `Mob` (the source's `entity_mob_griefing`), `Tnt` or `Trigger` (no breaks; buttons,
+  doors and the like react); `fire` works with any. False, doing nothing, for an unavailable level, a stale `source` or
+  one in another level, an unloaded chunk, or a radius outside `0 < radius <= 32`.
 - A blast set off inside `explosion_detonate` runs that hook again, so a mod that chains blasts keeps its own guard.
 
 ### Camera shake
@@ -1311,8 +1310,8 @@ Hidden blocks chat and commands. The server's own spam limits apply as they do t
 `crates/horizon-client/src/game/modding/native_menus.rs`: menus a server mod builds from ordinary items, which a
 stock client shows as a chest (`generic_9x1` to `generic_9x6`); nothing is installed on the player's side.
 
-- `native_open_menu(uuid, rows, title, items)` opens one in place of the player's open menu (its window id);
-  its slots are [menu slots](../concepts/capabilities/menu-slots.md), written in a transaction; `native_close_menu(uuid)` closes it.
+- `host.open_menu(uuid, rows, title, items, replace)` opens one in place of the player's open menu (its window id, a new one each time, as `ServerPlayer.openMenu` counts them); the old menu closes on the server as a close does, its cursor stack back to the inventory, and its window's packets are ignored. `MenuReplace::CloseFirst` first sends the client a close, vanilla's default; `MenuReplace::InPlace` doesn't (`MenuProvider.shouldTriggerClientSideContainerClosingOnOpen`), so the title and rows change without the mouse centring again. A title changes only this way. `host.close_menu(uuid)` closes it.
+  `host.menu(uuid, window)` is the open one's `MenuRef` (None for another window or player): its slots are [menu slots](../concepts/capabilities/menu-slots.md), written in a transaction, and the tick's container sync sends each changed one (`ContainerSetSlot`). Change its items that way, not by opening it again.
 - **No click moves anything.** Each reaches `menu_clicked(uuid, window, slot, button, mode)`, and the client
   is sent the menu, its inventory and its cursor as they were. `slot` counts the menu's own slots first, then the
   player's inventory below it: `native_menu_inventory_slot(size, slot)` gives the inventory slot (0..9 the hotbar).
@@ -1544,14 +1543,14 @@ mod mixin or use it replaces in its design or PR."#]
   there was to take. A step the hit skips (a source that bypasses armor, no Resistance effect) runs none. They
   last for the hit.
 
-- `living_damage_post` (NeoForge's `LivingDamageEvent.Post`) observes the hit after it takes health.
-  Its `container.should_cause_side_effects()` is `hurtServer`'s fresh-hit decision
-  (`shouldCauseSideEffects`), recorded before damage is applied: true for a fresh hit, false for a
-  stronger hit inside the invulnerability window, and true for a source that bypasses the cooldown.
-  A weaker or equal hit refused by the cooldown does not fire Post. The flag is not inferred from
-  final damage or invulnerability ticks, so changing those in a damage listener does not change it.
-  It accompanies the container's reductions, inflicted damage and health damage in native and wasm
-  listeners; it describes the decision to cause fresh-hit effects, not whether every effect occurred.
+- `living_damage_post` (NeoForge's `LivingDamageEvent.Post`) observes every hit that passed `living_incoming_damage`
+  and the cooldown, at the end of `hurtServer` (after a totem and the hurt sounds; the death hooks follow it,
+  Horizon's order, not NeoForge's), even one that took no health (`container.health_damage()` 0). Its
+  `container.should_cause_side_effects()` is `hurtServer`'s fresh-hit decision (`shouldCauseSideEffects`), taken
+  before the damage: true for a fresh hit, false for a stronger hit inside the invulnerability window, and true for a
+  source that bypasses the cooldown. The flag is not inferred from final damage or invulnerability ticks, so a damage
+  listener changing those leaves it. Native and wasm listeners get it beside the reductions and damages; it describes
+  the decision to cause fresh-hit effects, not whether every effect occurred.
 
 A player's damage type is the source's own. A mob's and the dragon's come from the kind of damage Horizon keeps for
 the hit, which doesn't tell every vanilla type apart yet:
@@ -1693,7 +1692,7 @@ one, where vanilla gives the `by` one.
 
 - A block part's `should_redstone_wire_connect_to` adjusts whether redstone wire connects to that block for the given position and optional direction.
 
-- A block part's `connects_to` says whether a fence, a wall, or iron bars or a glass pane of that block connects a side toward a neighbour state. `event.kind` names vanilla's rule and `event.connected` starts with its answer: `ConnectionKind::Fence` is `FenceBlock.connectsTo` (a solid face, a fence of the same kind, a gate across the arm), `Wall` is `WallBlock.connectsTo` (a wall, a solid face, bars or a pane, a gate across the side; a connected side is still low or tall from the block above) and `Bars` is `IronBarsBlock.attachsTo`, for iron bars and panes, which are one block class (a solid face, bars or a pane, a wall). Set it to false to deny a connection as well as to true to make one. `pos` and `state` are the block being shaped, `neighbour` the state beside it, `direction` the way from the block to the neighbour (vanilla's bars rule takes none) and `face_solid` whether the neighbour's face toward it is sturdy. It is asked on placement and on every shape update toward a side, on authoritative servers only, and only the block's own part answers, so vanilla blocks cost nothing. The three rules stay separate in the library; only the question a mod is asked is shared, and `kind` leaves room for fields one kind alone needs. Diverges from upstream: new hook.
+- A block part's `connects_to` says whether a fence, a wall, or iron bars or a glass pane of that block connects a side toward a neighbour state. `event.kind` names vanilla's rule and `event.connected` starts with its answer: `ConnectionKind::Fence` is `FenceBlock.connectsTo` (a solid face, a fence of the same kind, a gate across the arm), `Wall` is `WallBlock.connectsTo` (a wall, a solid face, bars or a pane, a gate across the side; a connected side is still low or tall from the block above) and `Bars` is `IronBarsBlock.attachsTo`, for iron bars and panes, which are one block class (a solid face, bars or a pane, a wall). Set it to false to deny a connection as well as to true to make one. The neighbour answers first, in its own `can_be_connected_to`, and `event.connected` starts from that answer: the connecting block has the last word. `pos` and `state` are the block being shaped, `neighbour` the state beside it, `direction` the way from the block to the neighbour (vanilla's bars rule takes none) and `face_solid` whether the neighbour's face toward it is sturdy. It is asked on placement and on every shape update toward a side, on authoritative servers only, and only the block's own part answers, so vanilla blocks cost nothing. The three rules stay separate in the library; only the question a mod is asked is shared, and `kind` leaves room for fields one kind alone needs. Diverges from upstream: new hook.
 
   **Migration (`fence_connects_to` → `connects_to`, contract version 2):** a part that implemented `fence_connects_to(&self, level, event: &mut FenceConnectsToEvent)` implements `connects_to(&self, level, event: &mut ConnectsToEvent)` instead. The event's fields are the same plus `kind`; a part that only answered for fences returns early unless `event.kind == ConnectionKind::Fence`. The answer, its timing and the fence's own rule are unchanged.
 
@@ -1719,8 +1718,9 @@ still go on each event or registrar.
 
 - `component_types(context, types)` runs once before content loads. Append namespaced component IDs; duplicates, invalid IDs and the `minecraft` namespace stop startup. `native_component`, `native_set_component` and `native_remove_component` read, set and remove registered components, including item defaults. Values use NBT and must fit the network reader limits.
 
-- [explosions](#explosions) for server mods: `LevelRef::explode(host, center, radius, fire, interaction)` sets one off as
-  `Level.explode` does, with `ExplosionInteraction::None`, `Block` or `Tnt` for what it does to blocks.
+- [explosions](#explosions) for server mods: `LevelRef::explode(host, source, center, radius, fire, interaction)` sets one
+  off as `Level.explode` does, with an optional source entity and `ExplosionInteraction::None`, `Block`, `Mob`, `Tnt` or
+  `Trigger` for what it does to blocks.
 
 - Dispenser behaviours are chosen at `DispenserBlock.getDispenseMethod`, before any vanilla behaviour, for mod or vanilla items, on the authoritative server only (droppers are unaffected). The block the dispenser faces is asked first: `dispense_method` gives its part the dimension, dispenser position, facing, the selected stack and `state`, the block at `pos` moved by `facing` (air included), and the part is asked only for that block. Then, unless that part answered, the item's own part is asked by `dispense_item` with the same dimension, position, facing and stack. Either answer is `Some((remainder, event))`: a `None` remainder empties the slot, `Some(stack)` writes that remainder without consuming again, and `event` is the level event played with the smoke (1000 click, 1001 fail, 0 nothing, as `NOOP`). The first answer wins: the other part is not asked and vanilla's behaviour doesn't run. `host.dispense_default(dimension, pos, facing, stack)` drops one item normally, including items with a special vanilla behaviour: answer its remainder with 1000. Leave the answer `None` to let vanilla decide, as before.
 
@@ -2214,7 +2214,7 @@ registration path.
 
 - `screen_mouse_dragged_pre(screen, button, delta, modifiers, canceled)` runs before screen drag handlers for real nonzero pointer movements with a held button. The most recently pressed button is active until it releases; focus loss and splitscreen handoff clear it. Same screen exclusions and GLFW button/modifier encoding as the other screen input hooks. screen.mouse is the new GUI position; delta is movement in GUI pixels. Cancel skips screen drag handlers while retaining the new cursor position. Synthetic input and hover-only moves skip it.
 
-- The screen render stages (`screen_render_pre`, `screen_render_background`, `screen_render_foreground`, then `screen_render_post`) are NeoForge's `ScreenEvent.Render.*`, on the screens `screen_render_post` covers. `Render.Pre` cancel skips the screen's own drawing and with it Background and Foreground; Post still fires. Horizon's screens draw their background, contents and tooltips in one function, so Background fires before it all (the screen's panel is over what a mod draws) and Foreground after the tooltips, just before Post, where vanilla's is before them. `ScreenEvent.Init.Pre` has no hook: Horizon has no screen init method to veto or skip; `screen_opening` (`ScreenEvent.Opening`) is the veto point. With no mod subscribed to any of the four, nothing is built per frame.
+- The screen render stages (`screen_render_pre`, `screen_render_background`, `screen_render_foreground`, then `screen_render_post`) are NeoForge's `ScreenEvent.Render.*`, on the screens `screen_render_post` covers. `Render.Pre` cancel skips the screen's own drawing and with it Background and Foreground; Post still fires. Background fires after the screen's background panel and before its contents; screens with no panel fire it before their contents. Foreground fires after the contents, before tooltips, the dragged stack and the preedit overlay. Lower client renderers report these boundaries to the game, which dispatches with its client host and draw context. `ScreenEvent.Init.Pre` has no hook: Horizon has no screen init method to veto or skip; `screen_opening` (`ScreenEvent.Opening`) is the veto point. With no mod subscribed to any of the four, nothing is built per frame.
 - The screen input Post hooks (`screen_mouse_button_pressed_post`, `screen_mouse_button_released_post`, `screen_mouse_dragged_post`, `screen_mouse_scrolled_post`, `screen_key_pressed_post`, `screen_key_released_post`, `screen_char_typed_post`) are NeoForge's `ScreenEvent.*.Post`, on the screens the `_pre` input hooks cover and only when the matching Pre did not cancel. They differ in when they fire. The mouse Posts fire after the screen's own arms ran, handled or not; unlike NeoForge's, the press and release carry no `wasClickHandled`/`wasReleaseHandled`, because Horizon's screens take their input without reporting it. The key and char Posts fire only when no screen arm took the input (vanilla's `keyPressed`/`charTyped` returning false), and their `canceled` marks it handled: a cancelled key press or release never reaches the game's key bindings. The char Post does not fire on Options and the title's own screens, whose text is routed in place. A Post fires on the screen open after the input was handled, so one that closed the screen fires nothing. With no mod subscribed, a Post does no work.
 
 - The preedit hooks (`screen_preedit_pre`, `screen_preedit_post`) are NeoForge's `ScreenEvent.Preedit.Pre` and `.Post`, fired from the window's input method preedit event while a screen is open. Pre cancel bypasses the screen's handler and Post. Horizon's handler is the focused text field taking the composition, and its real result is what gates Post: Post fires only when no text field took the preedit (no constant). An empty `full_text` is a composition that ended. Nothing fires with no subscriber.
@@ -2282,7 +2282,7 @@ registration path.
 
 - An energy buffer on a mod block's block entity. `r.block_energy(&block, buffer)` registers a `ModEnergyBuffer` as `SimpleEnergyHandler` is built: its capacity, the most one insert and one extract moves, and the faces a fill may come through and a drain may leave by. The amount lives in the entity's saved compound as the int `energy`, so it survives restarts and the block's own tick reads it there. The game's own energy capability and registration-time type coverage share that declaration (see "A block's energy").
 
-- Data maps (`RegisterDataMapTypesEvent`). `data_map_types(types)` pushes the types a mod registers: an `id` (`mod_id:name`, not in `minecraft`) for a `registry`, `minecraft:item` or `minecraft:block` so far; asked once per load of the server's data (a world's first open and every `/reload`). The values come from `data/<mod_id>/data_maps/<registry path>/<name>.json` in the world's data packs and from files a mod pushes through `data_pack_files` under the key `data_maps/<mod_id>:<registry path>/<name>`: `{"replace": false, "values": {"minecraft:coal": ..., "#minecraft:logs": ...}, "remove": [...]}`, an entry's value being the data itself or `{"value": ..., "replace": false}`; `replace` clears what earlier files set, a tag gives every entry in it the value, `remove` applies after the file's own values, and a newer value overrides an older one. A typed map (`DataMap`: its id, its entries' registry and how a value decodes) is pushed with `DataMap::ty`, and `ItemKey::data(host, &map)` and `BlockKey::data(host, &map)` read an entry's merged value, `Ok(None)` where it has none and a `DataMapError` where no maps are loaded, no mod registered the map or the value does not decode. Server side only and not synced to clients; mergers, conditions, other registries and mod datapack registries are not here yet. `data_maps_updated(registry, cause)` (NeoForge's `DataMapsUpdatedEvent`) fires once for each registry that has a type, right after `tags_updated`'s `ServerDataLoad`, on a world's first open and after every `/reload`, with `DataMapsUpdateCause::ServerReload`: the place to build caches from the new values. `DataMapsUpdateCause::ClientSync` is for a client applying synced data maps, which is not represented.
+- Data maps (`RegisterDataMapTypesEvent`). `native_data_map_types(types)` pushes the types a mod registers: an `id` (`mod_id:name`, not in `minecraft`) for a `registry`, any the game names; asked once per load of the server's data (a world's first open and every `/reload`). The values come from `data/<mod_id>/data_maps/<registry folder>/<name>.json` (the registry's path for a `minecraft` registry, `<namespace>/<path>` otherwise) in the world's data packs and from files a mod pushes through `native_data_pack_files` under the key `data_maps/<mod_id>:<registry folder>/<name>`: `{"replace": false, "values": {"minecraft:coal": ..., "#minecraft:logs": ...}, "remove": [...]}`, an entry's value being the data itself or `{"value": ..., "replace": false}`, optionally with its own `neoforge:conditions`; an id the registry doesn't hold is skipped with one warning per file; `replace` clears what earlier files set, a tag gives every entry in it the value, `remove` applies after the file's own values, and a newer value overrides an older one. A typed map (`DataMap`: its id, its entries' registry and how a value decodes) is pushed with `DataMap::ty`, and a key's `data(host, &map)` (`ItemKey`, `BlockKey`, `FluidKey`, `EffectKey`, `EntityTypeKey`, `EnchantmentKey`, `BlockEntityTypeKey`, `ProfessionKey`) reads an entry's merged value, `data_map_value(host, registry, entry, map)` the same by name and `data_map_entries(host, registry, map)` the whole map, `Ok(None)` where it has none and a `DataMapError` where no maps are loaded, no mod registered the map or the value does not decode. Server side only and not synced to clients; advanced mergers are not here yet. The six builtin mob and item maps are registered by the engine in the same store with canonical codec NBT values, including Float distances and Int frequencies. This adds no query key families; remaining query coverage is deferred to #4199. `native_data_maps_updated(registry, cause)` (NeoForge's `DataMapsUpdatedEvent`) fires once for each registry that has a type, in registry id order, right after `native_tags_updated`'s `ServerDataLoad`, on a world's first open and after every `/reload`, with `DataMapsUpdateCause::ServerReload`: the place to build caches from the new values. `DataMapsUpdateCause::ClientSync` is for a client applying synced data maps, which does not exist yet.
 
 `living_fall(context, entity, kind, distance, multiplier, cancel)` corresponds to NeoForge's `LivingFallEvent` at `LivingEntity.causeFallDamage`. Mods may change the distance and damage multiplier or cancel fall handling; cancellation does not reverse physical movement. This free function receives the entity ID and type and cannot call game helpers. Player landings, mounted player falls and non-equine mob falls are wired. Equines use their own fall-damage override rather than `LivingEntity.causeFallDamage`. `context` is the loop context of the side that ticks the entity; the hook fires inside the landing, so it takes no `Host` (a deferred call would reorder the fall damage and block effects). `farmland_trample` and `ender_entity_teleport` take the context the same way, and so does `living_jump`, which fires inside the jump. Contract version `2` for all four: a mod written for `1` takes the context as a new first argument of the `Hooks` method.
 
@@ -2290,9 +2290,9 @@ registration path.
 
 `living_heal(context, entity, amount, cancel)` corresponds to NeoForge's `LivingHealEvent` at `LivingEntity.heal`. The amount can be changed and cancellation prevents the heal. It covers player effect, food and peaceful regeneration healing and the wired mob healing paths. Other healing paths and client-side coverage remain unverified. `entity` is the affected player or mob ID. `context` is the loop context of the side that ticks the entity; the hook fires inside the health update, so it takes no `Host` (a deferred call would reorder vanilla's regeneration timers). Contract version `2`: a mod written for `1` takes the context as a new first argument of the `Hooks` method.
 
-`living_drown(context, entity, kind, is_drowning, damage_amount, bubble_count, cancel)` asks on the server when a player or generic-air mob cannot breathe and has no air (NeoForge's `LivingDrownEvent`, `LivingEntity.baseTick`). Mods may change the drowning decision, damage and bubble count, or cancel. Damage at or below zero does not hurt. The normal eight bubbles use the entity event; other positive counts are sent in a particle packet, and nonpositive counts suppress bubbles.
+`living_drown(context, entity, kind, is_drowning, damage_amount, bubble_count, cancel)` asks on the server when a player or mob cannot breathe and has no air (NeoForge's `LivingDrownEvent`, `LivingEntity.baseTick`); water animals, axolotls and nautiluses are asked too, from their own air logic, and show no bubbles. Mods may change the drowning decision, damage and bubble count, or cancel. Damage at or below zero does not hurt. The normal eight bubbles use the entity event; other positive counts are sent in a particle packet, and nonpositive counts suppress bubbles.
 
-- A player's or mob's breathing, on the single player server thread and on a dedicated server: `living_breathe(context, entity, kind, can_breathe, consume, refill)` every tick for a player and for a mob with the generic air logic (NeoForge's `LivingBreatheEvent`, vanilla's `LivingEntity.baseTick`), with Horizon's answers as the defaults: set `can_breathe` and how much air `consume` takes or `refill` gives (up to 300); at -20 the entity is set to 0 air and takes 2 drowning damage. It is a free function in `horizon_client::breathing`, so it answers and cannot call helpers. Axolotls and `WaterAnimal`s keep their own air logic.
+- A player's or mob's breathing, on the single player server thread and on a dedicated server: `living_breathe(context, entity, kind, can_breathe, consume, refill)` every tick for a player and for a mob (NeoForge's `LivingBreatheEvent`, vanilla's `LivingEntity.baseTick`), with Horizon's answers as the defaults: set `can_breathe` and how much air `consume` takes or `refill` gives (up to 300); at -20 the entity is set to 0 air and takes 2 drowning damage. It is a free function in `horizon_client::breathing`, so it answers and cannot call helpers. Axolotls, nautiluses and `WaterAnimal`s are asked with their own air logic's answers (full air where they breathe, 1 lost elsewhere) and dry out or drown at -20 by it.
 
 - Blocks and items a native mod declares in code, as NeoForge's `DeferredRegister.Blocks` and `.Items` drained by `RegisterEvent`, instead of one content file each: `blocks(context, blocks)` and `items(context, items)`, asked once at start on every side, take `mod_api::Block` and `Item`, the declarations a content mod's `data/<id>/horizon/block/` and `item/` files hold (a vanilla template and what differs; a block has its item unless `item` is false, in code as in a file). Ids are in the mod's namespace. They join the content mods' blocks and items, inside the content mod whose id is that namespace when it is on (its models, textures, loot and recipes), else on their own with the template's look, so their network ids, saves and the joining client's content check are the files' (docs/mods.md). They pass the files' checks; a namespace whose declarations don't is logged and left out.
 
@@ -2306,7 +2306,7 @@ registration path.
 
 - Models no blockstate names, as NeoForge's `ModelEvent.RegisterStandalone`: `standalone_models(context, event)` contract version 2, asked once at client startup (not on integrated or dedicated servers), retains plain ids in `event.models` and adds `event.forms: Vec<StandaloneModelForm>`. `Rotated { id, model, turns, uvlock }` bakes a source using centered negative XYZ quarter-turns and real inverse-face UV locking; `Combined { id, parts }` concatenates dependencies' baked quads into one result. Missing dependencies drop the entire form and log the registering mod, not the source namespace. Result ids follow the plain-id namespace rule. Every resource load rebakes both from current files. Resolve each result's `Identifier` through `host.render_assets().model(&id)` in `model_baking_completed`, retaining its opaque `ModelRef` between frames. `BlockEntityDrawContext::model(model, tint)` consumes that handle under the draw pose in `block_entity_submit` or `render_living_pre`, with `tint` (`0xAARRGGBB`) on tinted faces, alpha included; use `0xFFFFFFFF` for no tint. Missing or unbaked names return `ModelError::UnknownModel`. Successful resource replacement invalidates old handles with `ModelError::StaleModel`; failed reloads keep them usable. Drawing errors append no geometry. Native and wasm share this contract; lookup never reads or bakes files, and results are quads rather than arbitrary mod-defined baked types.
 
-- A player opening and closing any menu on a server, on the single player server thread and on a dedicated server: `player_container_open(player, name, dimension, menu, pos)` and `player_container_close(...)` (NeoForge's `PlayerContainerEvent.Open` and `.Close`), with the menu type's name and, for a block's menu, its position. They run with the player's state swapped in. Unlike the viewer count of a mod container (`mod_container_viewers`) they name the player and cover every menu: chests, furnaces, crafting tables, trades, a mod's own. A menu is heard once a tick, so one opened and closed inside a tick is not; each open has one close, also when the player leaves.
+- A player opening and closing any menu on a server, on the single player server thread and on a dedicated server: `player_container_open(player, name, dimension, menu, pos)` and `player_container_close(...)` (NeoForge's `PlayerContainerEvent.Open` and `.Close`), with the menu type's name and, for a block's menu, its position. They run with the player's state swapped in. Unlike the viewer count of a mod container (`mod_container_viewers`) they name the player and cover every menu: chests, furnaces, crafting tables, trades, a mod's own. The open is heard synchronously after construction, the open packet is queued and full contents sent, with the new menu already current; failed construction and the player's own inventory are excluded. Even inside one tick, open precedes close; replacement closes the old menu before the new open. Each open has one close, also when the player leaves. The timing change does not bump `hook_version`: the signature is unchanged.
 
 - A player starting or stopping flight: `player_toggle_flight(player, name, flying, cancel)` is heard once for each change a player's client makes to its flying (vanilla honours it only for a player who may fly), on a server, with the player's state swapped in. A mod sets `cancel` to refuse it: the player keeps the state they had and the server sends their abilities back, so the client lands or flies again. Only what a client asks for is heard, not the flight a game-mode change starts or ends, and not a LAN host's own player.
 
@@ -2371,7 +2371,7 @@ registration path.
   number above zero keeps vanilla's. Only the window's clock changes; a server keeps its own rate. Client side; with no
   listener, one branch a frame.
 
-- A player swapping their main and off hand items: `player_swap_hands(player, name, cancel)` is heard before the swap (Bukkit's `PlayerSwapHandItemsEvent`; a swap from an open inventory is not heard), for a player of a server who is not a spectator, with their state swapped in. A mod sets `cancel` to keep the items where they are; the player's client gets its slots back.
+- A player swapping their main and off hand items: version 2 of `player_swap_hands(player, name, to_main_hand, to_off_hand, cancel)` is heard before the swap (a swap from an open inventory is not heard), for a player of a server who is not a spectator, with their state swapped in. A mod may replace the stack each hand gets, or set `cancel` to keep the items where they are; the player's client is sent both slots again. Named injections must request `hook_version = 2`.
 
 - A player's food level changing: `food_level_changed(player, name, from, to, cancel)` is heard for a player of a server when a turn of theirs changed it (eating, hunger and saturation effects, exhaustion, starving; Bukkit's `FoodLevelChangeEvent`), before the new level reaches them. A mod changes `to` or sets `cancel` to leave the level at `from`.
 
@@ -2534,7 +2534,7 @@ registration path.
 
 - A server player about to enter a bed after its sleep checks pass: `player_bed_enter(player, name, pos, cancel)` hears the bed head position. Set `cancel` to keep the player out. The player's state is swapped in.
 
-- A server player woke or stood up from the bed at `pos`, after their sleeping state changed.
+- A server player is waking or standing up from the bed at `pos`; `player_bed_leave` is heard before their sleeping state is cleared, so a listener still reads them as sleeping.
 
 - A server player caught a bucketable mob: `player_bucket_entity(player, name, entity_id, entity)` runs after the mob was removed and the filled bucket was put in the player's hand or inventory. `entity` is the mob species id.
 
@@ -2635,7 +2635,7 @@ registration path.
 
 - The server completed a world save cycle: `world_saved(wait)` reports whether chunk writes were flushed before returning.
 
-- The time players wake at after sleeping, as NeoForge's `SleepFinishedTimeEvent`: `sleep_finished_time(dimension, current, new_time)` runs on the server once enough players have slept and the `advance_time` rule is on, before the clock moves. `new_time` comes in as the next morning and a mod may change it; a time before `current` is refused. `time_skip` then hears the jump to the chosen time.
+- The time players wake at after sleeping, as NeoForge's `SleepFinishedTimeEvent`: `sleep_finished_time(dimension, current, new_time, adjustment)` runs on the server once enough players have slept and the `advance_time` rule is on, before the clock moves. `adjustment` (a `ClockAdjustment`: `Absolute`, `Relative` or `Marker`, starting as vanilla's `wake_up_from_sleep` marker) says where the clock goes and a mod may change it; `new_time` is the vanilla morning, read only. A time before `current`, or an undefined marker, is refused. `time_skip` then hears the jump to the chosen time.
 
 - A shift-click in a mod container's menu routed by the mod, `AbstractContainerMenu.quickMoveStack`: `menu_quick_move(pos, entity, container_slots, slot, stack, handled)` runs on the server before the game's own routing, for a mod container on a vanilla menu type or its own menu type. The mod takes what it moves out of `stack` and sets `handled`; the slot keeps the rest and the client gets the menu again.
 
@@ -2729,7 +2729,7 @@ registration path.
 - A timed world border size change finished: `world_border_bounds_change_finish()` fires after the border reaches its final size.
 
 - `Game::native_mod_image(width, height, rgba)`: a mod's own RGBA image, uploaded into the HUD atlas slot `horizon/modimage` (1024 by 1024) and drawn with `native_sprite`, whose source rectangle crops and stretches it, so a map or a schematic view needs no texture of its own. The slot is reserved only while a native mod is loaded, so a game without mods pays none of its 4 MiB. False for an image that is not `width * height` pixels of four bytes, is larger than the slot, or when there is no slot. Each upload is a texture patch of the image, so send one when the image changed, not every frame.
-- A living entity drowning (`living_drown`), with changeable drowning and damage, a read-only bubble count and cancellation.
+- A living entity drowning (`living_drown`), with changeable drowning, damage and bubble count, and cancellation.
 - `Game::native_translate(key)`: the selected language's text for a translation key, or `None` when no language layer defines it (`I18n.exists`), so a mod can fall back its own way (a recipe viewer names an item tag by `tag.item.<namespace>.<path>` and falls back to the id). NeoForge: `I18n.exists` and `I18n.get`. Client-side.
 - `Game::native_enchantments()`, `Game::native_enchantment_supports(id, item)` and `Game::native_enchantment_min_cost(id, level)`: every registered enchantment as an `EnchantmentInfo { id, max_level, curse }` record in registry order, whether one can go on an item (`Enchantment.isSupportedItem`), and the power a level needs (`Enchantment.getMinCost`), or `None` for an unknown enchantment. What a recipe viewer lists for grindstone and anvil enchanting. NeoForge: the `enchantment` registry (`RegistryAccess.lookupOrThrow(Registries.ENCHANTMENT)`), `Enchantment.getMaxLevel`, `Enchantment.isSupportedItem`, `Enchantment.getMinCost`, the `minecraft:curse` tag. Client-side.
 - `Game::native_fluid(batch, fluid, [x, y], size)` and `Game::native_fluid_name(fluid)`: a fluid (`minecraft:water`, `mymod:oil`) as a square of `size` GUI pixels, the GUI sprite its look names (`data/<mod>/horizon/fluid/<name>.json`) tinted with its colour, else a flat square of the colour (vanilla water and lava have theirs), and its name as the lang gives it. What a recipe viewer draws for a fluid stack; the slot, the amount and the tooltip are the mod's. NeoForge: `IClientFluidTypeExtensions.getStillTexture` and `getTintColor`. Client-side.
@@ -2919,13 +2919,13 @@ registration path.
   was queued, not whether a player heard it. The server discards unknown sound events when it dispatches
   the queue.
 
-- `Host::config_files()`: the calling mod's own files in the game's shared `config/` folder beside `options.txt` (beside
-  `server.properties` on a dedicated server): its folder `config/<mod id>/` and the files beside it named
-  `<mod id>.<ext>` or `<mod id>-<rest>`. `ConfigFiles` reads, writes, lists and stats them through `&dyn Host` on
-  either side, at most 4 MiB a file; a write replaces the file at once. The service is bound to the mod whose hook or
-  part is running (a mod never names its id), so another mod's path, a symbolic link on the way or a call outside any
-  mod's hook is refused with a typed `ConfigFileError`. A path is a `ConfigPath`, checked once when it is made. A
-  world's `serverconfig/` copy is read only through `config_loading` ([native mods](../how-to/native-mods.md)).
+- `Host::config_files()` retains the calling mod's `config/<mod id>/`, `<mod id>.<ext>` and `<mod id>-<rest>` ownership spelling and 4 MiB `CONFIG_FILE_MAX`; a world's `serverconfig/` copy is read through `config_loading`.
+  `Host::data_files()` on both sides instead owns `<game directory>/horizon-mod-data/<mod id>/`; server-only `ServerHost::world_data_files()` owns `<world>/horizon-mod-data/<mod id>/`, copied, deleted and backed up with the save (`NoWorld` without a world).
+  All three share `ConfigFiles`, `ConfigPath`, `ConfigEntry` and typed `ConfigFileError` on native and wasm; bulk paths omit the mod id, relative to the implicit mod root. Settings remain separate, one file per key, with unchanged scanning; bulk files are never scanned.
+  Horizon's bulk cap is `DATA_FILE_MAX` (64 MiB), not the config cap. Reads, writes and stats enforce their root; writes replace bytes atomically, never leaving a partial file.
+  Checked `/`-separated paths refuse traversal, backslashes and symbolic links; another mod's files, missing calling-mod context, oversize files and unavailable operations receive typed refusals.
+  `list(&folder, after, limit)` returns lexicographically ordered names strictly after the cursor, at most `limit` entries; start with `None`, continue with the last name, and stop on an empty page.
+  `ConfigPath::root()` lists the mod's own root; `limit` must be 1 through `CONFIG_LIST_MAX` (1024), otherwise `InvalidPage` ([config and bulk storage](../how-to/mod-settings.md)).
 
 - The player-health HUD rows through `health_hud`: every frame the HUD draws them, the
   hook hears the layout's inputs (`HealthInputs`) and the screen's GUI size, and a mod that answers with
@@ -3018,8 +3018,8 @@ registration path.
   dedicated and integrated servers do not. One editor persists keys and modifiers in `horizon-mods.txt`.
   Conflicts compare vanilla and mod bindings, context and modifiers, excluding unbound and both-default pairs.
   `host.mod_key(mod_id, id)` returns the saved or declared `(key, ClientModifiers)`, or `None` for an unregistered id.
-  This registration does not listen for presses. Diverges from upstream: the old `mods` hook, `NativeMod.keys`
-  and the Options > Mods key editor are removed, with no compatibility route.
+  Read one with `host.is_down(mod_id, id)` and `host.consume_click(mod_id, id)` (`KeyMapping.isDown`, `consumeClick`). Diverges from upstream: the old `mods` hook,
+  `NativeMod.keys` and the Options > Mods key editor are removed, with no compatibility route.
 - The `command` hook runs a client command: the local player's typed or clicked chat command, without its slash, before the server and the game's own commands see it; set `ran` when the mod ran it. Client-side, with the `ClientHost`. Contract version `2`: a mod written for `1` was given the side-typed host, and was also asked on a server for commands run there (command blocks, LAN guests, the console, the integrated server thread); now only the client asks, and only for its own player's commands.
 
 - Recipes of any type (`RecipeManager.getAllRecipesFor`), vanilla's (`minecraft:smelting`, `minecraft:campfire_cooking`) and a mod's own (`mymod:crusher`, for a machine or an altar) through one read: `host.recipes_of_type("minecraft:smelting")` gives each recipe in force, in file order, as a `Recipe`: its `id`, `kind`, `group`, typed `ingredients` and `results` (for shaped, shapeless and cooking recipes, as the game parsed them; a recipe the game cannot parse is not in force and not listed), `cooking_time` and `experience` for the cooking types, and its file's `json`, which is all a mod's own type has. The recipes are those of `data/<namespace>/recipe/` in vanilla, content mods (`.hmod`) and the world's data packs, with data packs merged and load conditions held, so a pack's override or removal shows; a type nobody uses gives nothing. `Host::recipe_ingredient` and `Host::recipe_result` read the usual fields as JSON text, tags included (a bare id is read as `minecraft:`; items the game does not know are left out, and the helper returns `Ok(None)` if none is left). Invalid JSON returns `RecipeJsonError::InvalidJson` rather than panicking. The recipes are the server's table: on the server thread, a dedicated server or a LAN host; a client, the single-player window included, sees vanilla's and the content mods' recipes, not the world's data packs', unless a mod had the server send it the type (`native_datapack_sync`). All three give nothing outside a world. The game crafts the recipes of its own types itself, and shows none of a mod's own in the recipe book; `/reload` reads a data pack's again, so look them up again when you need them. The lookup borrows the table, with no copy.

@@ -16,10 +16,11 @@ use super::{
     hostile,
     nav::Navigation,
     path::{PATH_TYPES, Path},
+    push::{Cap, Verdict, root_vehicle},
     undead,
 };
 use crate::blocks::Fluid;
-use crate::breathing::{Breath, breathe, drown};
+use crate::breathing::{Breath, breathe, drown, own_air};
 use crate::health::DamageLevel;
 use horizon_core::{
     geometry::{Aabb, ShapeOp, Vec3, VoxelShape},
@@ -436,6 +437,7 @@ pub struct Ai {
     /// Ticks left during which kills count as player kills.
     pub last_hurt_by_player: i32,
     pub no_action_time: i32,
+    pub dab_turns: u32,
     pub aggressive: bool,
     pub panicking: bool,
     pub malus: [Option<f32>; PATH_TYPES],
@@ -1781,41 +1783,34 @@ pub(super) fn in_rain(m: &Mob, w: &MobWorld) -> bool {
 /// it, anywhere else it runs down from the pre-tick value, and at -20 the
 /// axolotl dries out.
 fn axolotl_air_supply(m: &mut Mob, w: &MobWorld, level: &mut DamageLevel<'_>) {
-    let before = m.air;
-    m.air = (m.air + 4).min(super::axolotl::MAX_AIR);
     if m.no_ai {
+        m.air = (m.air + 4).min(super::axolotl::MAX_AIR);
         return;
     }
-    if m.fluids.in_water || in_rain(m, w) {
-        m.air = super::axolotl::MAX_AIR;
-    } else {
-        m.air = before - 1;
-        if m.air <= -20 {
-            m.air = 0;
-            m.damage(level, 2.0, Damage::of(DamageKind::DryOut));
-        }
+    let breathes = m.fluids.in_water || in_rain(m, w);
+    let (cx, max) = (w.loop_context, super::axolotl::MAX_AIR);
+    if let Some(damage) = own_air(cx, m.id, &m.kind.id, &mut m.air, breathes, max, false) {
+        m.damage(level, damage, Damage::of(DamageKind::DryOut));
     }
 }
 /// `Nautilus.baseTick`: `LivingEntity.baseTick` refills the air of this
 /// water breather, then, unless it has no AI, `Nautilus.handleAirSupply`
 /// takes it back out of water, where the nautilus dries out.
-fn nautilus_air_supply(m: &mut Mob, level: &mut crate::health::DamageLevel<'_>) {
+fn nautilus_air_supply(m: &mut Mob, w: &MobWorld, level: &mut DamageLevel<'_>) {
     const MAX_AIR: i32 = 300;
-    let before = m.air;
-    if m.alive() {
-        m.air = (m.air + 4).min(MAX_AIR);
-    }
     if m.no_ai {
+        if m.alive() {
+            m.air = (m.air + 4).min(MAX_AIR);
+        }
         return;
     }
-    if m.alive() && !m.fluids.in_water {
-        m.air = before - 1;
-        if m.air <= -20 {
-            m.air = 0;
-            m.damage(level, 2.0, Damage::of(DamageKind::DryOut));
-        }
-    } else {
+    if !m.alive() {
         m.air = MAX_AIR;
+        return;
+    }
+    let (cx, wet) = (w.loop_context, m.fluids.in_water);
+    if let Some(damage) = own_air(cx, m.id, &m.kind.id, &mut m.air, wet, MAX_AIR, false) {
+        m.damage(level, damage, Damage::of(DamageKind::DryOut));
     }
 }
 /// `Entity.isInWall` (minus the noPhysics early-out, which the caller applies):
@@ -1975,16 +1970,11 @@ fn base_tick(
         if m.species() == Species::Axolotl {
             axolotl_air_supply(m, w, level);
         } else if m.species() == Species::Nautilus {
-            nautilus_air_supply(m, level);
+            nautilus_air_supply(m, w, level);
         } else if m.kind.flags.needs_water {
-            if !m.fluids.in_water {
-                m.air -= 1;
-                if m.air == -20 {
-                    m.air = 0;
-                    m.damage(level, 2.0, Damage::of(DamageKind::Drown));
-                }
-            } else {
-                m.air = 300;
+            let (cx, wet) = (w.loop_context, m.fluids.in_water);
+            if let Some(damage) = own_air(cx, m.id, &m.kind.id, &mut m.air, wet, 300, true) {
+                m.damage(level, damage, Damage::of(DamageKind::Drown));
             }
         } else {
             // LivingEntity.baseTick / MobEffectUtil: bubble columns and breathing
@@ -2013,6 +2003,7 @@ fn base_tick(
                 events.push(MobEvent::Drown {
                     mob: m.id,
                     at: [m.position.x, m.position.y, m.position.z],
+                    bubbles: drowning.bubbles,
                 });
                 if let Some(damage) = drowning.damage {
                     m.damage(level, damage, Damage::of(DamageKind::Drown));
@@ -2370,7 +2361,7 @@ fn ai_step(m: &mut Mob, w: &MobWorld, level: &mut DamageLevel<'_>, events: &mut 
         super::piglin::before_goals(m, w, level.random(), events);
     }
     if m.alive() && !immobile {
-        server_ai_step(m, w, level, events);
+        super::dab::step(m, w, level, events);
     } else {
         m.ai.jumping = false;
         m.ai.xxa = 0.0;
@@ -2463,18 +2454,6 @@ impl Mob {
 fn on_climbable(m: &Mob, w: &MobWorld) -> bool {
     m.on_climbable(w)
 }
-/// `Entity.getRootVehicle` of the mob `id` riding `vehicle`: the bottom of
-/// its stack of vehicles (itself when it rides nothing).
-fn root_vehicle(w: &MobWorld, id: u32, vehicle: Option<u32>) -> u32 {
-    let (mut root, mut next) = (id, vehicle);
-    // A stack of riders is short; the bound only guards a broken loop.
-    for _ in 0..16 {
-        let Some(v) = next else { break };
-        root = v;
-        next = w.seen(v).and_then(|s| s.vehicle);
-    }
-    root
-}
 /// `LivingEntity.aiStep`, with or without AI: a mob's motion below 0.003 on an
 /// axis stops.
 fn drop_tiny_motion(m: &mut Mob) {
@@ -2508,7 +2487,7 @@ fn push_entities(
         && !super::equine::is_vehicle(m);
     // Each with whether it rides a vehicle (`Entity.isPassenger`) and
     // whether it shares this one's root vehicle (`isPassengerOfSameVehicle`).
-    let mut targets: Vec<(Who, Vec3, bool, bool, bool)> = Vec::new();
+    let mut targets = super::world::take_push_targets();
     if let Some(p) = w.selected_player()
         // Entity.push: passengers of the same vehicle never push each other.
         && m.rider.is_none()
@@ -2538,7 +2517,14 @@ fn push_entities(
     {
         m.damage(level, 6.0, Damage::of(DamageKind::Cramming));
     }
-    for (who, at, _, same, vehicle) in targets {
+    // The server's collision cap, after the cramming check above, which counts every entity.
+    let mut cap = Cap::new(m, w);
+    for &(who, at, _, same, vehicle) in &targets {
+        match cap.check(who, w) {
+            Verdict::Push => {}
+            Verdict::Skip => continue,
+            Verdict::Stop => break,
+        }
         // Warden.doPush: touching it angers it, then the push itself.
         if m.species() == Species::Warden {
             super::warden::do_push(m, w, who, events);
@@ -2590,7 +2576,9 @@ fn push_entities(
         if self_pushable {
             m.velocity = Vec3::new(m.velocity.x + xa, m.velocity.y, m.velocity.z + za);
         }
+        cap.record(m, who);
     }
+    super::world::give_push_targets(targets);
 }
 /// `Mob.aiStep` -> `Mob.burnUndead`: undead burn in daylight. It runs with
 /// or without AI (`NoAI` only skips `serverAiStep`).
@@ -2857,7 +2845,7 @@ mod selector_restore_tests {
 }
 
 /// Mob.serverAiStep
-fn server_ai_step(
+pub(super) fn server_ai_step(
     m: &mut Mob,
     w: &MobWorld,
     level: &mut DamageLevel<'_>,
@@ -2875,7 +2863,7 @@ fn server_ai_step(
         return;
     }
     super::riders::drive(m, w);
-    let tick_count = m.age as i64;
+    let tick_count = super::dab::selector_tick(m);
     let id_based = tick_count + i64::from(m.id);
     {
         let BorrowedGoalSelectors {
@@ -2905,7 +2893,7 @@ fn server_ai_step(
     }
     if m.species() == Species::Villager {
         // Villager.customServerAiStep: the brain, then the raid sound roll.
-        super::villager_brain::tick(m, w, level, events);
+        super::villager::lobotomy::brain_tick(m, w, level, events);
         if let Some(player) = super::villager::ext_mut(m).last_traded_player.take() {
             events.push(MobEvent::VillagerTrade { mob: m.id, player });
         }
@@ -3720,7 +3708,7 @@ pub fn custom_travel(
         // Shulkers never move on their own.
         Family::Shulker => true,
         Family::Allay => super::allay::travel(m, w, level, input, events),
-        Family::Vex => super::vex::travel(m),
+        Family::Vex => super::vex::travel(m, w),
         Family::Nautilus => super::nautilus::travel(m, w, level, input, events),
         _ => false,
     }
@@ -4890,6 +4878,121 @@ mod same_vehicle_push_tests {
         assert_eq!(velocity, Vec3::ZERO, "its rider pushes the camel");
         let (pushed, _) = push(true).unwrap();
         assert_eq!(pushed, vec![3], "the camel pushes the zombie");
+    }
+
+    /// The server's collision cap (`[entities] max_collisions`): in a pen of twelve chickens one
+    /// pushes every other (11) with no cap, and exactly the first N in vanilla's order with a cap
+    /// of N, skipping a chicken that already had N pushes this tick.
+    #[test]
+    fn a_mob_in_a_crowded_pen_pushes_at_most_the_cap() {
+        let mut pen = None;
+        with_test_world(&[], |_, types| {
+            let chicken = |id: u32| {
+                // All inside one another's boxes, none exactly on the pusher.
+                let at = Vec3::new(0.5 + f64::from(id) * 0.02, 64.0, 0.5);
+                Mob::new(
+                    id,
+                    std::sync::Arc::new(types.types["minecraft:chicken"].clone()),
+                    at,
+                    0.0,
+                )
+            };
+            pen = Some((0..12).map(chicken).collect::<Vec<_>>());
+        });
+        let Some(pen) = pen else {
+            return;
+        };
+        let pushed = |cap: u32, crowd: &[crate::mobs::Seen]| {
+            let mut pusher = pen[0].clone();
+            let mut events = Vec::new();
+            super::super::push::with_cap(cap, || {
+                with_test_world(crowd, |w, _| {
+                    let mut level = crate::health::TestLevel::new(0);
+                    push_entities(&mut pusher, w, &mut level.level(), &mut events)
+                })
+            });
+            let ids: Vec<u32> = events
+                .iter()
+                .filter_map(|e| match e {
+                    MobEvent::Push {
+                        target: Who::Mob(id),
+                        ..
+                    } => Some(*id),
+                    _ => None,
+                })
+                .collect();
+            // What the loop reports for the counts that follow.
+            assert_eq!(pusher.pushed, if cap > 0 { ids.clone() } else { vec![] });
+            ids
+        };
+        let mut crowd: Vec<crate::mobs::Seen> = pen
+            .iter()
+            .map(|m| m.seen(None, &crate::items::Items::empty()))
+            .collect();
+        assert_eq!(pushed(0, &crowd), (1..12).collect::<Vec<u32>>());
+        assert_eq!(pushed(3, &crowd), vec![1, 2, 3]);
+        // Chickens 1 and 2 have taken 3 pushes already: skipped, the next ones are pushed.
+        crowd[1].collisions = 3;
+        crowd[2].collisions = 3;
+        assert_eq!(pushed(3, &crowd), vec![3, 4, 5]);
+        // The pusher's own count includes what it received: two left of three.
+        crowd[0].collisions = 1;
+        assert_eq!(pushed(3, &crowd), vec![3, 4]);
+        crowd[0].collisions = 3;
+        assert!(pushed(3, &crowd).is_empty());
+        // Off, the counts are not read.
+        assert_eq!(pushed(0, &crowd), (1..12).collect::<Vec<u32>>());
+    }
+
+    /// MSPT of one tick of a crowded chicken pen with the cap off and at 8 (run by hand with
+    /// `--ignored --nocapture`; needs the vanilla data). It measures the pushes a mob gives; the
+    /// received counts the mob loop adds are not simulated.
+    #[test]
+    #[ignore]
+    fn collision_cap_cost() {
+        for n in [50u32, 100, 200] {
+            let mut pen = None;
+            with_test_world(&[], |_, types| {
+                let ty = std::sync::Arc::new(types.types["minecraft:chicken"].clone());
+                pen = Some(
+                    (0..n)
+                        .map(|id| {
+                            let at = Vec3::new(
+                                0.5 + f64::from(id % 7) * 0.05,
+                                64.0,
+                                0.5 + f64::from(id / 7 % 7) * 0.05 + f64::from(id) * 0.0001,
+                            );
+                            Mob::new(id, ty.clone(), at, 0.0)
+                        })
+                        .collect::<Vec<_>>(),
+                );
+            });
+            let Some(mut pen) = pen else {
+                return;
+            };
+            for cap in [0u32, 8] {
+                let crowd: Vec<crate::mobs::Seen> = pen
+                    .iter()
+                    .map(|m| m.seen(None, &crate::items::Items::empty()))
+                    .collect();
+                let t = std::time::Instant::now();
+                super::super::push::with_cap(cap, || {
+                    with_test_world(&crowd, |w, _| {
+                        let mut events = Vec::new();
+                        let mut level = crate::health::TestLevel::new(0);
+                        for m in pen.iter_mut() {
+                            events.clear();
+                            push_entities(m, w, &mut level.level(), &mut events);
+                            m.pushed.clear();
+                        }
+                    })
+                });
+                println!(
+                    "{n} chickens, cap {cap}: {:.3} ms",
+                    t.elapsed().as_secs_f64() * 1e3
+                );
+            }
+        }
     }
 
     #[test]

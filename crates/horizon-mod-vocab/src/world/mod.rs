@@ -8,6 +8,7 @@ pub(crate) mod biome_modifier;
 pub(crate) mod biome_region;
 pub(crate) mod biome_source;
 pub(crate) mod chunk_generator;
+pub(crate) mod clock_adjustment;
 pub(crate) mod criteria;
 pub(crate) mod custom_spawners;
 pub(crate) mod data_maps;
@@ -33,6 +34,10 @@ pub(crate) mod phase;
 pub(crate) mod read_error;
 pub(crate) mod reload;
 pub(crate) mod reload_order;
+// hidden: a module of game-side entry points; mods use their re-exports
+#[doc(hidden)]
+pub mod rotation;
+pub(crate) mod runtime_levels;
 pub(crate) mod scheduler;
 pub(crate) mod server_reload;
 pub mod snapshots;

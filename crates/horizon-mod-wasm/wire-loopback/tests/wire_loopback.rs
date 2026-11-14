@@ -226,6 +226,9 @@ fn __horizon_mod_hooks() -> Box<dyn Hooks> {
             event.stack.count = 29;
         }
         fn loot_condition(&self, event: &mut mod_api::LootConditionEvent<'_>) {
+            if loot_query::guest_condition(event) {
+                return;
+            }
             let tag = event
                 .tags
                 .key(&mod_api::Identifier::parse("test:ingredients").unwrap())
@@ -254,11 +257,19 @@ fn __horizon_mod_hooks() -> Box<dyn Hooks> {
         ) {
             entity_layers::register(event.layers);
         }
+        fn register_special_model_renderer(
+            &self,
+            _: &mod_api::RegistrationContext,
+            event: &mut mod_api::RegisterSpecialModelRendererEvent<'_>,
+        ) {
+            special_model_renderers::register(event.renderers);
+        }
         fn register(
             &self,
             registrar: &mut dyn mod_api::Registrar,
-            _: &mod_api::RegistrationContext,
+            cx: &mod_api::RegistrationContext,
         ) {
+            cx.warn("wire_test.warn.optional", &["café", "jei"]);
             arm_pose_registration::check(registrar);
             biome_region_registration::register(registrar);
             REGISTERED_ITEM.set(Some(registrar.item_key("minecraft:stone")));
@@ -400,6 +411,13 @@ fn __horizon_mod_hooks() -> Box<dyn Hooks> {
                 event.remaining.as_ref().map(|rest| rest.count()),
             )));
             *event.remaining = None;
+        }
+        fn viewed_level_sound(
+            &self,
+            _: &mut dyn mod_api::ClientHost,
+            event: &mut mod_api::ViewedLevelSoundEvent<'_>,
+        ) {
+            viewed_level_sound::listen(event);
         }
         fn item_toss(
             &self,
