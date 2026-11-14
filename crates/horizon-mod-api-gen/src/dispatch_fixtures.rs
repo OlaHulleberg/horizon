@@ -196,7 +196,7 @@ mod tests {
         generate(&root, &root).unwrap();
         fs::write(
             dir.join("alpha.rs"),
-            "fn check() {} mod root { mod runtime {} } mod stubs { struct Stub; } mod api { pub struct Api; } mod crate_root { mod item {} }", 
+            "fn check() {} mod root { mod runtime {} } mod stubs { struct Stub; } mod api { pub struct Api; } mod crate_root { mod item {} }",
         )
         .unwrap();
         fs::write(root.join(DECLARATIONS).join("zeta.rs"), "").unwrap();
