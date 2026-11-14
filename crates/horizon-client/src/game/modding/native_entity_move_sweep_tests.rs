@@ -1,7 +1,9 @@
-//! The `entity_move` sweep (#2414, Ari's 1b): one entity of every walk kind,
-//! one full family round each, and a counting listener that must hear exactly
-//! one self move per kind per round - the backstop the clippy ban cannot
-//! give, because a forgotten family moves without any resolve call.
+//! The `entity_move` sweep (#2414, Ari's 1b): one entity of every walk
+//! family, one full family round each, and a counting listener that must
+//! hear exactly each family's case - the backstop the clippy ban cannot
+//! give, because a forgotten family moves without any resolve call. The
+//! cases are generated from `entity_lists!` itself and the coverage is
+//! asserted against the real `entity_handles()` walk (review round 1).
 use super::native_entity_refs::tests::with_game;
 use mod_api::{EntityMoveEvent, Flow, Hooks, LoopContext, MoveCause};
 use std::sync::{Arc, Mutex};
@@ -22,35 +24,159 @@ impl Hooks for Counter {
     }
 }
 
-/// The walk kinds the sweep spawns, each moving once in its family's round:
-/// a zombie falling (mobs), a dropped item with speed (items tick every round
-/// while it has horizontal speed), a primed TNT, a boat, a minecart, an armor
-/// stand falling, a firework rocket in free flight.
-const KINDS: &[(&str, &str)] = &[
-    ("zombie", "minecraft:zombie"),
-    ("item", "minecraft:item"),
-    ("tnt", "minecraft:tnt"),
-    ("oak_boat", "minecraft:oak_boat"),
-    ("minecart", "minecraft:minecart"),
-    ("armor_stand", "minecraft:armor_stand"),
-    ("firework_rocket", "minecraft:firework_rocket"),
+/// The walk's families, straight from `entity_lists!` through its own
+/// `walk_lists` expansion (review round 1): the macro walks one field per
+/// list, so a family added to the lists fails to compile here until
+/// [`Families`] — and a case in [`CASES`] below — names it. No hand-written
+/// census to drift from the lists.
+struct Families {
+    mobs: [&'static str; 1],
+    dropped: [&'static str; 1],
+    boats: [&'static str; 1],
+    carts: [&'static str; 1],
+    armor_stands: [&'static str; 1],
+    tnts: [&'static str; 1],
+    falling: [&'static str; 1],
+    orbs: [&'static str; 1],
+    projectiles: [&'static str; 1],
+    rockets: [&'static str; 1],
+    tridents: [&'static str; 1],
+    general: [&'static str; 1],
+}
+
+/// One census case: the family (as `EntityHandle`'s Debug names it), the
+/// representative's entity kind, and the fires its own round must produce —
+/// one self move for the walk movers, none for vanilla's `setPos` flyers
+/// (#2414 point 3) and none for the push-only general rows.
+struct Case {
+    family: &'static str,
+    kind: &'static str,
+    fires: &'static [MoveCause],
+}
+
+/// The walk families' cases: one per entry of `entity_lists!`, checked
+/// against that list by [`Families`] and against the live walk below.
+const CASES: &[Case] = &[
+    Case {
+        family: "Mob",
+        kind: "minecraft:zombie",
+        fires: &[MoveCause::SelfMovement],
+    },
+    Case {
+        family: "Item",
+        kind: "minecraft:item",
+        fires: &[MoveCause::SelfMovement],
+    },
+    Case {
+        family: "Boat",
+        kind: "minecraft:oak_boat",
+        fires: &[MoveCause::SelfMovement],
+    },
+    Case {
+        family: "Cart",
+        kind: "minecraft:minecart",
+        fires: &[MoveCause::SelfMovement],
+    },
+    Case {
+        family: "ArmorStand",
+        kind: "minecraft:armor_stand",
+        fires: &[MoveCause::SelfMovement],
+    },
+    Case {
+        family: "Tnt",
+        kind: "minecraft:tnt",
+        fires: &[MoveCause::SelfMovement],
+    },
+    Case {
+        family: "Falling",
+        kind: "minecraft:falling_block",
+        fires: &[MoveCause::SelfMovement],
+    },
+    Case {
+        family: "Orb",
+        kind: "minecraft:experience_orb",
+        fires: &[MoveCause::SelfMovement],
+    },
+    Case {
+        family: "Projectile",
+        kind: "minecraft:arrow",
+        fires: &[],
+    },
+    Case {
+        family: "Rocket",
+        kind: "minecraft:firework_rocket",
+        fires: &[MoveCause::SelfMovement],
+    },
+    Case {
+        family: "Trident",
+        kind: "minecraft:trident",
+        fires: &[],
+    },
+    Case {
+        family: "General",
+        kind: "mymod:robot",
+        fires: &[],
+    },
 ];
 
-/// Spawn one of every walk kind high over a stone floor, run one round of
-/// each family's tick, and require exactly one self-cause fire per kind: the
-/// counting backstop for «a forgotten family cannot move around the gate».
+/// Declares the census's general entity type: the `General` family's
+/// representative, part-free and unsaved, loaded as a record below.
+struct DeclareGeneral;
+
+#[mod_api::__subscriptions]
+impl Hooks for DeclareGeneral {
+    fn register(&self, r: &mut dyn mod_api::Registrar, _: &mod_api::RegistrationContext) {
+        r.declare_general_entity(
+            "robot",
+            mod_api::GeneralEntityCategory::Misc,
+            0.8,
+            1.9,
+            mod_api::GeneralSavePolicy::NoSave,
+            false,
+            8,
+            3,
+            1,
+            &[],
+        )
+        .unwrap();
+    }
+}
+
+/// The handle's family, as `EntityHandle`'s Debug names it (`Mob(3)`): every
+/// variant is a tuple of its index, so the name is the part before `(`.
+fn family_of(handle: super::entity::EntityHandle) -> String {
+    let printed = format!("{handle:?}");
+    printed[..printed.find('(').expect("a tuple variant")].to_owned()
+}
+
+/// One entity of every walk family, one full family round each, and a
+/// counting listener: the cases come from `entity_lists!` itself
+/// ([`Families`]), the coverage is asserted against the real
+/// `entity_handles()` walk — every family the walk visits has a case, every
+/// case is live in the walk — and each family fires exactly its case's
+/// causes. The backstop the clippy ban cannot give, because a forgotten
+/// family moves without any resolve call (review round 1).
 #[test]
 #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES"]
-fn every_walk_kind_fires_entity_move_once_per_round() {
+fn every_walk_family_of_the_entity_lists_fires_its_case() {
+    mod_platform::__private::initialize().unwrap();
+    // The registration phase owns the general type the General case loads;
+    // the ticks run in World, as the server's own do.
+    let _registration =
+        mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::Registration);
     let log = Arc::new(Mutex::new(Vec::new()));
-    let mods: mod_api::Mods = vec![mod_api::ModEntry::new(
-        "counter",
-        Box::new(Counter(log.clone())),
-    )]
+    let mods: mod_api::Mods = vec![
+        mod_api::ModEntry::new("counter", Box::new(Counter(log.clone()))),
+        mod_api::ModEntry::new("mymod", Box::new(DeclareGeneral)),
+    ]
     .into();
     mod_platform::testing::with_mods(mods, || {
         with_game(|game| {
+            game.options.dedicated = Some(Vec::new());
+            game.native_level_opened(crate::game::Dim::Overworld);
             game.build_registries();
+            game.reset_entity_residency();
+            let _world = mod_api::__private::PhaseOwner::scope(mod_api::__private::ModPhase::World);
             game.set_allow_commands(true);
             let registry = &game.pack.assets.registry;
             let stone = registry.default_state("minecraft:stone").unwrap();
@@ -61,36 +187,141 @@ fn every_walk_kind_fires_entity_move_once_per_round() {
                 }
             }
             game.world.chunks.insert((0, 0), std::sync::Arc::new(chunk));
-            // One of each kind, airborne with a small horizontal speed so
-            // every family's own tick moves it.
-            for (name, kind) in KINDS {
-                let nbt = match *name {
+            // One representative per family, each in its own column high
+            // over the floor, airborne or in flight so its family's own tick
+            // moves it.
+            let at = |i: usize| [4.5 + f64::from(i as u16), 40.5, 5.5];
+            for (i, (name, kind)) in [
+                (0, ("zombie", "minecraft:zombie")),
+                (1, ("item", "minecraft:item")),
+                (2, ("boat", "minecraft:oak_boat")),
+                (3, ("minecart", "minecraft:minecart")),
+                (4, ("armor_stand", "minecraft:armor_stand")),
+                (5, ("tnt", "minecraft:tnt")),
+                (8, ("rocket", "minecraft:firework_rocket")),
+                (9, ("arrow", "minecraft:arrow")),
+            ] {
+                let nbt = match name {
                     "item" => "{Item:{id:\"minecraft:stone\",Count:1b},Motion:[0.5d,0.0d,0.0d]}",
+                    "arrow" => "{Motion:[1.0d,0.0d,0.0d]}",
                     _ => "{Motion:[0.5d,0.0d,0.0d]}",
                 };
-                game.summon_with_nbt(kind, [5.5, 40.5, 5.5], nbt)
+                let at = at(i);
+                game.summon_with_nbt(kind, at, nbt)
                     .unwrap_or_else(|e| panic!("summon {name}: {e:?}"));
             }
+            // The orb: the summon command's own spawn (value 0), moved by
+            // its tick's gravity.
+            assert!(game.run_command(&format!("summon experience_orb {} 40.5 5.5", at(7)[0])));
+            // The falling block: thrown by the game's own spawn, eastbound.
+            assert!(game.spawn_falling_block(
+                "minecraft:overworld",
+                stone,
+                at(6),
+                [0.5, 0.0, 0.0],
+                mod_api::Falling::default()
+            ));
+            // The trident: a thrown one in flight, a `setPos` flyer.
+            let id = game.take_entity_id();
+            let mut trident = super::trident::ThrownTrident::remote(
+                id,
+                horizon_core::geometry::Vec3::new(at(10)[0], 40.5, at(10)[2]),
+                10.0,
+                0.0,
+            );
+            trident.velocity = horizon_core::geometry::Vec3::new(1.0, 0.0, 0.0);
+            game.tridents.push(trident);
+            // The general row: the declared type's own record, loaded as the
+            // game loads one from a save.
+            let record = crate::game::general::GeneralEntityRecord {
+                position: at(11),
+                velocity: [0.5, 0.0, 0.0],
+                rotation: [0.0, 90.0],
+                uuid: [11, 12, 13, 14],
+                envelope: crate::game::general::GeneralTypeEnvelope {
+                    type_key: "mymod:robot".to_owned(),
+                    payload_version: 3,
+                    payload_bytes: Vec::new(),
+                },
+                passengers: Vec::new(),
+            };
+            game.load_listed("mymod:robot", None, None, record.to_tag())
+                .unwrap();
+            // The cases must be exactly the families of `entity_lists!`:
+            // its own walk of [`Families`] names them, one field per list.
+            let families = Families {
+                mobs: ["Mob"],
+                dropped: ["Item"],
+                boats: ["Boat"],
+                carts: ["Cart"],
+                armor_stands: ["ArmorStand"],
+                tnts: ["Tnt"],
+                falling: ["Falling"],
+                orbs: ["Orb"],
+                projectiles: ["Projectile"],
+                rockets: ["Rocket"],
+                tridents: ["Trident"],
+                general: ["General"],
+            };
+            let mut listed = Vec::new();
+            super::entity::entity_lists!(walk_lists, families, family, {
+                listed.push(family);
+            });
+            let case_families: std::collections::BTreeSet<&str> =
+                CASES.iter().map(|case| case.family).collect();
+            let listed_families: std::collections::BTreeSet<&str> =
+                listed.iter().copied().collect();
+            assert_eq!(
+                listed_families, case_families,
+                "every family of entity_lists! has a census case"
+            );
+            // The coverage runs against the real walk, before the round: a
+            // family's representative may spend itself in the round (a
+            // rocket flies out), so the census is taken of the world the
+            // round is about to run on — every family the walk visits is a
+            // case, and every case is live in the walk.
+            let present: std::collections::BTreeSet<String> =
+                game.entity_handles().map(family_of).collect();
+            assert_eq!(
+                present
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<std::collections::BTreeSet<_>>(),
+                case_families,
+                "the walk visits exactly the census cases' families"
+            );
             log.lock().unwrap().clear();
+            // One round of every family's tick, the ordered pass covering
+            // the orbs, the TNT and the falling blocks in join order.
             let mut round = game.native_tick_round();
             game.tick_dropped_items(&mut round);
             let _ = game.tick_creatures();
             game.tick_boats();
             game.tick_carts();
             game.tick_rockets();
-            game.tick_one_tnt(0, &[]).unwrap();
             let _ = game.tick_armor_stands();
+            let _ = game.tick_projectiles();
+            game.tick_tridents();
+            game.tickets.update(None);
+            // Existing residents whose spawn packets were already announced
+            // (as the ordered tick's own test sets it): the round's TNT and
+            // falling blocks go in the first pass.
+            game.ordered.announced = horizon_client::join_seq::JoinSeq::MAX;
+            game.begin_ordered_ticks();
+            game.run_ordered_ticks(horizon_client::join_seq::JoinSeq::MAX, false)
+                .unwrap();
+            game.tick_general().unwrap();
             let heard = std::mem::take(&mut *log.lock().unwrap());
             let mut by_kind: std::collections::BTreeMap<&str, Vec<MoveCause>> = Default::default();
             for (kind, cause) in &heard {
                 by_kind.entry(kind).or_default().push(*cause);
             }
-            for (name, kind) in KINDS {
-                let causes = by_kind.get(*kind).map(Vec::as_slice).unwrap_or(&[]);
+            for case in CASES {
+                let causes = by_kind.get(case.kind).map(Vec::as_slice).unwrap_or(&[]);
                 assert_eq!(
-                    causes,
-                    &[MoveCause::SelfMovement],
-                    "{name} ({kind}): exactly one self move, got {causes:?}"
+                    causes, case.fires,
+                    "{} ({}) fired its case's causes, got {causes:?}",
+                    case.family, case.kind
                 );
             }
         });
